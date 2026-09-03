@@ -159,6 +159,48 @@ function drawFigures(m, { borrower = false } = {}) {
 }
 
 /**
+ * THE SUBMISSION HEADLINE — a draw that was JUST submitted for review has exactly one figure.
+ *
+ * Owner-reported 2026-09-03, on the "A draw was submitted for review" notice: *"when somebody
+ * sends in a draw to be reviewed, he requested this and this amount. It's not yet approved. He's
+ * getting this notification, and the team is getting this notification that zero was approved. It
+ * sounds like 'not zero was approved.' It's in review. You don't need a dollar amount. It was
+ * requested. You can put a big dollar amount: this was requested, and it's in review by the
+ * inspector."* The email led "Approved on this draw $0 — nothing approved this time — the $42,250
+ * requested stays on the budget" on a draw nobody had looked at yet.
+ *
+ * WHY `drawFigures` GOT IT WRONG: it reads `has_inspector_amounts` as "the inspector has
+ * answered". Sitewire's draw payload carries `approved_cents: 0` (not null) on every line of a
+ * freshly submitted draw, so the mirror reports a confident $0 answer the moment the draw lands —
+ * the missing-vs-zero class again, one rung up. Fixing the ladder is not this module's job (an
+ * inspector's explicit $0 IS an answer — the 2026-08-10 doctrine — and only the caller knows
+ * whether the inspection has even started). What the caller DOES know at the submission moment is
+ * that, by definition, nothing has been reviewed. So the submission notice asks for THIS band
+ * instead: the REQUEST, big, and the words "in review" — never an approved figure, never a $0.
+ *
+ * Returns null when there is no request figure to show (missing-vs-zero: an all-zero money block
+ * means the amount did not come through, and the band is dropped rather than led with "$0").
+ * NEVER computes money — it picks `requested_cents` off the ONE money source and nothing else.
+ */
+function submittedFigures(m, { borrower = false } = {}) {
+  if (!m) return null;
+  const requested = N(m.requested_cents);
+  if (requested <= 0) return null;
+  return {
+    primary: {
+      label: 'Requested',
+      value: usd(requested),
+      sub: borrower
+        ? 'submitted for review — the inspector will look at it next; nothing is approved yet'
+        : 'in review by the inspector — not approved yet',
+    },
+    // Deliberately empty: at submission there is no approved figure and no difference to show,
+    // and a supporting row that merely repeats the headline is clutter.
+    secondary: [],
+  };
+}
+
+/**
  * THE FACTS BOX — what somebody reading a DRAW notice actually needs.
  *
  * Every row is omitted when its value is unknown. An email that says "Draw fee —" teaches the
@@ -284,4 +326,4 @@ function stageCopy(stage, { borrower = false } = {}) {
   return row[borrower ? 'borrower' : 'staff'] || null;
 }
 
-module.exports = { drawFigures, drawFacts, stageCopy, usd, day, STAGE_COPY };
+module.exports = { drawFigures, submittedFigures, drawFacts, stageCopy, usd, day, STAGE_COPY };

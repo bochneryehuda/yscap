@@ -304,6 +304,87 @@ function roster(settings = {}, custom) {
     .sort((a, b) => String(a.label).localeCompare(String(b.label)));
 }
 
+/**
+ * WHICH INVESTORS BELONG ON THE SETTINGS LIST — the owner's own list, not our whole registry.
+ *
+ * ── THE REPORT ─────────────────────────────────────────────────────────────
+ * Owner, 2026-09-03, looking at the live screen: *"the list of lenders that I put in my
+ * settings is way bigger than the list I gave you. I gave you a list of much less. My list
+ * didn't include: Cake Mortgage, Broadview, Constructive… I gave you a list only of ones
+ * that have white-labeled names. That list and that setting should only reflect the list I
+ * gave you, not the list of all investors that we have in our system in general."*
+ *
+ * MEASURED on the roster as it shipped: 43 rows, of which 26 carry a white label and 17 do
+ * not — and all three the owner named are in that 17, alongside the RTL capital providers
+ * (Blue Lake, EMCAP, Fidelis, RCN, ROC, Temple View) which are note buyers on the
+ * short-term book and never appear on a long-term DSCR board at all. The list was built
+ * from "every investor the registry knows", which is a different question from "every
+ * investor this engine prices".
+ *
+ * ── THE RULE, AND WHY IT IS THREE TESTS AND NOT ONE ────────────────────────
+ * A row belongs when ANY of these is true:
+ *
+ *   1. IT HAS A WHITE LABEL. That IS the owner's list — the name a client may be shown is
+ *      what makes an investor one we actually put in front of people.
+ *
+ *   2. A RATE SHEET HAS ACTUALLY PRODUCED IT. The owner's standing rule (2026-09-02):
+ *      *"If you see a new investor populating in any of the systems, just add that to the
+ *      list… Let the person turn it on and select the holdback and select the white label
+ *      name."* Confirmed again 2026-09-03: a new one appears BY ITSELF, arrives OFF with no
+ *      white label, and waits — *"I'm gonna fill the white label name and turn it on
+ *      whenever I want."* Filtering on the white label ALONE would hide exactly the
+ *      investor somebody needs to go and name, which is the one case this must not break.
+ *      It is read from the MEASURED sightings register, never from a typed list.
+ *
+ *   3. SOMEBODY HAS SAVED A SETTING FOR IT. Without this a row an admin has configured —
+ *      turned off, given a holdback, named — could vanish from the screen the moment the
+ *      thing that put it there changed, leaving a setting in force that nobody can see or
+ *      undo. A setting you cannot take back off is worse than one you never made.
+ *
+ * ⛔ THIS IS A SCREEN RULE, NEVER A PRICING RULE. `roster()` above stays the FULL list and
+ * is deliberately untouched: `general-board` builds `expectedFromLoanNex` from it, so
+ * narrowing it here would change which investors the board expects and reports as missing.
+ * What an admin is shown and what the board prices are two different questions, and the
+ * board's answer must not move because a screen got tidier.
+ *
+ * ⛔ AND IT CANNOT HIDE A LIVE INVESTOR. Anything actually being priced satisfies test 1 or
+ * test 2 by construction — it is on a board, so it was sighted — so this can only ever
+ * remove rows that are on no board and have no name and no setting.
+ */
+function belongsOnSettingsList(row, availability) {
+  if (!row) return false;
+  if (row.whiteLabel) return true;
+  const a = availability || {};
+  for (const k of Object.keys(a)) {
+    if (a[k] && a[k].state === 'seen') return true;
+  }
+  return carriesOwnSetting(row);
+}
+
+/**
+ * DOES THIS ROW CARRY A SETTING SOMEBODY SAVED — any of the four a row can hold.
+ *
+ * ⛔ IT IS ONE DEFINITION BECAUSE TWO THINGS TURN ON IT, AND THEY MUST AGREE.
+ * `belongsOnSettingsList` test 3 above KEEPS a row on the screen because it carries
+ * one; the settings screen's per-row "use the pre-fill" control OFFERS ITSELF for
+ * exactly the same reason and, when it is used, the row's setting is dropped from
+ * the save and the row leaves the list. Written twice, the two could disagree — and
+ * the disagreement nobody would notice is the expensive direction: a control that
+ * offers to remove a setting on a row the list keeps for another reason clears the
+ * setting and leaves the row sitting there, which reads as the button not working.
+ *
+ * The route puts the answer ON the row (`carriesSetting`) so the browser reads it
+ * rather than re-deriving it — a browser cannot require this file, and a second copy
+ * of a four-clause test is exactly how the two drift.
+ */
+function carriesOwnSetting(row) {
+  const r = row || {};
+  return r.sourceOrigin === 'setting'
+    || r.enabledOrigin === 'setting'
+    || r.whiteLabelOrigin === 'setting'
+    || r.holdbackOrigin === 'setting';
+}
+
 /** The investors with no client-safe name yet — the ones to go and name. */
 function needsWhiteLabel(settings = {}, custom) {
   return roster(settings, custom).filter((r) => r.whiteLabelMissing).map((r) => ({ key: r.key, investor: r.label }));
@@ -343,6 +424,7 @@ function describe(raw, opts = {}) {
 }
 
 module.exports = {
+  belongsOnSettingsList, carriesOwnSetting,
   SOURCES, DEFAULT_SOURCE, OWNER_SOURCE, OWNER_DISABLED, MAX_INVESTOR_HOLDBACK,
   readSettings, resolveRaw, settingFor, roster, needsWhiteLabel, describe,
   _internals: { isSource },

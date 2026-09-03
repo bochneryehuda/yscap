@@ -141,7 +141,35 @@ const ok = (cond, name, detail) => {
       await cx.query(`UPDATE lt_loans SET encompass_synced_at = clock_timestamp() WHERE id = $1::uuid`, [b]);
       const ran = await sweep.evaluateIfStale(b, { db: cx });
       ok(ran.evaluated === true && ran.stale === true, 'a due loan is run as its screen opens', JSON.stringify(ran));
-      ok((await due()).length === 0, 'and is caught up afterwards');
+      // ⛔ SAYS WHY WHEN IT FAILS. This assertion went red once on main
+      // (2026-09-03, run 4447) and reported nothing but "and is caught up
+      // afterwards" — no loan named, no stamp shown — so there was nothing to
+      // diagnose from and ~55 local re-runs could not reproduce it. A bare
+      // `length === 0` over a derived predicate is a question with the answer
+      // thrown away. It now prints the three timestamps the predicate is built
+      // from, plus the library edition and the engine's own report, so the next
+      // occurrence explains itself on the first look instead of the second.
+      {
+        const d = await due();
+        if (d.length !== 0) {
+          const rows = (await cx.query(
+            `SELECT id, encompass_synced_at, conditions_evaluated_at, conditions_evaluate_tried_at
+               FROM lt_loans WHERE id = ANY($1::uuid[])`, [mine])).rows;
+          const iso = (t) => (t ? new Date(t).toISOString() : 'null');
+          console.log(`     due=${JSON.stringify(d)}  (a=${a}, b=${b})`);
+          console.log(`     library edition=${iso(await sweep.libraryEdition(cx))}`);
+          for (const r of rows) {
+            console.log(`     ${r.id === a ? 'a' : 'b'} synced=${iso(r.encompass_synced_at)}`
+              + ` evaluated=${iso(r.conditions_evaluated_at)} tried=${iso(r.conditions_evaluate_tried_at)}`);
+          }
+          // The engine stamps `conditions_evaluated_at` ONLY on a clean pass, so an
+          // unclean one leaves the loan due while `evaluated`/`stale` above still
+          // read true. That is the first thing to check, and it is not otherwise
+          // visible from this suite.
+          console.log(`     the on-open run reported: ${JSON.stringify(ran)}`);
+        }
+        ok(d.length === 0, 'and is caught up afterwards', d.join(','));
+      }
     }
 
     console.log('\nE. A PASS THAT COULD NOT READ CLEANLY STAYS DUE, BUT GOES TO THE BACK OF THE QUEUE');

@@ -32,6 +32,11 @@ const N = (x) => Number(x || 0) || 0;
 // The Sitewire draw statuses that mean the lender's FINAL approval has landed.
 const FINAL_STATUSES = new Set(['approved']);
 
+// The Sitewire draw statuses BEFORE the inspection has concluded: the two draft rungs and the
+// inspection itself. A virtual draw leaves `inspecting` for `pending` when the inspector is done,
+// so nothing on these rungs can be an inspector's answer. Read by `inspectorApproved` only.
+const PRE_INSPECTION_STATUSES = new Set(['drafting', 'pending_borrower', 'inspecting']);
+
 // Where a draw sits on the ladder. Ordered — a later stage implies every earlier one.
 const STAGE_ORDER = ['drafting', 'with_borrower', 'inspecting', 'inspector_approved',
   'borrower_review', 'borrower_disputed', 'borrower_accepted', 'with_investor', 'final_approved', 'released'];
@@ -106,7 +111,20 @@ function inspectorApproved({ draw = {}, requests = [], findingLines = [] } = {})
     return { sum, any };
   };
   const req = fromRows(requests, 'approved_cents');
-  if (req.any) return { cents: req.sum, source: 'requests', hasAmounts: true };
+  // A ZERO THE INSPECTOR NEVER WROTE (owner-reported 2026-09-03, Draw #2 at 69 Bassett St: the
+  // desk and the "submitted for review" email both read "$0 approved" on a draw nobody had
+  // looked at yet). Sitewire's draw payload carries `approved_cents: 0` — NOT null — on every
+  // line of a freshly submitted draw, so the mirror answers "0" before any inspection exists.
+  // While the draw is still BEFORE the inspection concludes (a draft, or `inspecting`), an
+  // all-zero mirror is that default, not a decision: fall through to the delivered findings and
+  // the draw total exactly as a null mirror would. This is deliberately the narrowest gate:
+  //   · a single positive line is an answer whatever the status (a coordinator's own write);
+  //   · once the draw is `pending` or beyond, the inspection is DONE and an explicit $0 IS the
+  //     answer (the 2026-08-10 doctrine, YSCAP258134746) — untouched;
+  //   · the delivered-findings snapshot (rung 2) is PILOT's own tri-state and is never gated —
+  //     and findings can only be delivered on a `pending`-or-later draw anyway.
+  const preInspection = PRE_INSPECTION_STATUSES.has(String(draw.status || '').trim().toLowerCase());
+  if (req.any && (req.sum > 0 || !preInspection)) return { cents: req.sum, source: 'requests', hasAmounts: true };
   const fl = fromRows(findingLines, 'approved_cents');
   if (fl.any) return { cents: fl.sum, source: 'findings', hasAmounts: true };
   const total = N(draw.total_approved_cents);

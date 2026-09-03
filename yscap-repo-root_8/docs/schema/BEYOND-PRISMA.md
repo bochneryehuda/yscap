@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**965 objects**, and a database rebuilt from the Prisma
+**969 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 685 numbered migrations in `db/` (highest `db/688`) remain the only thing that builds this database.
+rebuild a database from them.** The 690 numbered migrations in `db/` (highest `db/693`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,21 +19,21 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 410 |
-| Columns | 6589 |
-| Triggers | 38 |
-| Functions | 142 |
+| Tables | 412 |
+| Columns | 6611 |
+| Triggers | 39 |
+| Functions | 144 |
 | CHECK constraints | 354 |
 | Generated columns | 12 |
-| Partial indexes | 419 |
-| Primary keys | 410 |
-| Foreign keys | 832 |
+| Partial indexes | 420 |
+| Primary keys | 412 |
+| Foreign keys | 833 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1426 |
+| Indexes (all kinds) | 1431 |
 | Enum types | 12 |
 | Views | 0 |
 
-## Triggers (38)
+## Triggers (39)
 
 - **trg_ai_suggestions_updated** on `ai_suggestions`
 - **trg_assignment_condition_is_purchase_only** on `checklist_items`
@@ -45,6 +45,7 @@ the live database.
 - **trg_default_property_type** on `applications`
 - **trg_doclab_requests_touch** on `doclab_requests`
 - **trg_ensure_assignment_condition** on `applications`
+- **trg_ensure_construction_conditions** on `applications`
 - **trg_ensure_plans_condition** on `applications`
 - **trg_loan_exc_touch_updated** on `loan_exceptions`
 - **trg_reminders_touch_updated** on `reminders`
@@ -89,7 +90,7 @@ the live database.
 - **track_records.counts_from** — `COALESCE( CASE WHEN (lower(COALESCE(deal_type, ''::text)) ~~ '%flip%'::text) THEN sale_date ELSE COALESCE(rent_date, refi_date) END, CASE WHEN ((lower(COALESCE(deal_type, ''::text)) ~~ '%ground%'::text) OR (lower(COALESCE(deal_type, ''::text)) ~~ '%construction%'::text)) THEN COALESCE(sale_date, rent_date, refi_date) ELSE NULL::date END)`
 - **track_records.hold_days** — `(COALESCE( CASE WHEN (lower(COALESCE(deal_type, ''::text)) ~~ '%flip%'::text) THEN sale_date ELSE COALESCE(rent_date, refi_date) END, CASE WHEN ((lower(COALESCE(deal_type, ''::text)) ~~ '%ground%'::text) OR (lower(COALESCE(deal_type, ''::text)) ~~ '%construction%'::text)) THEN COALESCE(sale_date, rent_date, refi_date) ELSE NULL::date END) - purchase_date)`
 
-## Functions (142)
+## Functions (144)
 
 - **appraisal_review_guard()** → trigger
 - **armor(bytea)** → text
@@ -133,6 +134,7 @@ the live database.
 - **encrypt(bytea, bytea, text)** → bytea
 - **encrypt_iv(bytea, bytea, bytea, text)** → bytea
 - **ensure_assignment_condition()** → trigger
+- **ensure_construction_conditions()** → trigger
 - **ensure_plans_condition()** → trigger
 - **gen_random_bytes(integer)** → bytea
 - **gen_random_uuid()** → uuid
@@ -166,6 +168,7 @@ the live database.
 - **pilot_address_compare_key(v jsonb)** → text
 - **pilot_address_same_place(a jsonb, b jsonb)** → boolean
 - **pilot_appraisal_form_property_key(v text)** → text
+- **pilot_bridge_without_construction(p_program text, p_loan_type text, p_rehab_type text, p_rehab_budget numeric)** → boolean
 - **pilot_condition_product_guard()** → trigger
 - **pilot_condition_scope_name(s text)** → text
 - **pilot_fmt_money(v numeric)** → text
@@ -234,7 +237,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (419)
+## Partial indexes (420)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -562,6 +565,7 @@ the live database.
 - **lt_ppe_rule_lookup_idx** on `lt_ppe_rule`
 - **lt_ppe_rule_suggestion_open_idx** on `lt_ppe_rule_suggestion`
 - **lt_pricer_scenarios_mine_idx** on `lt_pricer_scenarios`
+- **lt_pricing_source_misses_open_idx** on `lt_pricing_source_misses`
 - **lt_reo_properties_enc_uk** on `lt_reo_properties`
 - **lt_report_definitions_shared_idx** on `lt_report_definitions`
 - **lt_residences_enc_uk** on `lt_residences`
@@ -1013,7 +1017,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (832)
+## Foreign keys (833)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1166,6 +1170,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **borrower_profile_links** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
 - **borrower_profile_links** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id)`
 - **borrower_profile_links** → `borrowers` — `FOREIGN KEY (linked_borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_terms_sent** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
 - **borrower_view_sessions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
 - **borrower_view_sessions** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
 - **borrower_view_sessions** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
@@ -1922,7 +1927,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 410 primary keys and 1426 indexes is
+Every one of the 412 primary keys and 1431 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

@@ -221,20 +221,21 @@ async function portalLogin(portal, opts = {}) {
   });
 }
 
-/** A live bearer session for a portal, minted or reused. */
-async function getSession(portal, opts = {}) {
-  const { portal: p } = PORTAL_HOST(portal);
-  const now = Date.now();
-  const hit = sessions.get(p);
-  if (!opts.force && hit && hit.expiresAt - TOKEN_SKEW_MS > now) return hit;
-
+/**
+ * SIGN IN AND BUILD A SESSION — the whole cold-cache path, done ONCE.
+ *
+ * This is the work `getSession` dedupes. It is a named function so the
+ * single-flight lock below can wrap exactly one call to it, and so a test can
+ * count how many times it runs under concurrency.
+ */
+async function performLogin(p, opts = {}) {
   // A pasted ticket short-circuits the sign-in (that is how the pipeline was
   // proven end-to-end before stage 1 existed, and it stays the fastest way to
   // run a one-off). Otherwise sign in properly.
   let ticket = opts.tokenKey || process.env.NEX_TOKEN_KEY;
   if (!ticket) ticket = (await portalLogin(p, opts)).tokenKey;
 
-  const body = await request('GET', `/tokens/${encodeURIComponent(ticket)}`, {});
+  const body = await _impl.request('GET', `/tokens/${encodeURIComponent(ticket)}`, {});
   const d = (body && body.data) || {};
   if (!d.authenticationToken) {
     const err = new Error('loannex_token_exchange_failed: the ticket did not yield an authentication token (a tokenKey is single-use and short-lived).');
@@ -246,13 +247,65 @@ async function getSession(portal, opts = {}) {
     portal: p,
     token: d.authenticationToken,
     refreshToken: d.refreshToken || null,
-    expiresAt: claims.expiresAt || (now + 55 * 60 * 1000),
+    expiresAt: claims.expiresAt || (Date.now() + 55 * 60 * 1000),
     userGuid: claims.userGuid,
     organizationId: claims.organizationId,
     portalId: claims.portalId,
   };
   sessions.set(p, session);
   return session;
+}
+
+/* A test seam — the only indirection needed so a pure test can replace the
+   network work (`performLogin`, `request`) and count logins under load without
+   touching the vendor. Production reads straight through it. */
+const _impl = { performLogin, request };
+
+/**
+ * DEDUPE CONCURRENT ASYNC WORK BY KEY — one in-flight promise per key.
+ *
+ * ⛔ THIS IS THE SINGLE-FLIGHT LOCK `bracket-run.js` ALREADY PROMISES EXISTS
+ * ("it holds ONE shared service login behind a single-flight lock … so
+ * concurrent searches don't collide"). It did NOT exist, and that was the bug:
+ * the general engine runs the bracket loop with `CONCURRENCY = 3`, so on a COLD
+ * session cache three `getSession` calls each saw no cached session and each
+ * fired a FULL portal sign-in at the same instant — three simultaneous logins on
+ * one service account, which a form-based portal (antiforgery token + cookie
+ * jar, not a real API) rate-limits or rejects. The bands threw, the LoanNEX half
+ * of the board was dropped, and the reason was swallowed. The COMBINED engine
+ * makes exactly ONE `nex.price` call → one login → never collides, which is why
+ * it worked while the general engine showed nothing. With the lock, the first
+ * caller signs in and the other two await the SAME login.
+ */
+function singleFlight(map, key, fn) {
+  const existing = map.get(key);
+  if (existing) return existing;
+  const promise = Promise.resolve().then(fn);
+  map.set(key, promise);
+  // Clear the slot when it settles — success or failure — but only if it is
+  // still ours, so a later attempt that replaced it is never deleted.
+  const clear = () => { if (map.get(key) === promise) map.delete(key); };
+  promise.then(clear, clear);
+  return promise;
+}
+
+/** In-flight logins, one per portal. */
+const loginFlight = new Map();
+
+/** A live bearer session for a portal, minted or reused. */
+async function getSession(portal, opts = {}) {
+  const { portal: p } = PORTAL_HOST(portal);
+  const now = Date.now();
+  const hit = sessions.get(p);
+  if (!opts.force && hit && hit.expiresAt - TOKEN_SKEW_MS > now) return hit;
+
+  // A deliberate `force` (a session we know is bad) always mints its own fresh
+  // login rather than joining an in-flight one — it wants a NEW token, not the
+  // one somebody else is already fetching.
+  if (opts.force) return _impl.performLogin(p, opts);
+
+  // Every ordinary concurrent caller on a cold cache shares ONE login.
+  return singleFlight(loginFlight, p, () => _impl.performLogin(p, opts));
 }
 
 /** Who the session belongs to — the safe login check. Never returns a token. */
@@ -332,7 +385,71 @@ async function fails(transactionId, opts = {}) {
 }
 
 /** The LLPA breakdown behind one quote, and the sheet date the merge elects on. */
+/**
+ * WHAT THE VENDOR NEEDS TO FIND A QUOTE. It addresses one by product AND investor AND
+ * the price hash — `selectedPriceData` plus `{productId, investorId}` — so a request
+ * missing any of them names no quote at all.
+ */
+const EVIDENCE_IDENTITY = [
+  ['priceHashKey', (q) => q.priceHashKey],
+  ['productId', (q) => q.productId],
+  ['investorId', (q) => q.lenderId],
+  ['rate', (q) => q.rate],
+  ['lockDays', (q) => q.lockDays],
+];
+
+/**
+ * THE PRICE THIS QUOTE ASKS THE SHEET ABOUT — the vendor's own figure when we genuinely hold it,
+ * otherwise the rounded one.
+ *
+ * PURE, and separate from the request body so the rule is testable without a network. `priceExact`
+ * must be a REAL NUMBER to win: `Number(null)` is 0 and `Number('')` is 0, and either would ask the
+ * sheet to itemise a par-minus-100 quote that does not exist; a SEALED blob (a string — see
+ * `pricing/sealed-price`) is likewise not a price and falls back rather than travelling. A numeric
+ * STRING is accepted and normalised, because that is what a caller reading the figure out of stored
+ * JSON hands over and it means exactly what it says.
+ */
+function exactPrice(quote) {
+  const q = quote || {};
+  const raw = q.priceExact;
+  if (raw != null && raw !== '' && typeof raw !== 'object') {
+    const n = Number(raw);
+    if (Number.isFinite(n)) return n;
+  }
+  return q.price;
+}
+
+/** Which parts of a quote's identity are missing, if any. */
+function missingIdentity(quote) {
+  const q = quote || {};
+  return EVIDENCE_IDENTITY.filter(([, read]) => {
+    const v = read(q);
+    return v === undefined || v === null || v === '';
+  }).map(([name]) => name);
+}
+
 async function evidence(sc, quote, opts = {}) {
+  /* ⛔ REFUSE BEFORE ASKING, AND SAY WHAT WAS MISSING. Recorded live on 2026-08-30, one
+     investor of four came back `{"status":"Success"}` with no body — and the capture
+     kept the request beside it, which is empty: `"request": {}`. We had asked with no
+     product, no investor and no price hash, so the vendor answered about no quote.
+     That was read at the time as the SHEET being silent, and the screen has said "the
+     rate sheet accepted the question and returned no breakdown" ever since — blaming
+     the vendor for our own empty question, on the one panel whose job is to explain.
+     A quote that cannot identify itself is now refused here, by name, without spending
+     a vendor call. */
+  const missing = missingIdentity(quote);
+  if (missing.length) {
+    return {
+      evidence: null,
+      absence: {
+        reason: 'quote_incomplete',
+        message: `This quote reached the breakdown without ${missing.join(', ')}, so the rate sheet was not asked — it could not have found the quote.`,
+        missing,
+      },
+      transactionId: opts.transactionId || null,
+    };
+  }
   const s = await getSession(opts.portal, opts);
   const registry = await fieldRegistry(opts.portal, opts);
   const county = await resolveCounty(opts.portal, sc, opts);
@@ -341,7 +458,30 @@ async function evidence(sc, quote, opts = {}) {
     data: {
       productId: quote.productId, investorId: quote.lenderId,
       selectedPriceData: {
-        price: quote.price, rate: quote.rate, priceHashKey: quote.priceHashKey,
+        /**
+         * ⛔ THE SHEET'S OWN PRICE, NOT THE ROUNDED ONE. MEASURED LIVE, 2026-09-03.
+         *
+         * LoanNEX looks a quote up by matching this price against its sheet EXACTLY. Our parser
+         * rounds to three decimals for display; 269 of 4,396 rungs on one live board need a
+         * fourth. Sent rounded, the sheet found no quote and answered `{"status":"Success"}` with
+         * no body — which the panel reported as "the rate sheet accepted the question and returned
+         * no breakdown", blaming the vendor for our own rounding. Proven on one quote, everything
+         * else held identical: 104.1762 answered, 104.176 came back empty.
+         *
+         * `priceExact` is the vendor's number carried untouched from the parse (never held back —
+         * see `vendor-margin`). `price` remains the fallback for a caller that has only the
+         * rounded figure, so an older row still asks the question it asked yesterday.
+         *
+         * ⛔ IT MUST BE A NUMBER, AND THAT IS A GUARD RATHER THAN AN ASSUMPTION. On the way to the
+         * browser this figure travels SEALED (`pricing/sealed-price`), because in the clear it and
+         * the held-back price beside it are our margin, one subtraction apart. The explain door
+         * opens it (`combined-pricer.quoteFromBody`) and hands this a plain number — but a caller
+         * that skipped that step would otherwise post a base64 blob into `selectedPriceData.price`,
+         * which the sheet cannot match, so the panel would report an empty breakdown and blame the
+         * vendor for our own plumbing. Anything that is not a real number falls back to `price`.
+         */
+        price: exactPrice(quote),
+        rate: quote.rate, priceHashKey: quote.priceHashKey,
         lockDays: quote.lockDays, includeAdminFee: false,
       },
       nexApp: scenario.buildNexApp(sc, registry, { countyKey: county.countyKey }),
@@ -378,7 +518,12 @@ module.exports = {
   configured, getSession, loginCheck, price, fails, evidence, rateStack,
   fieldRegistry, resolveCounty, invalidateSession, newTransactionId,
   _internals: {
+    // Exported so the board's own guard can ask the SAME question the client asks —
+    // "can this row identify itself to the sheet?" — rather than keeping a second copy
+    // of the answer that could drift from the one that actually gates the call.
+    missingIdentity, EVIDENCE_IDENTITY, exactPrice,
     request, assertReadOnly, pathMatches, READ_ONLY_PATHS, scrub, claimsOf,
     tokenKeyFromIframeHtml, portalLogin, PORTAL_HOST, sessions, TOKEN_SKEW_MS, portalLoginMod,
+    performLogin, singleFlight, loginFlight, _impl,
   },
 };

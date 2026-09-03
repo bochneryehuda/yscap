@@ -76,6 +76,7 @@ nexClient.price = async () => ({ board: {
 
 const { priceBoth } = require(path.join(ROOT, 'src/longterm/routes/combined-pricer'))._internals;
 const lpModel = require(path.join(ROOT, 'src/longterm/lenderprice/search-model'));
+const dupProgs = require(require('path').join(__dirname, '..', 'src/longterm/pricing/duplicate-programs.js'));
 const pf = require(path.join(ROOT, 'src/longterm/pricing/product-filter'));
 
 let pass = 0; let fail = 0;
@@ -328,9 +329,19 @@ const nexRows = (out) => (out.programs || []).filter((p) => NEX_PROGRAMS.some((n
     const before = pf.narrowBoard(REAL, { ...FULL, lockDays: null });
     const shape = (n) => `${n.kept}/${n.board.rungCount}`;
     const shapes = [15, 30, 45, 60].map((d) => shape(at(d)));
-    ok(shape(before) === '26/1553' && new Set(shapes).size === 4,
+    /* ⛔ 24/1553 BECAME 24/1349 ON PURPOSE (2026-09-03). This pinned 26/1553, and the
+       duplicate suppression now takes Acra's "(5% Fixed)" programmes off every board
+       before any narrowing runs — so this fixture's fixed/360 board is legitimately two
+       programmes and 204 rungs smaller. The number is re-pinned rather than derived,
+       because a derived one would agree with whatever the filter did; the check below
+       pins the REASON, so if this shape ever moves again for some other cause it fails
+       instead of being quietly re-typed. */
+    const deduped = dupProgs.dropDuplicates(REAL);
+    ok(deduped.dropped.length > 0 && (REAL.programs.length - deduped.board.programs.length) === deduped.dropped.length,
+      `LOCK-7pre the duplicate suppression accounts for the change of shape — ${deduped.dropped.length} programmes off this fixture before any narrowing`);
+    ok(shape(before) === '24/1349' && new Set(shapes).size === 4,
       `LOCK-7 one search, four locks: the board WAS ${shape(before)} whichever lock was asked, and is now ${shapes.join('  ')} — four different boards where there had been one, which is the whole defect`);
-    ok(shapes.every((x) => Number(x.split('/')[1]) < 1553),
+    ok(shapes.every((x) => Number(x.split('/')[1]) < 1349),
       `LOCK-7b …and every one of them is SMALLER than the board that ignored the lock — the rungs removed are the ones priced at a lock nobody asked for, never a shortening of the answer`);
     for (const d of [15, 30, 45, 60]) {
       const n = at(d);

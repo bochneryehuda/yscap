@@ -9,10 +9,27 @@
  * which is the same "built but never triggered" failure as a mirror with no
  * writer, one level up: every writer existed and nothing ever called them.
  *
- * OFF BY DEFAULT, and it says so. `LT_SYNC_ENABLED=1` turns it on, exactly as
- * `ENCOMPASS_ENABLED` and `CLICKUP_OUTBOUND_ENABLED` gate their own workers. With
- * the switch off this module schedules nothing, reads nothing and costs nothing —
- * so it can ship to every deployment as it stands and change none of them.
+ * ⛔ THIS PARAGRAPH SAID "OFF BY DEFAULT, and it says so" AND WAS NEVER TRUE. This
+ * file was added on 2026-08-25 by `562dff5`, and THAT SAME COMMIT introduced both
+ * `if (!raw) return true;` in `enabled()` below and the sentence claiming the
+ * opposite — so the file has never once existed with an off default. (An earlier
+ * draft of this correction dated the flip to 2026-08-23; that is the date of the
+ * owner direction quoted further down, not of any code change. Getting the date of
+ * a false claim wrong while correcting it is the same mistake one turn smaller.)
+ *
+ * TWO OTHER PLACES QUOTE THIS FILE AS THEIR AUTHORITY: `src/longterm/index.js`,
+ * corrected 2026-09-03, and `docs/longterm/LOS-MASTER-PLAN.md`, corrected in the
+ * same change as this paragraph. The design document was the one that mattered
+ * most and was missed first — it is where a reader checks.
+ *
+ * ON BY DEFAULT. `LT_SYNC_ENABLED=0` turns it off. Do NOT read across from
+ * `ENCOMPASS_ENABLED` in either direction: that variable's own master switch
+ * (`src/lib/integrations/encompass-enabled.js`) is ALSO blank-is-on, while the RTL
+ * sync worker's separate gate (`src/sync/encompass-sync.js`) requires an explicit
+ * `1`. An earlier draft of this line called it "the reverse of `ENCOMPASS_ENABLED`",
+ * which pointed the reader at a file saying the opposite. With the switch off this
+ * module schedules nothing, reads nothing and costs nothing; with it ON but no
+ * Encompass credentials, a pass costs one refused call (see below).
  *
  * IT IS BOUNDED BY THE PASSES IT CALLS, NOT BY A LIMIT OF ITS OWN. `loans.syncOnce`
  * reads at most its own budget of loans per pass and `conditions.syncOnce` its
@@ -210,6 +227,16 @@ async function tickOnce({ trigger = 'worker' } = {}) {
       out.conditionRules = await runLog.record('condition_rules', trigger, () => conditionRules.sweepOnce({}));
     } catch (e) {
       out.conditionRules = { ok: false, reason: (e && e.message) || String(e) };
+    }
+    // THE ORDERS FOLLOW THEIR CONDITIONS (owner-directed 2026-09-03). An order
+    // whose condition is signed off is finished; one whose condition holds a
+    // document has its documents in — whichever email chain they came back on.
+    // The live doors (sign-off, waive, upload) do this at once; this pass is the
+    // "previous AND future" half over the whole book, through the same module.
+    try {
+      out.orderConditions = await require('../orders/condition-sync').sweepOnce({});
+    } catch (e) {
+      out.orderConditions = { ok: false, reason: (e && e.message) || String(e) };
     }
     // The tenant's own milestone catalog. It skips itself unless a day has passed,
     // so this costs nothing on all but one pass — and when it does run it is what

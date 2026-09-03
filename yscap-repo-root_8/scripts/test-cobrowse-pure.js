@@ -20,7 +20,31 @@ const fs = require('fs');
 const path = require('path');
 const root = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
-const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+// ⛔ THE SHARED STRIPPER, WHICH THIS FILE SHOULD HAVE BEEN USING ALL ALONG.
+// It kept its own copy of the two-line regex idiom — `.replace(/\/\*[\s\S]*?\*\//g,
+// '')` — while `scripts/lib/strip-comments.js` had already existed since 2026-08-30,
+// written because that idiom is silently wrong in BOTH directions and had bitten for
+// real. EIGHT other suites had adopted it and this one had not — and about 130 still
+// carry a copy of their own, so adopting it here is one file catching up, not the
+// last holdout being closed. (An earlier draft of this paragraph said "fourteen",
+// which was wrong, and wrong in the flattering direction: it made the shared module
+// sound like the norm. Counted: `git grep -l lib/strip-comments -- '*scripts/*.js'`.)
+// Nothing pointed the gap out, because a stripper that eats too much makes a
+// "must not appear" assertion PASS.
+//
+// A post-merge audit then walked straight through it: the exact defect these guards
+// exist to catch — a cumulative-travel `pointermove` listener calling
+// `releaseFromGuest` in `CobrowseHost.jsx` — placed between `const A = '/*';` and
+// `const B = '*\/';` and this suite reported 282 passed, 0 failed. The regex saw a
+// comment open in the first string and close in the second and deleted the defect
+// before any assertion read it. Every "must not appear" rule below runs on stripped
+// source, so that one line was a skeleton key to all of them.
+//
+// The shared module is a left-to-right state machine that knows a string from a
+// comment from a regex literal, which is the only way to answer the question. Same
+// exploit against it now: 279 passed, 3 failed.
+const { stripComments } = require('./lib/strip-comments.js');
+const strip = (s) => stripComments(s).replace(/\{\s*\}/g, '{}');
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log('PASS', m); } else { fail++; console.log('FAIL', m); } };
 
@@ -121,9 +145,95 @@ ok(/if \(r\.control !== 'granted'\) \{ send\(ws, \{ t: 'error', code: 'no_contro
 ok(/INPUT_KINDS\.has\(m\.k\)/.test(hubSrc) && /MAX_INPUT_BYTES/.test(hubSrc) && /INPUT_RATE_PER_SEC/.test(hubSrc), 'input events are allowlisted by kind, size-capped and rate-limited');
 ok(/const out = \{ t: 'input', k: m\.k/.test(hubSrc) && !/send\(r\.guest, data\)/.test(hubSrc), 'the hub re-serialises a sanitised input shape — never the viewer\'s bytes verbatim');
 ok(/r\.control = String\(row\.control_status/.test(hubSrc), 'a room re-created after a restart takes control state from the register, not from memory');
+// ⛔ NOTHING MAY REFUSE A BATCH — and this asserts the RULE, not a number. The db suite
+// pushes a real 0.6 MB snapshot through a real socket, and its own comment claimed that
+// was "comfortably over any cap somebody would think to write". It is not: the most
+// obvious cap to write is the one hub.js's OWN header names ("a full snapshot of a huge
+// page is ~1 MB"), and a 1 MB cap passed pure 232/0 AND db 130/0 — as did a cap keyed on
+// EVENT COUNT rather than bytes, which a busy page crosses routinely (pre-merge audit,
+// 2026-09-02). A fixture can only ever be bigger than the last cap somebody imagined.
+//
+// The invariant hub.js states is unconditional relay, so that is what is checked: between
+// deciding the message is one of the three relayable kinds and handing it to
+// `broadcastViewers`, there is NO `return` — no size cap, no event-count cap, no content
+// check, under any name. An rrweb stream is stateful; one dropped batch desynchronises
+// the mirror for the session.
+{
+  // ⛔ THE WHOLE RELAY CHAIN, NOT A TEXT WINDOW ENDING AT THE CALL. Version one began at
+  // the type check and a cap three lines above it walked in. Version two began at the
+  // function, and the audit walked it three more ways: a cap inside `broadcastViewers`
+  // ONE LINE below the relay call, a cap inside `send`, and — inside the window — a cap
+  // whose trailing `//` comment quoted an allow-list entry, because `strip()` removes
+  // whole-line comments but not trailing ones. All three reproduced the outage at 252/0.
+  //
+  // So: every function the batch passes through on its way out, scanned with trailing
+  // comments removed, and each deliberate exit anchored to the start of its statement
+  // rather than matched anywhere in the line.
+  // ⛔ A WORD-BOUNDARY LOOKUP, AND A NAME MUST BE UNIQUE. `indexOf('function send')` is a
+  // PREFIX match: adding an ordinary helper called `sendAll` ABOVE `send` made this scan
+  // read the wrong function body and silently gave up a third of its coverage — not an
+  // adversarial mutation, just a refactor (pre-merge audit, 2026-09-03).
+  const fn = (name) => {
+    const re = new RegExp(`\\bfunction ${name}\\s*\\(`, 'g');
+    const hits = [...hubSrc.matchAll(re)];
+    ok(hits.length === 1, `hub.js declares exactly one ${name}(), so this scan reads the right body (found ${hits.length})`);
+    if (hits.length !== 1) return '';
+    const at = hits[0].index;
+    const next = hubSrc.indexOf('\nfunction ', at + 1);
+    return hubSrc.slice(at, next > 0 ? next : hubSrc.length);
+  };
+  const RELAY_CHAIN = ['send', 'broadcastViewers', 'onGuestMessage'];
+  // ⛔ EXACT STATEMENTS, NOT PREFIXES. A `startsWith` allow-list excuses everything else on
+  // the line, and the audit walked it by appending a cap to a permitted statement. Each
+  // entry below is a WHOLE statement; a new refusal cannot wear one as a disguise, and a
+  // deliberate one is added here by hand, which is the point.
+  const ALLOWED = new Set([
+    "if (len > MAX_MESSAGE_BYTES) { closeWs(ws, 1009, 'message too large'); return; }",
+    "if (r.bytesWindow > BUDGET_BYTES) { closeWs(ws, 1008, 'too much data'); return; }",
+    'if (isBinary) return;',
+    'try { const m = JSON.parse(text); t = m && m.t; } catch (_) { return; }',
+    "if (t === 'ping') { send(ws, { t: 'pong' }); return; }",
+    "if (t !== 'rrweb' && t !== 'route' && t !== 'notice') return;",
+    'if (!ws || ws.readyState !== 1) return false;',
+    "try { ws.send(typeof obj === 'string' ? obj : JSON.stringify(obj)); return true; } catch (_) { return false; }",
+  ]);
+  const strays = [];
+  for (const name of RELAY_CHAIN) {
+    for (const raw of fn(name).split('\n')) {
+      const line = raw.replace(/\/\/.*$/, '').trim();        // a trailing comment cannot excuse anything
+      // A THROW REFUSES A BATCH JUST AS WELL AS A RETURN, and the first version of this
+      // only looked for `return`.
+      if (!/\breturn\b|\bthrow\b/.test(line)) continue;
+      if (ALLOWED.has(line)) continue;
+      strays.push(`${name}: ${line}`);
+    }
+  }
+  ok(strays.length === 0,
+    `nothing refuses a batch anywhere on its way out — not in onGuestMessage, not in broadcastViewers, not in send (found: ${JSON.stringify(strays)})`);
+  // ⛔ AND THE RELAY IS AN UNCONDITIONAL STATEMENT. A refusal need not `return` or `throw`:
+  // wrapping the call (`if (text.length <= 200000) broadcastViewers(r, text);`) drops the
+  // batch just as dead. The call must stand alone on its line.
+  const relayLines = fn('onGuestMessage').split('\n').map((l) => l.replace(/\/\/.*$/, '').trim())
+    .filter((l) => l.includes('broadcastViewers('));
+  ok(JSON.stringify(relayLines) === JSON.stringify(['broadcastViewers(r, text);']),
+    `the relay is one unconditional statement, never wrapped in a condition (found ${JSON.stringify(relayLines)})`);
+  // ⛔ AND NOTHING SITS BETWEEN THE SOCKET AND THAT FUNCTION. A cap inside the message
+  // handler in `onConnection` is outside every body scanned above; pinning the handler to
+  // its bare delegation closes that without allow-listing all of onConnection's own doors.
+  ok(/ws\.on\('message', \(data, isBinary\) => onGuestMessage\(r, ws, data, isBinary\)\);/.test(hubSrc),
+    'the guest message handler is a bare delegation — no room for a refusal before onGuestMessage');
+}
 ok(/router\.use\(notAProxy\)/.test(routes), 'every co-browse door refuses a helper / guest-link token');
 ok(/router\.get\('\/mine', notInsideAView/.test(routes) && /router\.get\('\/:id', notInsideAView/.test(routes), '/mine and /:id refuse a view-as token too (no prompt, no banner inside a view)');
 ok(/control\/request'.*requireStaff, notInsideAView/.test(routes) && /control\/respond'.*notInsideAView/.test(routes) && /control\/release'/.test(routes), 'the three control doors exist, ask/answer refused inside a view-as');
+// ⛔ AND RELEASE DELIBERATELY CARRIES NO `notInsideAView`. The block comment on that
+// route says this omission "is tested as a decision"; before this line, nothing tested
+// it — the assertion above only proves the route EXISTS, so adding the middleware (the
+// exact well-meant fix the comment exists to prevent) passed both suites (pre-merge
+// audit, 2026-09-02). Releasing only ever takes something AWAY, and a staffer who steps
+// into a borrower view while control is out must not lose the ability to hand it back.
+ok(!/control\/release',\s*notInsideAView/.test(routes),
+  'the release door deliberately carries NO notInsideAView — a grant that cannot be ended is what this feature must never produce');
 const mask = read('app-v2/src/lib/cobrowseMask.js');
 ok(!/^import /m.test(mask), 'the mask module is pure (no imports) so the harness can load it');
 const nd = (mask.match(/export const NO_DRIVE_SELECTOR = \[([\s\S]*?)\]\.join/) || [])[1] || '';
@@ -138,8 +248,152 @@ ok(/releaseFromGuest\(state, 'guest_moved'\)/.test(libNow), 'a real click / key 
 // ("I ask for control and I'm not getting it" — owner, 2026-09-02). The test is the ACT.
 ok(/TAKEBACK_EVENTS = \['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart'\]/.test(libNow),
   'take-back listens for a deliberate act — pointerdown / mousedown / keydown / wheel / touchstart');
-ok(!/'mousemove', takeBack/.test(libNow) && !/MOVE_TAKEBACK_PX/.test(libNow),
-  'a passive mousemove is NOT a take-back — no listener, no travel threshold (the bug that made control unusable)');
+// ⛔ THE RULE IS THE CLASS OF SIGNAL, NOT ONE EVENT NAME — and TWO audits have now
+// walked through a guard written here. The first spelled it `mousemove`, and a
+// `pointermove` listener restored the owner's "control granted then instantly lost"
+// bug at 217/0. The second asserted the inventory of `addEventListener` calls, and a
+// single mutation walked all three of its exits at once: alias the release function
+// (`const giveBack = releaseFromGuest`), accumulate `clientX`/`clientY` instead of
+// `movementX`/`movementY`, and register via a HANDLER PROPERTY (`window['on' +
+// ['pointer','move'].join('')] = onDrift`) rather than `addEventListener`. 232/0.
+//
+// TWO HONEST CONCLUSIONS, both acted on.
+//
+// ONE — THE BROWSER DRIVE IS THE REAL GUARD, and it already catches this: it moves a
+// real mouse ~192px and asserts the grant survives. What made it toothless is that it
+// runs against the COMMITTED BUNDLE, so a change to `app-v2/src` that nobody rebuilt
+// was invisible to it. `check-bundle-fresh.js` closes that, and it is the reason the
+// assertions below are allowed to be a tripwire rather than a proof.
+//
+// TWO — A SOURCE CHECK CAN STILL NAME THE SHAPE, as long as it stops claiming to be
+// exhaustive. These cover registration by BOTH mechanisms, aliasing, and the two
+// coordinate families — deliberately without pinning the loop variable's NAME, because
+// the previous version failed on a pure rename and accused the author of a security
+// regression while doing it.
+// No motion EVENT, under any of its names, and no READ of a motion coordinate off an
+// event. `clientX: cx` as an object key is the driver BUILDING a synthetic click and is
+// fine; `e.clientX` is somebody measuring how far a hand moved, which is the defect.
+// ⛔ AND THEY RUN OVER EVERY FILE THAT CAN CALL THE RELEASE, NOT JUST THIS ONE. The
+// post-merge audit rebuilt the exact defect this guard exists to prevent — a 40px
+// cumulative-travel `pointermove` listener calling `releaseFromGuest` — inside
+// `CobrowseHost.jsx`, and the suite reported 273 passed, 0 failed. Every assertion
+// below read `libNow` alone, while `releaseFromGuest` is EXPORTED and already
+// imported and called from that component. A guard scoped to one file is a guard
+// against editing that file.
+//
+// The scope is DISCOVERED, never listed: every app-v2 source file that mentions the
+// identifier is in it, so a new importer is covered the day it is written rather
+// than the day somebody remembers to add it here. `cobrowse.js` itself is included
+// by the same rule (it defines and calls it), and the file-specific inventories
+// below still single it out by name.
+const RELEASE_SCOPE = (() => {
+  const out = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+      const rel = dir + '/' + e.name;
+      if (e.isDirectory()) { walk(rel); continue; }
+      if (!/\.(js|jsx)$/.test(e.name)) continue;
+      // SELECTED ON THE STRIPPED TEXT, not the raw. Selecting on raw put any file
+      // that merely NAMES the function in a comment into the scope with zero real
+      // mentions — where `mentions === calls` passes trivially at 0 === 0 and the
+      // listener inventory then hard-fails it for not being in the list. Writing a
+      // doc comment turned the suite red.
+      const src = strip(read(rel));
+      if (/\breleaseFromGuest\b/.test(src)) out.push({ rel, src });
+    }
+  };
+  walk('app-v2/src');
+  return out.sort((a, b) => a.rel.localeCompare(b.rel));
+})();
+ok(RELEASE_SCOPE.length >= 2 && RELEASE_SCOPE.some((f) => f.rel === 'app-v2/src/lib/cobrowse.js'),
+  `the take-back rules run over every file that can release control (${RELEASE_SCOPE.map((f) => f.rel).join(', ')})`);
+// No motion EVENT, under any of its names, and no READ of a motion coordinate off an
+// event. `clientX: cx` as an object key is the driver BUILDING a synthetic click and is
+// fine; `e.clientX` is somebody measuring how far a hand moved, which is the defect.
+for (const f of RELEASE_SCOPE) {
+  ok(!/(?:mouse|pointer|touch)move/.test(f.src), `no motion event name appears in ${f.rel}`);
+  ok(!/\.\s*(?:movement|client|page|screen|offset|layer)[XY]\b/.test(f.src),
+    `and no motion coordinate is ever READ off an event in ${f.rel}, in any of its six families — a travel threshold has to accumulate one`);
+  // NO HANDLER-PROPERTY REGISTRATION ON window OR document, and no computed assignment on
+  // either. `window.onpointermove = f` and `window['on' + x] = f` are listeners that an
+  // `addEventListener` inventory cannot see — the audit used exactly the second one. The
+  // socket's own `ws.onopen`/`onmessage`/`onclose`/`onerror` are not DOM listeners and are
+  // deliberately untouched by this.
+  ok(!/(?:window|document)\s*\.\s*on[a-z]+\s*=(?!=)/.test(f.src)
+    && !/(?:window|document)\s*\[[^\]]+\]\s*=(?!=)/.test(f.src),
+    `${f.rel} registers no handler PROPERTY on window or document — every DOM listener goes through addEventListener, where it can be counted`);
+  // AND `addEventListener` IS ONLY EVER CALLED DIRECTLY. `window.addEventListener.bind(window)`
+  // registers a listener that no count of `addEventListener(` can see — the audit's full
+  // rebuild used exactly that, together with the two aliases below.
+  ok(!/addEventListener\s*(?!\()/.test(f.src),
+    `addEventListener is never bound, aliased or passed as a value in ${f.rel} — only called, where it can be counted`);
+  // THE RELEASE FUNCTION APPEARS ONLY AS A CALL — never assigned, never passed, never
+  // stored on an object. `const giveBack = releaseFromGuest` was one exit the audit used;
+  // `{ rel: releaseFromGuest }` is the same trick with a colon, and enumerating spellings
+  // is how the last three versions of this guard were beaten. The COUNT is pinned per file
+  // below; here the rule is that no mention is ever anything but a call — except the
+  // `import { ... }` line, which names it without calling it and is how the other files
+  // legitimately reach it.
+  // THE IMPORT LINES ARE REMOVED BEFORE COUNTING, and the pattern for them is
+  // fussier than it looks. The first version was /^import[\s\S]*?from\s*'[^']*';$/gm:
+  //   · it knew only SINGLE quotes, so `from "…"` counted as a non-import mention and
+  //     accused the author of aliasing — a false failure;
+  //   · and `[\s\S]*?` crossed statements, so a bare `import './x.css';` (no `from`)
+  //     swallowed everything down to the next `from '…';` — taking a real
+  //     `const giveBack = releaseFromGuest;` with it. A false PASS, on the exact
+  //     defect this rule exists to catch.
+  // `[^;\n]*?` cannot cross a semicolon OR A NEWLINE, and `['"]` admits both quotes.
+  // The semicolon alone was not enough: an import written without one (ASI style)
+  // still let `[^;]*?` run into the next statement and swallow a real
+  // `const giveBack = releaseFromGuest`, which is the same false PASS one rewrite
+  // later. An import statement is one line here in every case that matters, and a
+  // multi-line one is handled by matching the specifier block explicitly.
+  const IMPORT_LINE = /\bimport\b[^;\n]*?\bfrom\s*['"][^'"]*['"]\s*;?/g;
+  const IMPORT_BLOCK = /\bimport\b\s*\{[^}]*\}\s*from\s*['"][^'"]*['"]\s*;?/g;
+  const mentions = (f.src.replace(IMPORT_BLOCK, '').replace(IMPORT_LINE, '').match(/\breleaseFromGuest\b/g) || []).length;
+  const calls = (f.src.match(/\breleaseFromGuest\(/g) || []).length;
+  ok(mentions === calls, `releaseFromGuest is only ever CALLED in ${f.rel} (${mentions} non-import mentions, ${calls} calls)`);
+}
+// EVERY LISTENER IN THE SCOPE IS NAMED. The inventory is what makes "no motion event"
+// hold under a rename: a literal the list does not know about fails here even when its
+// name is innocent, and a COMPUTED registration outside the one take-back loop has
+// nowhere to hide. Both are per-file, because each file has its own honest list.
+const KNOWN_LISTENERS = {
+  'app-v2/src/lib/cobrowse.js': ['change', 'click', 'hashchange', 'popstate'],
+  'app-v2/src/components/CobrowseHost.jsx': ['keydown', 'load', 'resize'],
+};
+// A KEY WHOSE FILE HAS LEFT THE SCOPE IS A STALE EXPECTATION, and stale expectations
+// are what this whole suite keeps catching. `POOL_EXCEPTIONS` in the pool guard has
+// the same check; this list did not.
+for (const k of Object.keys(KNOWN_LISTENERS)) {
+  ok(RELEASE_SCOPE.some((f) => f.rel === k),
+    `KNOWN_LISTENERS names ${k}, which still releases control — a key for a file that has moved on would silently expect nothing`);
+}
+for (const f of RELEASE_SCOPE) {
+  const literals = [...f.src.matchAll(/addEventListener\(\s*'([^']+)'/g)].map((m) => m[1]).sort();
+  const known = KNOWN_LISTENERS[f.rel];
+  // The message says what it EXPECTED and where to change it. The first version
+  // printed only what it found, so an author who legitimately added a listener was
+  // told they had broken a rule without being told which list to update.
+  ok(Array.isArray(known) && JSON.stringify(literals) === JSON.stringify(known),
+    `${f.rel} registers only the known named listeners (found ${JSON.stringify(literals)}, expected ${known ? JSON.stringify(known) : 'NOTHING — this file is not in KNOWN_LISTENERS at all'}`
+    + ' — if the new listener is genuinely not a take-back, add it to KNOWN_LISTENERS in this file)');
+  const computed = (f.src.match(/addEventListener\(\s*(?!')/g) || []).length;
+  if (f.rel === 'app-v2/src/lib/cobrowse.js') {
+    ok(computed === 1 && /for \(const \w+ of TAKEBACK_EVENTS\) window\.addEventListener\(\w+, takeBack, true\);/.test(f.src),
+      `the one non-literal registration is the take-back loop and nothing else (found ${computed})`);
+  } else {
+    ok(computed === 0, `${f.rel} registers no listener under a computed name (found ${computed})`);
+  }
+}
+// The lib's own count stays pinned to a NUMBER — the definition plus the one call inside
+// `takeBack`. Two is a fact about this file, not about the scope.
+{
+  const all = (libNow.match(/\breleaseFromGuest\b/g) || []).length;
+  const called = (libNow.match(/\breleaseFromGuest\(/g) || []).length;
+  ok(all === called && called === 2,
+    `releaseFromGuest is only ever CALLED in the recorder, from exactly one place (${all} mentions, ${called} calls — expected 2 and 2)`);
+}
 ok(/TAKEBACK_GRACE_MS = 600/.test(libNow) && /TAKEBACK_WHEEL_GRACE_MS = 1800/.test(libNow)
   && /const grace = e\.type === 'wheel' \? TAKEBACK_WHEEL_GRACE_MS : TAKEBACK_GRACE_MS;/.test(libNow)
   && /Date\.now\(\) - armedAt < grace/.test(libNow),
@@ -155,7 +409,11 @@ ok(/mirror\.getId\(node\)/.test(viewerNow) && /t: 'input'/.test(viewerNow), 'the
 // Typing travels as KEYS and the guest's own browser edits the real value: the mirror is
 // masked, so a whole-value echo from the viewer sent `'' + key` on every press and nothing
 // ever accumulated (the e2e drive caught it — 6 input events, the box still empty).
-ok(!/k: 'input', id, value: next/.test(viewerNow) && /sendInput\(\{ k: 'key', id, fp: fpOf\(e\.target\), key: e\.key/.test(viewerNow), 'the viewer relays a keystroke as a key, never a value derived from the masked mirror');
+// RE-POINTED, NOT LOOSENED: the subject is that a keystroke travels as a KEY. The node the
+// fingerprint is taken from moved from `e.target` to `el` (they diverge when nothing is
+// focused, which refused every keystroke — see the id/fp guard below); the "never a value"
+// half is what this asserts and it is unchanged.
+ok(!/k: 'input', id, value: next/.test(viewerNow) && /sendInput\(\{ k: 'key', id, fp: fpOf\([\w.]+\), key: e\.key/.test(viewerNow), 'the viewer relays a keystroke as a key, never a value derived from the masked mirror');
 ok(/k: 'paste', id, fp: fpOf\(node\), value: text/.test(viewerNow), 'a paste travels as its own text, never appended to a mirror value');
 ok(/if \(notCancelled\) applyTextKey\(el, key, init\)/.test(libNow) && /function insertText\(el, text\)/.test(libNow) && /el\.setSelectionRange\(caret, caret\)/.test(libNow), "the guest inserts each relayed character at its REAL selection through the native setter");
 ok(/m\.k === 'paste'/.test(libNow) && /insertText\(el, String\(m\.value/.test(libNow), 'the guest inserts pasted text at the real selection');
@@ -226,7 +484,8 @@ ok(/stopRecorder\(state\);\n    state\.queue = \[\];/.test(libNow), 'a disconnec
 // by an ordinary resting hand (it accumulated and never reset), so the rule is now that a
 // passive move is not a take-back at all — strictly stronger, asserted with the take-back
 // listener list above.
-ok(!/mousemove/.test(libNow), 'taking control back is never an incidental trackpad brush — a passive move is not a take-back');
+ok(!/mousemove/.test(libNow) && !/pointermove/.test(libNow),
+  'taking control back is never an incidental trackpad brush — no motion event, under either name');
 // ── a drive that dies must SAY it died ──────────────────────────────────────────────────
 const driveSrc = read('scripts/render-cobrowse-e2e.js');
 // RE-POINTED, NOT LOOSENED: the subject is that the drive lands on the element it means,
@@ -271,12 +530,36 @@ ok(/e\.target\.closest\('\[data-cobrowse-ui\]'\)\) return;/.test(libNow) && /dat
 // instrumented exactly that: a relayed click meant for a search box pressed the guest's own
 // co-browse "Stop" button and ENDED the session — recorded against the watched person, who
 // did nothing. So the viewer sends what it MEANT to act on and the guest refuses a mismatch.
-ok(/function fingerprint\(el\)/.test(libNow) && /if \(typeof fp === 'string' && fp && fp !== fingerprint\(el\)\) return null;/.test(libNow),
+// RE-POINTED, NOT LOOSENED: the subject is that the guest REFUSES a mismatch. The
+// definition moved into `lib/cobrowseFingerprint.js` so the viewer cannot drift from it
+// (that drift is what refused every input — see the fingerprint block above); the refusal
+// itself is unchanged and is what this asserts.
+ok(/const fingerprint = fingerprintOf;/.test(libNow) && /if \(typeof fp === 'string' && fp && fp !== fingerprint\(el\)\) return null;/.test(libNow),
   'the guest refuses an input whose target is not the element the viewer meant');
 ok(/drivable\(m\.id, m\.fp\)/.test(libNow) && !/drivable\(m\.id\)[^,]/.test(libNow),
   'every addressed input is resolved WITH that check — no call site skips it');
-ok(/const fpOf = \(node\) =>/.test(viewerNow) && (viewerNow.match(/fp: fpOf\(/g) || []).length >= 5,
-  'the viewer fingerprints every addressed input it sends (click, key, change, scroll, paste)');
+ok(/const fpOf = fingerprintOf;/.test(viewerNow) && (viewerNow.match(/fp: fpOf\(/g) || []).length >= 5,
+  'the viewer fingerprints every addressed input it sends (click, key, change, scroll, paste), through the shared definition');
+// ⛔ AND THE ID AND THE FINGERPRINT NAME THE SAME NODE. Counting `fp: fpOf(` call sites
+// cannot see the defect this replaces: the key sender took `id` from `el` and `fp` from
+// `e.target`, and those diverge whenever nothing is focused — so `id` named the intended
+// box, `fp` named BODY, and the guest refused EVERY keystroke (pre-merge audit,
+// 2026-09-03). A description of a different element than the one you addressed is not a
+// safety check, it is a refusal generator.
+{
+  // Resolve one level of `const x = y;` aliasing, so `const t = e.target` counts as the
+  // same node as `e.target` — an alias is not a divergence.
+  const alias = {};
+  for (const m of viewerNow.matchAll(/const (\w+) = ([\w.]+);/g)) alias[m[1]] = m[2];
+  const norm = (v) => alias[v] || v;
+  // Never span past another `idOf(`, or one sender's id pairs with the next one's fp.
+  const pairs = [...viewerNow.matchAll(/idOf\(([\w.]+)\)(?:(?!idOf\()[\s\S]){0,400}?fp: fpOf\(([\w.]+)\)/g)]
+    .map((m) => [m[1], m[2]]);
+  ok(pairs.length >= 4, `the id/fp pairing is where this suite expects it (found ${pairs.length} senders)`);
+  const mismatched = pairs.filter(([a, b]) => norm(a) !== norm(b));
+  ok(mismatched.length === 0,
+    `every addressed input describes the node it addresses — id and fp from one node (mismatched: ${JSON.stringify(mismatched)})`);
+}
 ok(/if \(typeof m\.fp === 'string'\) out\.fp = m\.fp\.slice\(0, 120\);/.test(hubSrc),
   'the hub relays the fingerprint as an opaque capped string and never interprets it');
 // The fingerprint is content-free by construction: a tag, an input type and the first class.
@@ -358,15 +641,179 @@ const viewSrc2 = strip(viewNow);
 // The BUFFER's size moved to a named constant (see the latency block below); this
 // assertion is about WHOSE CLOCK the baseline comes from, which is the property that
 // blanks the mirror when it is wrong — so it is re-pointed, never loosened.
-ok(/const ts = Number\(ev && ev\.timestamp\);/.test(viewSrc2) && /rp\.startLive\(ts - LIVE_BUFFER_MS\);/.test(viewSrc2)
-  && !/rp\.startLive\(Date\.now\(\)/.test(viewSrc2),
-  'the viewer starts live from the FIRST EVENT\'s own timestamp, never from the viewer\'s clock');
+// ⛔ THE GUARD USED TO PIN THE LITERAL CALL, AND THE POST-MERGE AUDIT WALKED PAST IT.
+// It asserted `const ts = Number(ev && ev.timestamp);` and `rp.startLive(ts - LIVE_BUFFER_MS)`
+// were present and `rp.startLive(Date.now(` was absent. The audit added ONE line just before
+// the call — `if (ev) ev.timestamp = Date.now();` — restoring the whole blank-mirror defect
+// with this suite reporting 217 passed / 0 failed. Every pinned string was still there. The
+// arithmetic was still right. It was right arithmetic on the WRONG CLOCK.
+//
+// So the property is now held in two places that a restamp cannot slip between:
+//   1. the arithmetic moved to `lib/cobrowseLive.js` and is CALLED below with real numbers,
+//      including a check that its answer does not move when the local clock does;
+//   2. this file may not write to a received event at all — which is what the audit's
+//      mutation did, and what any relative of it would have to do.
+ok(/startLiveOnce\(rp, liveState, ev, LIVE_BUFFER_MS\)/.test(viewSrc2) && !/startLive\(/.test(viewSrc2.replace(/startLiveOnce\(/g, '')),
+  'the screen hands the WHOLE start decision to cobrowseLive — it never calls startLive itself');
+// NOTHING IN THIS SCREEN MAY REWRITE A RECEIVED EVENT. `ev` is the name every loop over the
+// socket's payload binds, so an assignment to any property of it is the audit's mutation or
+// a sibling of it. There is no legitimate reason for the viewer to edit the guest's bytes.
+{
+  // A TRIPWIRE, NOT THE GUARD — and labelled as one, because the pre-merge audit walked
+  // straight past its first version with `Object.assign(ev, {timestamp: Date.now()})`.
+  // It catches the plainest restamp and nothing more; `startLiveOnce` and the browser
+  // drive are what actually hold the property. It also reads the whole file, so a
+  // comment containing `ev.x =` would trip it — hence the stripped source.
+  const writes = [...viewSrc2.matchAll(/\bev\s*\.\s*(\w+)\s*=(?!=)/g)].map((m) => m[1]);
+  const assigns = /Object\.assign\(\s*ev\b/.test(viewSrc2) || /\bm\.events\s*=(?!=)/.test(viewSrc2);
+  ok(writes.length === 0 && !assigns,
+    `tripwire: the plainest restamps of a received event are absent (writes: ${JSON.stringify(writes)}, bulk: ${assigns})`);
+}
 // A BAD TIMESTAMP MUST DEFER, NOT POISON THE BASELINE. `Number(null) - 200` is -200, which
 // is TRUTHY, so the obvious `|| Date.now() - 600` fallback never runs and rrweb schedules
 // every event ~55 years out — a permanently blank mirror, from one null event, on a hub that
-// now relays the guest's bytes untouched (pre-merge audit, 2026-09-02).
-ok(/if \(!Number\.isFinite\(ts\) \|\| ts <= 0\) return;/.test(viewSrc2) && !/\|\| Date\.now\(\) - 600\)/.test(viewSrc2),
-  'an unusable first timestamp defers to the next event instead of poisoning the live baseline');
+// now relays the guest's bytes untouched (pre-merge audit, 2026-09-02). Asserted by CALLING
+// the function below; this pins only that the caller honours its "wait for the next one".
+ok(!/\|\| Date\.now\(\) - 600\)/.test(viewSrc2),
+  'the old truthiness-trap fallback is gone from the screen (the behaviour is asserted by calling the function below)');
+// AND THE EVENT REACHES `startFrom` AS ITSELF, not as something built from it.
+// `startFrom({ ...ev, timestamp: Date.now() })` moves the number without touching a
+// single pinned string or tripping the write tripwire above — the whole blank mirror,
+// at 251/0 (pre-merge audit, 2026-09-02). Also a tripwire, not a proof: the drive is.
+{
+  const calls = [...viewSrc2.matchAll(/startFrom\(([^)]*)\)/g)].map((m) => m[1].trim());
+  const built = calls.filter((a) => a !== 'ev');
+  ok(built.length === 0,
+    `tripwire: startFrom is only ever handed the received event itself, never one built from it (found: ${JSON.stringify(built)})`);
+}
+
+// ⛔ THE GUEST'S OWN CO-BROWSE CHROME IS HIDDEN IN THE MIRROR, and this is a product
+// assertion, not a tidiness one. The guest's banner is `position:fixed; top:0;
+// z-index:19999`, and the page below it is pushed down by `--cobrowse-bar`, which
+// `CobrowseHost` sets from the banner's height MEASURED ON THE GUEST. That measurement
+// replays as a value while the banner itself re-renders at the mirror's width with the
+// mirror's fonts — so it wraps to a different number of lines and overhangs its own
+// reserved space. Measured on both documents at the same instant (2026-09-03):
+//   guest  — point 637,88 hits INPUT.app-search-in
+//   mirror — point 636,88 hits BUTTON.btn small, inside DIV[0,0,1276x100 fixed z=19999]
+// So a controller clicking the top of the page they can SEE pressed the guest's Take back
+// / Stop buttons, which carry `data-cobrowse-nodrive` and are correctly refused — and the
+// click did nothing at all. That is the owner's report in its third form: control granted,
+// the take-back no longer stealing it, and the clicks still landing on nothing.
+ok(/insertStyleRules: \['\[data-cobrowse-ui\]\{display:none !important\}'\]/.test(viewSrc2),
+  "the mirror hides the guest's own co-browse banner — it overhangs its reserved space and its buttons cover the page");
+// AND THE MARK IS STILL WHAT THE BANNER CARRIES. The rule above is worth nothing if the
+// banner stops being `data-cobrowse-ui`, which is also what the take-back listener uses to
+// tell the banner apart from the page.
+ok(/data-cobrowse-ui="banner"/.test(strip(read('app-v2/src/components/CobrowseHost.jsx'))),
+  'the guest banner still carries the mark that rule and the take-back listener both name');
+
+// ---- ONE fingerprint, and the rrweb decoration that broke it --------------------------------
+// The viewer sends `fp` with every addressed input and the guest refuses a mismatch. That
+// check is worth exactly as much as the two sides agreeing on the string — and for weeks
+// they did not: the same six lines were written out twice, and the VIEWER reads the element
+// off rrweb's REPLAYED document, which marks hovered elements with a class literally named
+// `:hover`. So the viewer sent `BODY||:hover`, the guest computed `BODY||`, and every
+// relayed click and keystroke was silently refused. It was filed in CLAUDE.md as a flaky
+// test with a guessed cause; it was the product, and it is the owner's report a second time
+// ("when I ask for control, even if they approve it, I'm not getting it").
+{
+  const fpSrc = read('app-v2/src/lib/cobrowseFingerprint.js').replace(/^export \{[^}]*\};?\s*$/m, '');
+  const F = new Function(`${fpSrc}\nreturn { fingerprintOf, realClasses };`)();
+  const el = (tag, cls, type) => ({
+    nodeType: 1, tagName: tag, className: cls === undefined ? '' : cls,
+    getAttribute: (a) => (a === 'type' ? (type || '') : null),
+  });
+  const eqf = (got, want, m) => ok(got === want, `${m} (got ${JSON.stringify(got)}, want ${JSON.stringify(want)})`);
+  // THE DEFECT, as a value: the two readings of the same element must agree.
+  eqf(F.fingerprintOf(el('BODY', ':hover')), F.fingerprintOf(el('BODY', '')),
+    "the replayer's :hover decoration does not change the fingerprint — this is what refused every input");
+  eqf(F.fingerprintOf(el('INPUT', ':hover search-box', 'text')), F.fingerprintOf(el('INPUT', 'search-box', 'text')),
+    'nor does it when the element has real classes too');
+  eqf(F.fingerprintOf(el('INPUT', 'search-box', 'text')), 'INPUT|text|search-box', 'the fingerprint is tag|type|first real class');
+  eqf(F.fingerprintOf(el('BODY', '')), 'BODY||', 'an unclassed element still fingerprints');
+  // A real class is never dropped just because a decoration sits in front of it.
+  ok(JSON.stringify(F.realClasses({ className: ':hover a b' })) === JSON.stringify(['a', 'b']),
+    'only the decorations are dropped, never a class the page declared');
+  ok(JSON.stringify(F.realClasses({ className: { baseVal: 'icon' } })) === JSON.stringify(['icon']),
+    "an SVG element's SVGAnimatedString is read, not stringified into nonsense");
+  eqf(F.fingerprintOf(null), '', 'a missing node answers empty, so the guest refuses rather than guesses');
+  eqf(F.fingerprintOf({ nodeType: 3, parentElement: el('DIV', 'row') }), 'DIV||row', 'a text node fingerprints its parent element');
+  // ⛔ AND BOTH SIDES USE IT. A second copy is how this happened; a source check is the
+  // right shape for "there is only one definition", because that IS a fact about the source.
+  const libFp = strip(read('app-v2/src/lib/cobrowse.js'));
+  const viewFp = strip(read('app-v2/src/screens/StaffCobrowse.jsx'));
+  for (const [name, src] of [['the guest recorder', libFp], ['the viewer screen', viewFp]]) {
+    ok(/from '\.{1,2}\/(?:lib\/)?cobrowseFingerprint\.js'/.test(src), `${name} imports the one fingerprint definition`);
+    ok(!/split\(\/\\s\+\/\)\.filter\(Boolean\)\[0\]/.test(src), `${name} does not carry its own copy of it`);
+  }
+}
+
+// ---- the baseline arithmetic, called with real numbers -------------------------------------
+{
+  const liveSrc = read('app-v2/src/lib/cobrowseLive.js').replace(/^export \{[^}]*\};?\s*$/m, '');
+  const L = new Function(`${liveSrc}\nreturn { liveBaseline, startLiveOnce };`)();
+  const GUEST_TS = 1767225600000;   // a real epoch millisecond stamped on the guest's machine
+  const eqv = (got, want, m) => ok(got === want, `${m} (got ${JSON.stringify(got)}, want ${JSON.stringify(want)})`);
+  eqv(L.liveBaseline({ timestamp: GUEST_TS }, 40), GUEST_TS - 40,
+    'the baseline is the guest event\'s own timestamp, set back by the buffer');
+  // THE PROPERTY, STATED DIRECTLY: the answer is a function of the EVENT, not of now.
+  // A baseline seeded from the viewer's clock would be a number near Date.now(); this one
+  // is nowhere near it, and does not move when the local clock does.
+  ok(Math.abs(L.liveBaseline({ timestamp: GUEST_TS }, 40) - Date.now()) > 60000,
+    'the baseline is nowhere near the VIEWER\'s clock — it is the guest\'s number, not ours');
+  const first = L.liveBaseline({ timestamp: GUEST_TS }, 40);
+  const spin = Date.now(); while (Date.now() - spin < 15) { /* let the local clock move on */ }
+  eqv(L.liveBaseline({ timestamp: GUEST_TS }, 40), first,
+    'the same event gives the same baseline however much the local clock has moved');
+  // THE TRUTHINESS TRAP, as values rather than as a regex.
+  eqv(L.liveBaseline({ timestamp: null }, 40), null, 'a null timestamp defers instead of yielding -40');
+  eqv(L.liveBaseline({ timestamp: 0 }, 40), null, 'a zero timestamp defers');
+  eqv(L.liveBaseline({ timestamp: 'nonsense' }, 40), null, 'an unparseable timestamp defers');
+  eqv(L.liveBaseline(null, 40), null, 'a missing event defers');
+  eqv(L.liveBaseline(undefined, 40), null, 'an undefined event defers');
+  eqv(L.liveBaseline({ timestamp: -1 }, 40), null, 'a negative timestamp defers');
+  // A BROKEN BUFFER MUST NEVER PRODUCE NaN — NaN as a baseline blanks the mirror as
+  // thoroughly as the wrong clock does, and silently.
+  eqv(L.liveBaseline({ timestamp: GUEST_TS }, undefined), GUEST_TS, 'a missing buffer shifts nothing, and never yields NaN');
+  eqv(L.liveBaseline({ timestamp: GUEST_TS }, -5), GUEST_TS, 'a negative buffer shifts nothing');
+
+  // ---- the WHOLE start decision, driven with a fake replayer ------------------------
+  // This is the assertion the two escaped mutations could not have survived: whatever
+  // the caller does before or after, the number this hands to `startLive` is a function
+  // of the EVENT. A viewer 45 seconds out of step is the case that blanked the mirror.
+  const mkRp = () => { const seen = []; return { seen, startLive: (b) => seen.push(b) }; };
+  {
+    const rp = mkRp(); const st = { started: false };
+    const got = L.startLiveOnce(rp, st, { timestamp: GUEST_TS }, 40);
+    eqv(got, GUEST_TS - 40, 'startLiveOnce returns the guest-derived baseline');
+    eqv(rp.seen.length, 1, 'and hands it to startLive exactly once');
+    eqv(rp.seen[0], GUEST_TS - 40, 'the number the replayer receives is the guest\'s, set back by the buffer');
+    ok(Math.abs(rp.seen[0] - Date.now()) > 60000,
+      'and it is nowhere near the VIEWER\'s clock — a 45s-skewed viewer is exactly what blanked the mirror');
+  }
+  {
+    const rp = mkRp(); const st = { started: false };
+    L.startLiveOnce(rp, st, { timestamp: GUEST_TS }, 40);
+    L.startLiveOnce(rp, st, { timestamp: GUEST_TS + 5000 }, 40);
+    L.startLiveOnce(rp, st, { timestamp: GUEST_TS + 9000 }, 40);
+    eqv(rp.seen.length, 1, 'ONLY ONCE is owned by the function, not by a flag the caller has to keep');
+  }
+  {
+    const rp = mkRp(); const st = { started: false };
+    eqv(L.startLiveOnce(rp, st, { timestamp: null }, 40), null, 'an unusable event defers');
+    eqv(rp.seen.length, 0, 'and the replayer is not started on it');
+    eqv(st.started, false, 'so a later good event can still start it');
+    eqv(L.startLiveOnce(rp, st, { timestamp: GUEST_TS }, 40), GUEST_TS - 40, 'and the next good event does');
+    eqv(rp.seen.length, 1, 'started, once, on the first event it could trust');
+  }
+  {
+    const rp = mkRp();
+    eqv(L.startLiveOnce(null, { started: false }, { timestamp: GUEST_TS }, 40), null, 'no replayer, no start');
+    eqv(L.startLiveOnce(rp, null, { timestamp: GUEST_TS }, 40), null, 'no state, no start');
+    eqv(rp.seen.length, 0, 'and nothing was started along the way');
+  }
+}
 // A REFUSED EVENT IS NEVER SILENT. An rrweb mutation against ids no snapshot established
 // throws, and swallowing it leaves an empty stage for ever with nothing said.
 // TWO INDEPENDENT CALL SITES, asserted independently — the first cut's second conjunct was
@@ -441,7 +888,7 @@ ok(/ONLY PLACE A SECRET IS KEPT OUT OF THE STREAM/.test(mask), 'the mask module 
   // justified the last cut cannot both happen quietly in one commit.
   ok(/533 ms floor/.test(guestLib) && /533 ms floor/.test(viewerSrc),
     'both constants still record the measured latency they were cut from (documentation)');
-  ok(/rp\.startLive\(ts - LIVE_BUFFER_MS\)/.test(viewerSrc), 'the live baseline uses that named buffer, not a literal');
+  ok(/startLiveOnce\(rp, liveState, ev, LIVE_BUFFER_MS\)/.test(viewerSrc), 'the live baseline uses that named buffer, not a literal');
   // The faster flush DOUBLES the batch rate, so the hub's bookkeeping write must not
   // double with it — the two are kept in inverse step.
   {

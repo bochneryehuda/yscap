@@ -56,6 +56,7 @@
  */
 
 const round3 = (n) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n) * 1000) / 1000);
+const pricePoints = require('./price-points');
 
 /**
  * A loan term, in BOTH units, from whichever one the vendor stated.
@@ -209,7 +210,7 @@ function optionsFromLoanNex(board, opts = {}) {
           // LoanNEX quotes PRICE; Lender Price quotes POINTS. `100 − price` is
           // the identity between them, and the flag says it was derived so a
           // reader never mistakes it for a number the vendor sent.
-          adjustedPoints: price == null ? null : round3(100 - price),
+          adjustedPoints: pricePoints.pointsFromPrice(price),
           pointsDerivedFromPrice: price != null,
         },
         terms: loanNexTerms(p, r, opts),
@@ -357,7 +358,7 @@ function attachEvidence(option, ev, opts = {}) {
       baseRate: numOrNull(ev.baseRate),
       priceFloor: numOrNull(ev.priceFloor),
       priceCeiling: numOrNull(ev.priceCeiling),
-      basePoints: ev.basePrice == null ? null : round3(100 - Number(ev.basePrice)),
+      basePoints: pricePoints.pointsFromPrice(ev.basePrice),
       adjustmentPoints: all.length ? round3(-totalGiven) : null,
       /* THE SHEET PUBLISHED A PRICE; THE POINTS ON THE LINE ABOVE ARE OURS. Saying so is the
          whole of it: both halves are filled here, so the panel could no longer tell the
@@ -481,6 +482,7 @@ function filterInterestOnly(options, want) {
  * board's transaction — the commonest way a per-row fetch silently explains the wrong quote.
  */
 const { EXPLAIN_LENDER_ID } = require('./investor-routing');
+const sealedPrice = require('./sealed-price');
 
 function explainHandle(r, p, price, opts = {}) {
   if (!r || !r.priceHashKey) return null;
@@ -498,6 +500,36 @@ function explainHandle(r, p, price, opts = {}) {
     priceHashKey: r.priceHashKey,
     rate: round3(r.rate),
     price,
+    /**
+     * ⛔ AND THE VENDOR'S OWN PRICE, UNROUNDED — SEALED, BECAUSE IN THE CLEAR IT IS THE HOLDBACK.
+     *
+     * The sheet matches a quote on the price we hand back, to the decimal. `price` above has been
+     * rounded to three for display and then had our holdback taken out of it, so it is OUR number,
+     * not the sheet's — handed back, the sheet finds nothing and answers with an empty body, and
+     * the panel says the rate sheet returned no breakdown. `loannex/parse` carries the measurement
+     * that proved it. So the vendor's own figure has to travel; `price` stays because the panel
+     * prints it and because it is what somebody quotes.
+     *
+     * ⛔ THE TWO OF THEM SIDE BY SIDE ARE THE HOLDBACK, ONE SUBTRACTION OFF THE WIRE — measured on
+     * a live board: `priceExact 101.0355 − price 100.786 = 0.2495`, on all 2,133 handles. That is
+     * the exact class `investor-routing.stripHoldbackTrail` exists to close for `vendorPrice`,
+     * `vendorPriceFloor` and `vendorPriceCeiling` (audit F5); this field was added afterwards and
+     * walked through the same door. It cannot simply be dropped (that re-opens the empty-breakdown
+     * bug) and it cannot be rebuilt from the rounded price (`sealed-price` carries that
+     * measurement) — so it travels SEALED, under a key only this server holds.
+     *
+     * ⛔ THE KEY IS `priceSeal`, NOT `priceExact`, AND THAT IS DELIBERATE: the sealed value is a
+     * STRING, and a reader expecting the number would otherwise be handed a blob that is truthy,
+     * not finite, and silently wrong. Nothing may read a price off this handle except the explain
+     * door, which opens it (`combined-pricer.quoteFromBody`).
+     *
+     * Absent on a Lender Price row — that vendor publishes its itemisation with the quote and is
+     * never asked a second question — and absent when the seal cannot be made, which degrades to
+     * the holdback add-back path rather than sending the number in the clear.
+     */
+    priceSeal: sealedPrice.seal(
+      r.priceExact != null ? r.priceExact : (r.vendorPrice != null ? r.vendorPrice : null),
+    ) || undefined,
     lockDays: r.lockDays,
     productId: p.productId,
     // BOTH ids, on the ordinary board too. The vendor addresses a quote by product AND investor
@@ -508,6 +540,7 @@ function explainHandle(r, p, price, opts = {}) {
     lenderId: p.lenderId != null ? p.lenderId : (p[EXPLAIN_LENDER_ID] != null ? p[EXPLAIN_LENDER_ID] : undefined),
   };
   if (h.lenderId === undefined) delete h.lenderId;
+  if (h.priceSeal === undefined) delete h.priceSeal;
   // Omitted rather than sent as null: a null would read as "asked and there was none",
   // and the route falls back to the request body only when the key is genuinely absent.
   if (opts.transactionId != null) h.transactionId = opts.transactionId;
@@ -551,7 +584,7 @@ function programsFromLoanNex(board, opts = {}) {
           // LoanNEX quotes PRICE, Lender Price quotes POINTS; `100 − price` is
           // the identity, flagged as derived so a reader never mistakes it for
           // something the vendor sent.
-          adjustedPoints: price == null ? null : round3(100 - price),
+          adjustedPoints: pricePoints.pointsFromPrice(price),
           pointsDerivedFromPrice: price != null,
           basePoints: null, adjustmentPoints: null,
         },
@@ -657,7 +690,7 @@ function handlePatch(quote = {}) {
     priceBuild: {
       noteRate: numOrNull(q.rate),
       price: numOrNull(q.price),
-      adjustedPoints: q.price == null ? null : round3(100 - Number(q.price)),
+      adjustedPoints: pricePoints.pointsFromPrice(q.price),
     },
     terms: { dayLock: q.lockDays == null ? null : Number(q.lockDays) },
     explain: q.priceHashKey ? { ...q } : null,

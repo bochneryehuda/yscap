@@ -211,6 +211,18 @@ router.use('/dscr/investor-groups', require('./routes/pricer-groups'));
 // LT_COMBINED_PRICING switch is a kill switch, default ON.
 //   /api/lt/dscr/combined/{health,price,investors,loannex/price,loannex/login-check,loannex/disqualify/:id}
 router.use('/dscr/combined', require('./routes/combined-pricer').makeRouter());
+// THE GENERAL PRICING ENGINE'S INVESTOR SOURCES — the side-by-side list that lives in
+// the general engine's SETTINGS (owner-directed 2026-09-03: *"I want the side-by-side
+// list… in the settings of the regular pricing engine"*). Registered BEFORE the /dscr
+// mount so it wins the match, exactly like the two above.
+//
+// ⛔ ITS OWN MOUNT, NOT A SECOND MOUNT OF THE COMBINED ROUTER. The doors themselves are
+// ONE definition (`routes/investor-settings-routes.js`) that both engines attach, but
+// the combined router carries the `LT_COMBINED_PRICING` kill switch — mounting it here
+// would let switching that engine off take the GENERAL engine's settings down with it.
+// Super-admin only, answering 404, exactly as the combined copy always has.
+//   /api/lt/dscr/investor-sources/{investors,investor-links,custom-investors,margin-holdback}
+router.use('/dscr/investor-sources', require('./routes/pricer-sources').makeRouter());
 // The Pricing Engine's SAVED SCENARIOS (owner-directed 2026-08-31) — a person's
 // own saved sets of pricing INPUTS, re-runnable any time. Registered BEFORE the
 // /dscr mount for the same reason the investor groups are, and deliberately NOT
@@ -246,9 +258,17 @@ router.use('/ppe', require('./routes/ppe'));
 // keeps the whole of Long-Term behind that one door. A second call from server.js
 // would be a second seam — exactly what the separation gate refuses.
 //
-// OFF by default (`LT_SYNC_ENABLED`), and it says so in the log either way. With
-// the switch off nothing is scheduled, so requiring this module — which a test or
-// a script may do — starts no timers and reads nothing.
+// ON by default since 2026-08-23 (`LT_SYNC_ENABLED=0` turns it off), and it says so
+// in the log either way — this said "OFF by default … starts no timers and reads
+// nothing", which `sync/worker.js` has contradicted since that date and which the
+// children of `test-lt-pool-exit-db` that REACH THIS FILE disprove out loud with
+// their `[lt-sync] on` line. That is children 3 and 4; children 1 and 2 require
+// `longterm/db` and `longterm/settings/store` directly and never load the worker
+// at all (measured: 0 `lt-sync` lines each). An earlier draft of this sentence
+// said "every child" — the same over-quantification the commit that wrote it was
+// correcting one file away, caught by the pre-merge audit.
+// The timers it arms are `unref`'d, so requiring this module still lets a test or a
+// script exit; what it does NOT do is stay silent.
 require('./sync/worker').start();
 
 /* `warmth.ready` resolves on the first CLEAN company read. Exported so a caller

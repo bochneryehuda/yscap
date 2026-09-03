@@ -24,6 +24,8 @@
  * beside this one over a battery and fails the moment they disagree.
  */
 
+import { sendAs } from './tierRounding.js';
+
 const nn = (v) => typeof v === 'number' && Number.isFinite(v);
 
 /** Cents, so a sum of money behaves like the currency field it is standing in for. */
@@ -172,7 +174,13 @@ export function dscrFrom(input) {
   // (912) holding a settled amount, and the tenant's formula divides by that stored figure.
   const pitia = housingPayment({ pi, taxMonthly: tax, insuranceMonthly: insurance, hoaMonthly: hoa });
   if (pitia <= 0) return { pi, tax, insurance, hoa, pitia, dscr: null, missing: ['a payment above zero'], rateAssumed: false, ratePctUsed: null };
-  return { pi, tax, insurance, hoa, pitia, dscr: Math.round((rent / pitia) * 100) / 100, missing: [], rateAssumed, ratePctUsed };
+  /* ⛔ CUT DOWN, NEVER TO NEAREST (owner-directed 2026-08-30: "The DSCR should always be
+     rounded down … so we should never see better"). This was `Math.round`, while every
+     search sent to a rate sheet cuts the same figure DOWN — so a loan computing 1.2451 was
+     SHOWN as 1.25 and PRICED at 1.24, and the officer read a band the loan had not earned
+     off the very screen that decides whether to send it. Through the shared rule, by NAME,
+     so it cannot be got backwards here. */
+  return { pi, tax, insurance, hoa, pitia, dscr: sendAs('dscr', rent / pitia, 2), missing: [], rateAssumed, ratePctUsed };
 }
 
 /* ── DOES THIS FILE STILL QUALIFY FOR THE PRICE IT WAS QUOTED? ────────────────

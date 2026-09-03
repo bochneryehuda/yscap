@@ -58,6 +58,7 @@ Render and the combined engine reuses them as they are.
 | `NEX_TOKEN_KEY` | — | A stop-gap only. If the sign-in is ever unavailable you can paste a one-time ticket out of a live LoanNEX browser session instead. It is short-lived and single-use, so it is not a way to set this up permanently. |
 | `NEX_DIAG_TOKEN` | — | A secret word that lets us check the two-program pipeline from the server without signing in. Leave it out and that check is switched off entirely. |
 | `NEX_TIMEOUT_MS` | `30000` | How long to wait for LoanNEX before giving up (30 seconds). |
+| `LT_PRICE_SEAL_KEY` | works it out from `JWT_SECRET` | A private word only the server knows. It locks away one number the rate sheet needs but nobody outside should ever see. **You do not have to set it** — with `JWT_SECRET` already set, the server works one out and everything keeps working across restarts. Set it only if you want that lock to be its own separate word. If you change it, anyone with a price list open on screen will have to search again to see a breakdown; nothing else is affected. |
 
 **Leave these alone** — they already point at the right place:
 `NEX_API_BASE`, `NEX_WEBAPP_ORIGIN`.

@@ -269,6 +269,27 @@ router.patch('/staff/:id', async (req, res) => {
     // S1-01: deactivation also force-closes any live SSE stream this staffer is
     // holding right now, so a fired staffer stops receiving live chat instantly
     // (the token bump only stops the NEXT connect; this ends the current one).
+    // ⛔ AND WHENEVER ANY OF THE THREE SCOPE FIELDS IS SUBMITTED, not only when they
+    // are turned off. This keys on the field being PRESENT, not on its value having
+    // moved, so an idempotent PATCH that echoes an unchanged role ends the session
+    // too — and because `endAllFor` matches viewer OR watched, toggling any single
+    // capability on somebody who is currently being watched ends theirs. That is the
+    // fail-safe direction and it is cheap; it is written down here rather than left
+    // for somebody to discover as a mystery disconnect.
+    // `token_version` is bumped only on deactivation (above), so demoting a
+    // super-admin, clearing a permissions override, or stripping visible officers
+    // moves what `sessions.mayWatch` would allow WITHOUT invalidating anything the
+    // co-browse hub can see — its `token_version` re-check still resolves the person, so
+    // an already-open viewer socket kept streaming that borrower's screen
+    // indefinitely (pre-merge audit, 2026-09-02). The hub's beat now ALSO re-asks
+    // `sessions.mayWatch` on borrower-targeted sessions, so this is a belt on braces
+    // rather than the only cut-off — but it is the INSTANT one, where the beat takes
+    // up to 25 seconds, and it is the only one that reaches a staff-targeted session.
+    // Best-effort, never blocks the response.
+    const scopeMoved = b.role !== undefined || b.permissions !== undefined || b.visibleOfficerIds !== undefined;
+    if (b.isActive === false || scopeMoved) {
+      try { require('../lib/cobrowse/sessions').endAllFor('staff', req.params.id, 'revoked').catch(() => {}); } catch (_) {}
+    }
     if (b.isActive === false) {
       try { require('../lib/events').disconnectUser('staff', req.params.id); } catch (_) {}
     }
@@ -292,6 +313,12 @@ router.post('/staff/:id/password', async (req, res) => {
         failed_attempts=0, locked_until=NULL, updated_at=now()
       WHERE id=$1 RETURNING email`, [req.params.id, await C.hashPassword(pw)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'staff not found' });
+  // Taking an account back ends any live co-browse it is party to. An admin resets
+  // a password because the account is compromised or the person has gone; either
+  // way a screen must not still be streaming to or from it. The token bump above
+  // stops the next connect, and the hub's heartbeat would close the socket within
+  // one beat anyway — this makes it immediate. Best-effort.
+  try { require('../lib/cobrowse/sessions').endAllFor('staff', req.params.id, 'revoked').catch(() => {}); } catch (_) {}
   res.json({ ok: true, email: r.rows[0].email });
 });
 

@@ -37,6 +37,7 @@
 const crypto = require('crypto');
 const { buildSearch, validateScenario, smoRegistryFromList, _internals: searchModelInternals } = require('./search-model');
 const tierRounding = require('../pricing/tier-rounding');
+const pricePoints = require('../pricing/price-points');
 // Durable L2 for the disqualify (ineligible) workflow (db/559) — best-effort; the in-memory Map
 // below stays the L1 cache, this survives a reboot / deploy / instance-move. Every call degrades to
 // in-memory-only on any DB error, so the pricing path never hard-depends on it.
@@ -1148,7 +1149,7 @@ function holdbackOf(leaf) {
 // points → adjusted points → price (100 − points); plus APR / APOR.
 function priceBuildOf(leaf) {
   const adjPts = firstNum(leaf, ['adjustedPoints']);
-  const price = adjPts != null ? Math.round((100 - adjPts) * 1000) / 1000 : firstNum(leaf, PRICE_KEYS);
+  const price = adjPts != null ? pricePoints.priceFromPoints(adjPts) : firstNum(leaf, PRICE_KEYS);
   return {
     parRate: firstNum(leaf, ['undiscountedRate', 'startedAdjustedRate']), // the un-bought-down rate
     baseRate: firstNum(leaf, ['baseRates', 'rawRates']),
@@ -1413,7 +1414,7 @@ function parseFallback(raw) {
     const points = firstNum(node, POINT_KEYS);
     const quoted = firstNum(node, PRICE_KEYS);
     let price = quoted;
-    if (price == null && points != null) price = Math.round((100 - points) * 1000) / 1000;
+    if (price == null && points != null) price = pricePoints.priceFromPoints(points);
     if (price == null && points == null) return;
     const lender = ctx.lender || firstStr(node, LENDER_KEYS) || 'Lender';
     const program = ctx.program || firstStr(node, PROGRAM_KEYS) || firstStr(node, ['mortgageType']) || 'DSCR';

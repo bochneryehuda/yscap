@@ -66,6 +66,7 @@ const whiteLabel = require('../lenderprice/investor-programs');
 const { classify } = require('./product-class');
 
 const SOURCES = ['lenderprice', 'loannex'];
+const sources = require('./sources');
 const round3 = (n) => (n == null ? null : Math.round(Number(n) * 1000) / 1000);
 
 /**
@@ -194,7 +195,8 @@ function elect(presentIn, cmp) {
   };
 }
 
-function label(src) { return src === 'loannex' ? 'LoanNEX' : 'Lender Price'; }
+// ONE definition — and an unknown source is NAMED, never called Lender Price.
+const label = sources.sourceLabel;
 
 /**
  * Merge two normalised boards.

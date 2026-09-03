@@ -43,6 +43,10 @@ const notify = require('../notify');
  */
 function conditionTouched(itemId) {
   if (!itemId) return Promise.resolve();
+  // A document on the title / insurance condition means the order's documents
+  // are in — whichever email chain, or hand, they arrived by (owner-directed
+  // 2026-09-03). Self-gating for any other condition; never fails the upload.
+  require('../order-tracking').documentsInFromCondition(itemId).catch(() => {});
   return enqueueChecklistStatusPush(itemId).catch(() => {});
 }
 

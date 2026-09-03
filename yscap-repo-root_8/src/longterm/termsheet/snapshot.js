@@ -199,10 +199,31 @@ const MANUAL_NAME_WARNING = 'Give the program a name a borrower can read — nev
  *
  * The registry-supplied white-label name always wins: a program that HAS a name
  * is never renamed by hand, or two sheets would call one program two things.
+ *
+ * ⛔ BUT `sel` IS THE CLIENT'S OWN POST, SO THE REGISTRY NAME IS CHECKED TOO.
+ * The field is called `consumerLabel` and is MEANT to hold the registry's white
+ * label — which is safe by construction, because `investor-roster.whiteLabelProblem`
+ * already runs the same scrub on BOTH the write door and the read, so a label
+ * naming an investor can neither be saved nor served. But nothing here can tell
+ * a white label the server resolved from a string a caller typed into that field,
+ * and the typed sibling one line below has been refused since the day it existed.
+ * Checking one and trusting the other is a door with a lock on one leaf.
+ *
+ * It is a NO-OP on every real registry label — measured against every white label
+ * the roster can hold — and bites only on a forged one. Rule 10 is a HARD rule and
+ * this is the last door before a name reaches a borrower's document.
  */
 function resolveProgramName(sel) {
   const registry = str(sel.consumerLabel, 60);
-  if (registry) return { ok: true, name: registry, namedBy: 'registry' };
+  if (registry) {
+    if (audience.mentionsInvestor(registry)) {
+      return refuse('program_name_names_investor',
+        `"${registry}" names the investor, so it cannot go on a borrower's document. ${MANUAL_NAME_WARNING} `
+        + 'A white-labelled program never carries its investor\'s name; if this one does, fix it on the investor '
+        + 'and price it again.');
+    }
+    return { ok: true, name: registry, namedBy: 'registry' };
+  }
 
   const typed = str(sel.manualProgramName, 60);
   if (!typed) {
@@ -481,6 +502,24 @@ const GATE_LABELS = {
    `DSCR_TIERS` and `dscrTier` are re-exported below, so every reader is
    unaffected. */
 const { DSCR_TIERS, dscrTier } = require('../pricing/dscr-tiers');
+/**
+ * ⛔ THE SAME CUT THE SCREEN AND THE SEARCH USE. The owner, 2026-08-30: *"the DSCR
+ * should always be rounded down… so we should never see better."*
+ *
+ * This comparison has TWO halves — the ratio the option was PRICED at (the browser's
+ * figure) and the ratio the chosen quote actually ACHIEVES (recomputed here) — and
+ * they must be judged by ONE rule or the comparison is between unlike things. When
+ * the browser calculator started cutting down (2026-09-03) and this went on rounding
+ * to nearest, a one-cent bias appeared between them: MEASURED over 140,007
+ * (searched, achieved) pairs, refusals went from 6.675% to 6.997% — 1,800 pairs newly
+ * refused and 1,350 no longer refused, purely from the two halves disagreeing about
+ * rounding. Judged by one rule it is 6.785%; the residual above the old figure is the
+ * owner's rule genuinely biting, which is what he asked for.
+ *
+ * `sendAs` is also the safer read for an already-2dp value: its float-slack guard is
+ * what stops a typed 1.15 (whose ×100 is 114.99999999999999) being cut to 1.14.
+ */
+const tierRounding = require('../pricing/tier-rounding');
 
 function ratioProblem(member) {
   const m = member && typeof member === 'object' ? member : {};
@@ -497,8 +536,8 @@ function ratioProblem(member) {
   const housing = pi + tax + ins + hoa;
   if (!(housing > 0) || !(rent > 0)) return null;
 
-  const actual = Math.round((rent / housing) * 100) / 100;
-  const pricedRounded = Math.round(priced * 100) / 100;
+  const actual = tierRounding.sendAs('dscr', rent / housing, 2);
+  const pricedRounded = tierRounding.sendAs('dscr', priced, 2);
   const actualTier = dscrTier(actual);
   const pricedTier = dscrTier(pricedRounded);
   // A ratio neither side can place is not a bracket change anybody can act on.

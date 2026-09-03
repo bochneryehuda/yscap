@@ -4,6 +4,8 @@ import { Replayer } from '@rrweb/replay';
 import '@rrweb/replay/dist/style.css';
 import { api, getToken } from '../lib/api.js';
 import { fitScaleFor, appliedScale, stageOverflow, stageHeight, nextZoom, canZoom } from '../lib/cobrowseZoom.js';
+import { startLiveOnce } from '../lib/cobrowseLive.js';
+import { fingerprintOf } from '../lib/cobrowseFingerprint.js';
 
 /* THE VIEWER (owner-directed 2026-09-02).
    Replays the watched person's masked page LIVE inside a sandboxed frame. This is
@@ -92,6 +94,32 @@ export default function StaffCobrowse() {
       root: hostRef.current, liveMode: true, mouseTail: false, UNSAFE_replayCanvas: false,
       // Nothing inside the mirror may run: the frame is sandboxed by rrweb; we add nothing.
       speed: 1, showWarning: false, showDebug: false,
+      // ⛔ THE GUEST'S OWN CO-BROWSE CHROME IS NOT PART OF THEIR PAGE, and leaving it in
+      // the mirror was breaking the one thing this feature exists for.
+      //
+      // The guest's banner is `position:fixed; top:0; z-index:19999`, and the page below
+      // it is pushed down by `--cobrowse-bar`, which `CobrowseHost` sets from the banner's
+      // MEASURED height ON THE GUEST. That measurement replays as a value; the banner
+      // itself re-renders at the MIRROR's width with the mirror's fonts, and wraps to a
+      // different number of lines. Measured, both documents at the same instant:
+      //
+      //   guest  — banner ~52px, `.app` at top 52, point 637,88 hits INPUT.app-search-in
+      //   mirror — banner 100px, `.app` at top 52, point 636,88 hits BUTTON.btn small
+      //            (inside DIV[0,0,1276x100 pos=fixed z=19999] — the banner, overhanging
+      //             its own reserved space by ~48px)
+      //
+      // So a controller clicking the top of the page they can SEE hits the guest's Take
+      // back / Stop buttons instead. Those carry `data-cobrowse-nodrive`, so the product
+      // correctly refuses — and the click does nothing at all. That is the owner's report
+      // ("when I ask for control, even if they approve it, I'm not getting it") in its
+      // third and final form: control IS granted, the take-back no longer steals it, and
+      // the clicks still land on nothing.
+      //
+      // The viewer has its own banner and its own controls, so the guest's are pure noise
+      // here as well as a hazard. Hiding them removes the overhang and the whole class of
+      // mis-targeted clicks with it. `[data-cobrowse-ui]` is the mark those elements
+      // already carry — the take-back listener uses it to tell the banner from the page.
+      insertStyleRules: ['[data-cobrowse-ui]{display:none !important}'],
     });
     replayerRef.current = rp;
     // THE LIVE BASELINE COMES OFF THE FIRST EVENT'S OWN CLOCK, NEVER OURS. rrweb
@@ -101,21 +129,23 @@ export default function StaffCobrowse() {
     // Date.now() means every event is "in the future" (nothing is ever drawn — a
     // blank stage with a moving cursor) or far in the past. Started lazily below,
     // 200ms behind the first event we actually receive, so the picture plays at once.
-    let started = false;
-    const startFrom = (ev) => {
-      if (started) return;
-      // A BAD TIMESTAMP MUST FALL BACK, NOT POISON THE BASELINE. The obvious
-      // `Number(ev && ev.timestamp) - 200 || Date.now() - 600` is wrong for a NULL or
-      // zero-timestamp event: Number(null) is 0, 0 - 200 is -200, and -200 is TRUTHY,
-      // so the fallback never runs and rrweb schedules every event ~55 years out —
-      // a permanently blank mirror, the very defect this exists to fix, and one the
-      // hub can no longer filter now that it relays the guest's bytes untouched.
-      // Judge the timestamp FIRST, then subtract. (Pre-merge audit, 2026-09-02.)
-      const ts = Number(ev && ev.timestamp);
-      if (!Number.isFinite(ts) || ts <= 0) return;   // wait for an event we can trust
-      started = true;
-      rp.startLive(ts - LIVE_BUFFER_MS);
-    };
+    // ⛔ THE WHOLE START DECISION LIVES IN `lib/cobrowseLive.js`, and nothing about
+    // it is reconstructable here. Two audits walked through the previous shapes:
+    // the arithmetic was pinned as a string and a restamp one line earlier
+    // (`ev.timestamp = Date.now()`) restored the blank mirror; then the arithmetic
+    // moved out but the caller still held the answer, and re-seeding
+    // `base = Date.now() - LIVE_BUFFER_MS` after the call restored it again. Both
+    // times every pinned string was still present and the suite read 232/0.
+    // Which event, what number, and "only once" are now ONE call, tested by calling
+    // it — but that is not the same as "nothing can slip between", and an earlier
+    // draft of this comment claimed it was. The caller still chooses the OBJECT it
+    // passes: `startFrom({ ...ev, timestamp: Date.now() })` restores the blank
+    // mirror with the whole pure suite at 251/0 (pre-merge audit, 2026-09-02).
+    // `test-cobrowse-pure` trips on a constructed argument, and the browser drive
+    // — made authoritative over this file by `check-bundle-fresh.js` — is what
+    // actually catches it, in the same way it catches the take-back drift.
+    const liveState = { started: false };
+    const startFrom = (ev) => startLiveOnce(rp, liveState, ev, LIVE_BUFFER_MS);
     rp.on('resize', fit);
     window.addEventListener('resize', fit);
 
@@ -233,14 +263,12 @@ export default function StaffCobrowse() {
     // fingerprint travels with every addressed input and the guest drops a mismatch.
     // It carries no content — the tag, the input type and the first class — so it is safe
     // on a masked mirror and cannot leak what a person typed.
-    const fpOf = (node) => {
-      try {
-        const el = node && node.nodeType === 1 ? node : (node && node.parentElement) || null;
-        if (!el) return '';
-        const cls = String(el.className || '').split(/\s+/).filter(Boolean)[0] || '';
-        return `${el.tagName || ''}|${el.getAttribute ? (el.getAttribute('type') || '') : ''}|${cls}`.slice(0, 120);
-      } catch { return ''; }
-    };
+    // ⛔ THE SAME FUNCTION THE GUEST USES, not a copy of it. This was a second copy,
+    // and it read the element off rrweb's REPLAYED document, which decorates hovered
+    // elements with a class literally named `:hover` — so the viewer sent
+    // `BODY||:hover`, the guest computed `BODY||`, and every relayed click and
+    // keystroke was refused. See `lib/cobrowseFingerprint.js`.
+    const fpOf = fingerprintOf;
     const sendInput = (obj) => { const ws = wsRef.current; if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'input', ...obj })); };
     const pageXY = (e) => ({ x: e.clientX + (doc.defaultView ? doc.defaultView.scrollX : 0), y: e.clientY + (doc.defaultView ? doc.defaultView.scrollY : 0) });
     iframe.style.pointerEvents = 'auto';
@@ -301,7 +329,13 @@ export default function StaffCobrowse() {
       // value or the caret — the guest's own browser inserts the character into
       // its real box (applyInput → applyTextKey). Deriving a whole value from the
       // mirror here sent `'' + key` on every press and nothing ever accumulated.
-      sendInput({ k: 'key', id, fp: fpOf(e.target), key: e.key, code: e.code, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
+      // ⛔ THE SAME NODE FOR BOTH. `id` comes from `el`; this used to take `fp` from
+      // `e.target`, and the two diverge whenever `live` is null — a click on a
+      // non-focusable element, a focus the mirror refused, a full snapshot resetting
+      // `activeElement` to `<body>`. Then `id` named the intended box while `fp` named
+      // BODY, so the guest refused EVERY keystroke. Every other sender here already
+      // passes one node to both (pre-merge audit, 2026-09-03).
+      sendInput({ k: 'key', id, fp: fpOf(el), key: e.key, code: e.code, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
     };
     const onChange = (e) => { if (!mine(e)) return; const id = idOf(e.target); if (id == null || id < 0) return; const t = e.target; if (t.type === 'checkbox' || t.type === 'radio') sendInput({ k: 'change', id, fp: fpOf(t), checked: !!t.checked }); else sendInput({ k: 'change', id, fp: fpOf(t), value: String(t.value || ''), idx: t.tagName === 'SELECT' ? t.selectedIndex : undefined }); };
     const onScroll = (e) => { if (!mine(e) || Date.now() - gestureAt > GESTURE_MS) return; const t = e.target; if (t === doc || t === doc.documentElement || t === doc.body) { const w = doc.defaultView; sendInput({ k: 'scroll', id: 1, sx: w ? w.scrollX : 0, sy: w ? w.scrollY : 0 }); return; } const id = idOf(t); if (id == null || id < 0) return; sendInput({ k: 'scroll', id, fp: fpOf(t), sx: t.scrollLeft, sy: t.scrollTop }); };

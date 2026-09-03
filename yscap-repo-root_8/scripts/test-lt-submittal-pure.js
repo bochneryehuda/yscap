@@ -72,6 +72,23 @@ console.log('\nB. WHAT "DONE" MEANS FOR THE LIST');
   ok(both.done === true && both.how === 'marked done', 'document AND Done — done');
   const unread = judge(cond(), null);
   ok(unread.done === false && /could not read/.test(unread.blockers[0]), 'a condition that could not be read is never done, and says so');
+
+  // THE TWO HALVES, SEPARATELY (owner-reported 2026-09-03: "It doesn't fill out
+  // what was done already"). The screen puts a clicked item DOWN the list and
+  // says what is still missing on it — so the verdict must carry the click and
+  // the missing things apart from each other, not only their conjunction.
+  ok(noDoc.marked === true && noDoc.missing.length === 1 && /Executed contract/.test(noDoc.missing[0]),
+    'Done pressed, document missing: marked=true, and `missing` names the document without the "Click Done" step', JSON.stringify(noDoc));
+  ok(docNoDone.marked === false && docNoDone.missing.length === 0,
+    'document there, Done not pressed: marked=false and NOTHING is missing — the only blocker is the click');
+  ok(both.marked === true && both.missing.length === 0, 'both: marked and nothing missing');
+  ok(judge(cond({ status: 'satisfied', reviewedAt: null }), null).marked === false
+    && judge(cond({ status: 'satisfied', reviewedAt: '2026-09-02T00:00:00Z' }), null).marked === true,
+    'a signed-off condition still reports whether the officer had clicked Done');
+  ok(unread.marked === false && unread.missing.length === 1 && /could not read/.test(unread.missing[0]),
+    'an unreadable condition is "missing" its own read — never silently clear');
+  ok(!noDoc.missing.includes(submittal.CLICK_DONE) && !docNoDone.missing.includes(submittal.CLICK_DONE),
+    '"Click Done on it." is never in `missing` — it is the officer\'s step, not a missing thing');
 }
 
 console.log('\nC. THE OFFICER STAGE OF THE GATE');
