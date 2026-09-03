@@ -53,6 +53,16 @@ const STALE_ACTIVE_SEC = 180;
 /** Consented but the guest never connected: the tab was closed on Accept. */
 const NEVER_STARTED_SEC = 300;
 
+/**
+ * ⛔ AN UNLISTED REASON DOES NOT THROW — IT SILENTLY BECOMES 'expired'. See `end`
+ * below. That reads in the register as "nothing happened, it timed out", which is
+ * the opposite of what a caller passing its own word meant to record: a session cut
+ * off because an account was revoked would be filed as one that simply ran out.
+ * Caught while wiring deactivation (2026-09-02) — `'deactivated'` was not in this
+ * list and the register said `expired`. So: add the word HERE first, or use the one
+ * that already means what you mean. `'revoked'` covers an account deactivated or
+ * its password reset out from under it.
+ */
 const END_REASONS = Object.freeze([
   'stopped_by_guest', 'stopped_by_viewer', 'guest_left', 'viewer_left',
   'expired', 'request_expired', 'superseded', 'signed_out', 'revoked',

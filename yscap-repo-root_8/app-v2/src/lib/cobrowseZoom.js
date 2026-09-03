@@ -4,7 +4,7 @@
 // WHY THIS IS ITS OWN MODULE. The readability defect (owner-reported 2026-09-02,
 // "extremely unclear") was that the stage scaled the guest's whole screen into its width
 // and was CAPPED there: a 1280-wide guest rendered at 0.736 and a 1920-wide guest at
-// about 0.50 — half-size body text with no way to lean in. The first fix lived inline in
+// 0.4906 — half-size body text with no way to lean in. The first fix lived inline in
 // the screen, and the pre-merge audit proved by mutation that a SOURCE guard cannot hold
 // it: restoring the cap (`const s = f`) or killing the ladder left every regex matching
 // and the suite green. Arithmetic that can be reverted invisibly belongs in a function
