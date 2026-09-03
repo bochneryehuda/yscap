@@ -444,15 +444,43 @@ async function main() {
     await hub._internals.heartbeat();
     const code8 = await closed8;
     assert(code8 === 4401, `a deactivated watcher's LIVE socket is closed on the next heartbeat (got ${code8})`);
-    assert(g8.ws.readyState === 1, 'and the watched person\'s own socket is untouched — only the revoked one goes');
+    // AND THE SESSION IS FILED AS WHAT IT WAS. Leaving the socket's own close
+    // handler to end it would record `guest_left` — "the watched person walked
+    // away" — for a session cut off by a revocation.
+    await new Promise((rr) => setTimeout(rr, 400));
+    const row8 = (await db.query(`SELECT status, end_reason FROM cobrowse_sessions WHERE id=$1`, [s8])).rows[0];
+    assert(row8.status === 'ended' && row8.end_reason === 'revoked',
+      `the register says the session was REVOKED, not that somebody wandered off (status=${row8.status} reason=${row8.end_reason})`);
+    assert(g8.ws.readyState !== 1 || await waitFor(g8.msgs, (m) => m.includes('"t":"ended"')),
+      'and the watched person is told, so they are not left showing a screen to nobody');
 
-    // The same for the WATCHED person's token being revoked out from under them.
-    await db.query(`UPDATE staff_users SET token_version=token_version+1 WHERE id=$1`, [watched.id]);
-    const closedG8 = new Promise((resolve) => { if (g8.ws.readyState === 3) return resolve(g8.ws._closeCode || null); g8.ws.once('close', (c) => resolve(c)); setTimeout(() => resolve(null), 4000); });
-    await hub._internals.heartbeat();
-    const codeG8 = await closedG8;
-    assert(codeG8 === 4401, `a revoked token closes the guest's live socket too (got ${codeG8})`);
-    await call('POST', `/api/cobrowse/${s8}/end`, null, saTok).catch(() => {});
+    // A DEGRADED DATABASE IS NOT A REVOCATION. `stillAllowed` answers UNKNOWN when
+    // a query throws, and the beat must leave the socket alone — the first cut ran a
+    // `SELECT 1` probe and guessed, so one degraded beat tore down every live
+    // co-browse in the process (pre-merge audit, 2026-09-02).
+    {
+      const watcher3 = await mk('super_admin', 'Watcher3');
+      const watched3 = await mk('loan_officer', 'Watched3');
+      const w3Tok = tok(watcher3), d3Tok = tok(watched3);
+      r = await call('POST', '/api/cobrowse/request', { kind: 'staff', id: watched3.id }, w3Tok);
+      const sA = r.data.session.id;
+      await call('POST', `/api/cobrowse/${sA}/respond`, { accept: true }, d3Tok);
+      const gA = await open(wsUrl(d3Tok, sA, 'guest'));
+      const vA = await open(wsUrl(w3Tok, sA, 'viewer'));
+      assert(await waitFor(vA.msgs, (m) => m.includes('"t":"hello"')), 'a third session is attached for the degraded-pool case');
+      const realQuery = db.query.bind(db);
+      db.query = async (text, params) => {
+        if (/FROM staff_users|FROM borrower_auth/.test(String(text))) throw new Error('canceling statement due to statement timeout');
+        return realQuery(text, params);
+      };
+      try {
+        await hub._internals.heartbeat();
+        await new Promise((rr) => setTimeout(rr, 250));
+        assert(vA.ws.readyState === 1 && gA.ws.readyState === 1,
+          'a beat that CANNOT TELL leaves both sockets open — a degraded pool is not a revocation');
+      } finally { db.query = realQuery; }
+      await call('POST', `/api/cobrowse/${sA}/end`, null, d3Tok).catch(() => {});
+    }
   }
 
   // AND DEACTIVATION DOES NOT WAIT FOR A HEARTBEAT. The re-check above bounds the

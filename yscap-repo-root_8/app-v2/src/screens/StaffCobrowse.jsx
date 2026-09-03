@@ -4,7 +4,7 @@ import { Replayer } from '@rrweb/replay';
 import '@rrweb/replay/dist/style.css';
 import { api, getToken } from '../lib/api.js';
 import { fitScaleFor, appliedScale, stageOverflow, stageHeight, nextZoom, canZoom } from '../lib/cobrowseZoom.js';
-import { liveBaseline } from '../lib/cobrowseLive.js';
+import { startLiveOnce } from '../lib/cobrowseLive.js';
 
 /* THE VIEWER (owner-directed 2026-09-02).
    Replays the watched person's masked page LIVE inside a sandboxed frame. This is
@@ -102,23 +102,17 @@ export default function StaffCobrowse() {
     // Date.now() means every event is "in the future" (nothing is ever drawn — a
     // blank stage with a moving cursor) or far in the past. Started lazily below,
     // 200ms behind the first event we actually receive, so the picture plays at once.
-    let started = false;
-    // ⛔ THE EVENT IS PASSED THROUGH UNTOUCHED. Nothing here may write to it — least
-    // of all its `timestamp`. The post-merge audit restored the whole blank-mirror
-    // defect with one line, `ev.timestamp = Date.now()`, placed just before this
-    // call: the arithmetic below was still correct and still ran, and it was
-    // correct arithmetic on the WRONG CLOCK. `test-cobrowse-pure` now asserts that
-    // no property of a received event is ever assigned in this file, and the
-    // arithmetic itself lives in `lib/cobrowseLive.js` where it is checked with
-    // real numbers — including a check that the answer does not move when the
-    // local clock does.
-    const startFrom = (ev) => {
-      if (started) return;
-      const base = liveBaseline(ev, LIVE_BUFFER_MS);
-      if (base === null) return;   // unusable timestamp — wait for an event we can trust
-      started = true;
-      rp.startLive(base);
-    };
+    // ⛔ THE WHOLE START DECISION LIVES IN `lib/cobrowseLive.js`, and nothing about
+    // it is reconstructable here. Two audits walked through the previous shapes:
+    // the arithmetic was pinned as a string and a restamp one line earlier
+    // (`ev.timestamp = Date.now()`) restored the blank mirror; then the arithmetic
+    // moved out but the caller still held the answer, and re-seeding
+    // `base = Date.now() - LIVE_BUFFER_MS` after the call restored it again. Both
+    // times every pinned string was still present and the suite read 232/0.
+    // There is nothing left here to slip between: which event, what number, and
+    // "only once" are all one call, tested by calling it.
+    const liveState = { started: false };
+    const startFrom = (ev) => startLiveOnce(rp, liveState, ev, LIVE_BUFFER_MS);
     rp.on('resize', fit);
     window.addEventListener('resize', fit);
 

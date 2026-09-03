@@ -40,4 +40,28 @@ function liveBaseline(ev, bufferMs) {
   return ts - (Number.isFinite(b) && b >= 0 ? b : 0);
 }
 
-export { liveBaseline };
+/**
+ * Start the replayer live from THIS event, once.
+ *
+ * ⛔ THE WHOLE DECISION LIVES HERE, and that is the point. When only the
+ * arithmetic lived in this file, the caller still held the two things that
+ * actually blank the mirror — WHICH event is used, and WHAT is done with the
+ * answer — and the pre-merge audit walked through the gap twice: once by
+ * re-seeding `base = Date.now() - LIVE_BUFFER_MS` after this function returned,
+ * and once by restamping the event with `Object.assign` before it was passed in.
+ * Both restored the owner's blank mirror with the whole suite green.
+ *
+ * `state` is the caller's own `{ started: false }` object, so "only once" is a
+ * property this function owns rather than a convention the caller must keep.
+ * Returns the baseline handed to `startLive`, or null when it deferred.
+ */
+function startLiveOnce(replayer, state, ev, bufferMs) {
+  if (!replayer || !state || state.started) return null;
+  const base = liveBaseline(ev, bufferMs);
+  if (base === null) return null;   // unusable timestamp — wait for an event we can trust
+  state.started = true;
+  replayer.startLive(base);
+  return base;
+}
+
+export { liveBaseline, startLiveOnce };

@@ -91,9 +91,12 @@ router.post('/:id/control/respond', notInsideAView, async (req, res) => {
  * a borrower view while control is out would lose the ability to hand it back, and a
  * grant that cannot be ended is precisely what this feature must never produce.
  *
- * `test-cobrowse-pure` asserts the OTHER two control doors carry the middleware and
+ * `test-cobrowse-pure` asserts the other two control doors carry the middleware AND
  * that this one does not, so the omission is tested as a decision rather than left to
- * look like an oversight — which is how the post-merge audit found it (2026-09-02).
+ * look like an oversight. The first version of this comment claimed that and it was
+ * not true — the only assertion checked the route existed, so adding the middleware
+ * (the exact well-meant fix this paragraph exists to prevent) passed both suites
+ * (pre-merge audit, 2026-09-02). The assertion is real now.
  */
 router.post('/:id/control/release', async (req, res) => {
   const out = await S.releaseControl({ actor: req.actor, sessionId: req.params.id, reason: req.body && req.body.reason, req });

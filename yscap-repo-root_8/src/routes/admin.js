@@ -269,14 +269,21 @@ router.patch('/staff/:id', async (req, res) => {
     // S1-01: deactivation also force-closes any live SSE stream this staffer is
     // holding right now, so a fired staffer stops receiving live chat instantly
     // (the token bump only stops the NEXT connect; this ends the current one).
+    // ⛔ AND WHENEVER WHAT THEY MAY SEE CHANGES, NOT ONLY WHEN THEY ARE TURNED OFF.
+    // `token_version` is bumped only on deactivation (above), so demoting a
+    // super-admin, clearing a permissions override, or stripping visible officers
+    // moves what `sessions.mayWatch` would allow WITHOUT invalidating anything the
+    // co-browse hub can see — its heartbeat re-check still resolves the person, so
+    // an already-open viewer socket kept streaming that borrower's screen
+    // indefinitely (pre-merge audit, 2026-09-02). The hub cannot re-derive a
+    // permission scope without learning the whole permission model, so the cut-off
+    // belongs here, at the change itself. Best-effort, never blocks the response.
+    const scopeMoved = b.role !== undefined || b.permissions !== undefined || b.visibleOfficerIds !== undefined;
+    if (b.isActive === false || scopeMoved) {
+      try { require('../lib/cobrowse/sessions').endAllFor('staff', req.params.id, 'revoked').catch(() => {}); } catch (_) {}
+    }
     if (b.isActive === false) {
       try { require('../lib/events').disconnectUser('staff', req.params.id); } catch (_) {}
-      // AND ANY LIVE CO-BROWSE (2026-09-02, post-merge audit). The token bump above
-      // stops the next connect and the hub's heartbeat re-check closes the socket
-      // within one beat, but a screen being watched right now should stop being
-      // watched the moment the person is deactivated — whether they are the one
-      // watching or the one being watched. Best-effort, never blocks the response.
-      try { require('../lib/cobrowse/sessions').endAllFor('staff', req.params.id, 'revoked').catch(() => {}); } catch (_) {}
     }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'could not update staff member' }); }

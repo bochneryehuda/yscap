@@ -142,8 +142,22 @@ async function main() {
     // that swallowed the whole child document, or for a child that never loaded.
     ok(raw.includes(CHILD_PLAIN),
       'while ordinary text beside it in the same child document does — the mask is selective, not a blanket');
-    ok(raw.includes(window_MASK_MARK),
-      'and the blocked text is replaced by the mask marker rather than simply dropped');
+    // NOT "the marker appears somewhere" — it appears all over a 237 KB stream from
+    // `maskAllInputs` on the term sheet's own inputs, so that assertion passed while
+    // NOTHING was blocked (pre-merge audit, 2026-09-02). Ask where the secret WAS.
+    const secretNode = await guest.evaluate(() => {
+      const ev = window.__ev.find((e) => e.type === 2);
+      const hunt = (n) => {
+        if (!n) return null;
+        if (n.attributes && n.attributes.id === 'cb-secret') return n;
+        for (const c of n.childNodes || []) { const f = hunt(c); if (f) return f; }
+        return null;
+      };
+      const found = hunt(ev && ev.data && ev.data.node);
+      return found ? JSON.stringify(found) : null;
+    });
+    ok(secretNode === null || (!secretNode.includes(CHILD_SECRET) && secretNode.includes(window_MASK_MARK)),
+      `the secret's own node is either absent from the snapshot or carries the mask marker in place of the value (${secretNode ? secretNode.slice(0, 120) : 'node blocked entirely'})`);
 
     const viewer = await ctx.newPage();
     await viewer.setContent(`<!doctype html><html><head><meta charset="utf-8"><style>${replayCss}</style></head><body><div id="stage"></div></body></html>`);

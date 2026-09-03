@@ -121,9 +121,38 @@ ok(/if \(r\.control !== 'granted'\) \{ send\(ws, \{ t: 'error', code: 'no_contro
 ok(/INPUT_KINDS\.has\(m\.k\)/.test(hubSrc) && /MAX_INPUT_BYTES/.test(hubSrc) && /INPUT_RATE_PER_SEC/.test(hubSrc), 'input events are allowlisted by kind, size-capped and rate-limited');
 ok(/const out = \{ t: 'input', k: m\.k/.test(hubSrc) && !/send\(r\.guest, data\)/.test(hubSrc), 'the hub re-serialises a sanitised input shape — never the viewer\'s bytes verbatim');
 ok(/r\.control = String\(row\.control_status/.test(hubSrc), 'a room re-created after a restart takes control state from the register, not from memory');
+// ⛔ NOTHING MAY REFUSE A BATCH — and this asserts the RULE, not a number. The db suite
+// pushes a real 0.6 MB snapshot through a real socket, and its own comment claimed that
+// was "comfortably over any cap somebody would think to write". It is not: the most
+// obvious cap to write is the one hub.js's OWN header names ("a full snapshot of a huge
+// page is ~1 MB"), and a 1 MB cap passed pure 232/0 AND db 130/0 — as did a cap keyed on
+// EVENT COUNT rather than bytes, which a busy page crosses routinely (pre-merge audit,
+// 2026-09-02). A fixture can only ever be bigger than the last cap somebody imagined.
+//
+// The invariant hub.js states is unconditional relay, so that is what is checked: between
+// deciding the message is one of the three relayable kinds and handing it to
+// `broadcastViewers`, there is NO `return` — no size cap, no event-count cap, no content
+// check, under any name. An rrweb stream is stateful; one dropped batch desynchronises
+// the mirror for the session.
+{
+  const from = hubSrc.indexOf("if (t !== 'rrweb'");
+  const to = hubSrc.indexOf('broadcastViewers(r, text);');
+  ok(from > 0 && to > from, 'the relay path is where this suite expects it in hub.js');
+  const between = hubSrc.slice(hubSrc.indexOf('\n', from), to);
+  ok(!/\breturn\b/.test(between),
+    `nothing returns between "is this relayable?" and the relay — no cap of any kind may drop a batch (found: ${JSON.stringify(between.trim().slice(0, 160))})`);
+}
 ok(/router\.use\(notAProxy\)/.test(routes), 'every co-browse door refuses a helper / guest-link token');
 ok(/router\.get\('\/mine', notInsideAView/.test(routes) && /router\.get\('\/:id', notInsideAView/.test(routes), '/mine and /:id refuse a view-as token too (no prompt, no banner inside a view)');
 ok(/control\/request'.*requireStaff, notInsideAView/.test(routes) && /control\/respond'.*notInsideAView/.test(routes) && /control\/release'/.test(routes), 'the three control doors exist, ask/answer refused inside a view-as');
+// ⛔ AND RELEASE DELIBERATELY CARRIES NO `notInsideAView`. The block comment on that
+// route says this omission "is tested as a decision"; before this line, nothing tested
+// it — the assertion above only proves the route EXISTS, so adding the middleware (the
+// exact well-meant fix the comment exists to prevent) passed both suites (pre-merge
+// audit, 2026-09-02). Releasing only ever takes something AWAY, and a staffer who steps
+// into a borrower view while control is out must not lose the ability to hand it back.
+ok(!/control\/release',\s*notInsideAView/.test(routes),
+  'the release door deliberately carries NO notInsideAView — a grant that cannot be ended is what this feature must never produce');
 const mask = read('app-v2/src/lib/cobrowseMask.js');
 ok(!/^import /m.test(mask), 'the mask module is pure (no imports) so the harness can load it');
 const nd = (mask.match(/export const NO_DRIVE_SELECTOR = \[([\s\S]*?)\]\.join/) || [])[1] || '';
@@ -138,38 +167,57 @@ ok(/releaseFromGuest\(state, 'guest_moved'\)/.test(libNow), 'a real click / key 
 // ("I ask for control and I'm not getting it" — owner, 2026-09-02). The test is the ACT.
 ok(/TAKEBACK_EVENTS = \['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart'\]/.test(libNow),
   'take-back listens for a deliberate act — pointerdown / mousedown / keydown / wheel / touchstart');
-// ⛔ THE RULE IS THE CLASS OF SIGNAL, NOT ONE EVENT NAME — learned from the post-merge
-// audit, 2026-09-02. The guard here used to be `!/'mousemove', takeBack/` plus
-// `!/MOVE_TAKEBACK_PX/`, and the audit rebuilt the owner's exact defect straight through
-// it: a `pointermove` listener with a 40px cumulative-travel release, with this suite
-// still reporting 217 passed / 0 failed. `pointermove` is the SAME SIGNAL from the same
-// trackpad and it is the API somebody reaches for today, so a guard spelled `mousemove`
-// guards a spelling.
+// ⛔ THE RULE IS THE CLASS OF SIGNAL, NOT ONE EVENT NAME — and TWO audits have now
+// walked through a guard written here. The first spelled it `mousemove`, and a
+// `pointermove` listener restored the owner's "control granted then instantly lost"
+// bug at 217/0. The second asserted the inventory of `addEventListener` calls, and a
+// single mutation walked all three of its exits at once: alias the release function
+// (`const giveBack = releaseFromGuest`), accumulate `clientX`/`clientY` instead of
+// `movementX`/`movementY`, and register via a HANDLER PROPERTY (`window['on' +
+// ['pointer','move'].join('')] = onDrift`) rather than `addEventListener`. 232/0.
 //
-// Three assertions now carry it, and the last two are the ones that bite whatever a
-// motion listener is CALLED.
-ok(!/(?:mouse|pointer|touch)move|movementX|movementY/.test(libNow),
-  'no pointer-motion signal appears anywhere in the recorder — not mousemove, pointermove, touchmove, or movementX/Y');
-// EXACTLY ONE PLACE GIVES CONTROL BACK BY ITSELF. A drift release is necessarily a second
-// one (the audit's mutation added exactly that), so this catches it under any event name
-// and any reason string. `releaseFromGuest` is also exported for the buttons, which call
-// it from their own modules — this counts the call sites INSIDE the recorder.
-// TWO occurrences and no more: the `export function releaseFromGuest(` definition, and the
-// ONE call inside `takeBack`. A third is a second way to give control back by itself,
-// which is what a drift release is — whatever event it listens to and whatever reason
-// string it passes.
+// TWO HONEST CONCLUSIONS, both acted on.
+//
+// ONE — THE BROWSER DRIVE IS THE REAL GUARD, and it already catches this: it moves a
+// real mouse ~192px and asserts the grant survives. What made it toothless is that it
+// runs against the COMMITTED BUNDLE, so a change to `app-v2/src` that nobody rebuilt
+// was invisible to it. `check-bundle-fresh.js` closes that, and it is the reason the
+// assertions below are allowed to be a tripwire rather than a proof.
+//
+// TWO — A SOURCE CHECK CAN STILL NAME THE SHAPE, as long as it stops claiming to be
+// exhaustive. These cover registration by BOTH mechanisms, aliasing, and the two
+// coordinate families — deliberately without pinning the loop variable's NAME, because
+// the previous version failed on a pure rename and accused the author of a security
+// regression while doing it.
+// No motion EVENT, under any of its names, and no READ of a motion coordinate off an
+// event. `clientX: cx` as an object key is the driver BUILDING a synthetic click and is
+// fine; `e.clientX` is somebody measuring how far a hand moved, which is the defect.
+ok(!/(?:mouse|pointer|touch)move/.test(libNow), 'no motion event name appears in the recorder');
+ok(!/\.\s*(?:movement|client)[XY]\b/.test(libNow),
+  'and no motion coordinate is ever READ off an event — a travel threshold has to accumulate one');
+// NO HANDLER-PROPERTY REGISTRATION ON window OR document, and no computed assignment on
+// either. `window.onpointermove = f` and `window['on' + x] = f` are listeners that an
+// `addEventListener` inventory cannot see — the audit used exactly the second one. The
+// socket's own `ws.onopen`/`onmessage`/`onclose`/`onerror` are not DOM listeners and are
+// deliberately untouched by this.
+ok(!/(?:window|document)\s*\.\s*on[a-z]+\s*=(?!=)/.test(libNow)
+  && !/(?:window|document)\s*\[[^\]]+\]\s*=(?!=)/.test(libNow),
+  'the recorder registers no handler PROPERTY on window or document — every DOM listener goes through addEventListener, where it can be counted');
+// THE RELEASE FUNCTION IS NEVER ALIASED, so counting its call sites means something.
+ok(!/=\s*releaseFromGuest\s*[;,)]/.test(libNow),
+  'releaseFromGuest is never aliased to another name — an alias is how a second release hides from a call count');
 ok((libNow.match(/releaseFromGuest\(/g) || []).length === 2,
-  `control is given back from exactly ONE place in the recorder — a drift release would be a second (found ${(libNow.match(/releaseFromGuest\(/g) || []).length} occurrences, expected 2: the definition and the one call)`);
-// THE COMPLETE INVENTORY OF LISTENERS THIS FILE REGISTERS. A new listener of any kind
-// fails here and has to be justified by whoever adds it, which is the point: a motion
-// listener is how the owner's "I ask for control and I'm not getting it" comes back, and
-// no must-not-appear regex can name an event that has not been invented yet. `t` is the
-// loop over TAKEBACK_EVENTS asserted above.
-const listenerArgs = [...libNow.matchAll(/addEventListener\(\s*([^,]+),/g)].map((m) => m[1].trim()).sort();
-ok(JSON.stringify(listenerArgs) === JSON.stringify(["'change'", "'click'", "'hashchange'", "'popstate'", 't']),
-  `the recorder registers ONLY the known listeners — no motion listener under any name (found ${JSON.stringify(listenerArgs)})`);
-ok((libNow.match(/removeEventListener\(/g) || []).length === (libNow.match(/addEventListener\(/g) || []).length,
-  'every listener it adds, it removes');
+  `control is given back from exactly ONE place in the recorder — the definition and one call (found ${(libNow.match(/releaseFromGuest\(/g) || []).length})`);
+// THE LITERAL EVENT NAMES THIS FILE REGISTERS, plus the single loop over the take-back
+// list. The loop variable may be renamed freely; a NEW listener may not appear.
+{
+  const literals = [...libNow.matchAll(/addEventListener\(\s*'([^']+)'/g)].map((m) => m[1]).sort();
+  ok(JSON.stringify(literals) === JSON.stringify(['change', 'click', 'hashchange', 'popstate']),
+    `the recorder registers only the known named listeners (found ${JSON.stringify(literals)})`);
+  const computed = (libNow.match(/addEventListener\(\s*(?!')/g) || []).length;
+  ok(computed === 1 && /for \(const \w+ of TAKEBACK_EVENTS\) window\.addEventListener\(\w+, takeBack, true\);/.test(libNow),
+    `the one non-literal registration is the take-back loop and nothing else (found ${computed})`);
+}
 ok(/TAKEBACK_GRACE_MS = 600/.test(libNow) && /TAKEBACK_WHEEL_GRACE_MS = 1800/.test(libNow)
   && /const grace = e\.type === 'wheel' \? TAKEBACK_WHEEL_GRACE_MS : TAKEBACK_GRACE_MS;/.test(libNow)
   && /Date\.now\(\) - armedAt < grace/.test(libNow),
@@ -401,29 +449,34 @@ const viewSrc2 = strip(viewNow);
 //      including a check that its answer does not move when the local clock does;
 //   2. this file may not write to a received event at all — which is what the audit's
 //      mutation did, and what any relative of it would have to do.
-ok(/liveBaseline\(ev, LIVE_BUFFER_MS\)/.test(viewSrc2) && /rp\.startLive\(base\);/.test(viewSrc2)
-  && !/rp\.startLive\(Date\.now\(\)/.test(viewSrc2),
-  'the viewer starts live from the FIRST EVENT\'s own timestamp, never from the viewer\'s clock');
+ok(/startLiveOnce\(rp, liveState, ev, LIVE_BUFFER_MS\)/.test(viewSrc2) && !/startLive\(/.test(viewSrc2.replace(/startLiveOnce\(/g, '')),
+  'the screen hands the WHOLE start decision to cobrowseLive — it never calls startLive itself');
 // NOTHING IN THIS SCREEN MAY REWRITE A RECEIVED EVENT. `ev` is the name every loop over the
 // socket's payload binds, so an assignment to any property of it is the audit's mutation or
 // a sibling of it. There is no legitimate reason for the viewer to edit the guest's bytes.
 {
-  const writes = [...viewSrc2.matchAll(/\bev\s*(?:&&\s*ev\s*)?\.\s*(\w+)\s*=(?!=)/g)].map((m) => m[1]);
-  ok(writes.length === 0,
-    `the viewer never rewrites a received event — a restamp is how the blank mirror comes back (found writes to: ${JSON.stringify(writes)})`);
+  // A TRIPWIRE, NOT THE GUARD — and labelled as one, because the pre-merge audit walked
+  // straight past its first version with `Object.assign(ev, {timestamp: Date.now()})`.
+  // It catches the plainest restamp and nothing more; `startLiveOnce` and the browser
+  // drive are what actually hold the property. It also reads the whole file, so a
+  // comment containing `ev.x =` would trip it — hence the stripped source.
+  const writes = [...viewSrc2.matchAll(/\bev\s*\.\s*(\w+)\s*=(?!=)/g)].map((m) => m[1]);
+  const assigns = /Object\.assign\(\s*ev\b/.test(viewSrc2) || /\bm\.events\s*=(?!=)/.test(viewSrc2);
+  ok(writes.length === 0 && !assigns,
+    `tripwire: the plainest restamps of a received event are absent (writes: ${JSON.stringify(writes)}, bulk: ${assigns})`);
 }
 // A BAD TIMESTAMP MUST DEFER, NOT POISON THE BASELINE. `Number(null) - 200` is -200, which
 // is TRUTHY, so the obvious `|| Date.now() - 600` fallback never runs and rrweb schedules
 // every event ~55 years out — a permanently blank mirror, from one null event, on a hub that
 // now relays the guest's bytes untouched (pre-merge audit, 2026-09-02). Asserted by CALLING
 // the function below; this pins only that the caller honours its "wait for the next one".
-ok(/if \(base === null\) return;/.test(viewSrc2) && !/\|\| Date\.now\(\) - 600\)/.test(viewSrc2),
-  'an unusable first timestamp defers to the next event instead of poisoning the live baseline');
+ok(!/\|\| Date\.now\(\) - 600\)/.test(viewSrc2),
+  'the old truthiness-trap fallback is gone from the screen (the behaviour is asserted by calling the function below)');
 
 // ---- the baseline arithmetic, called with real numbers -------------------------------------
 {
   const liveSrc = read('app-v2/src/lib/cobrowseLive.js').replace(/^export \{[^}]*\};?\s*$/m, '');
-  const L = new Function(`${liveSrc}\nreturn { liveBaseline };`)();
+  const L = new Function(`${liveSrc}\nreturn { liveBaseline, startLiveOnce };`)();
   const GUEST_TS = 1767225600000;   // a real epoch millisecond stamped on the guest's machine
   const eqv = (got, want, m) => ok(got === want, `${m} (got ${JSON.stringify(got)}, want ${JSON.stringify(want)})`);
   eqv(L.liveBaseline({ timestamp: GUEST_TS }, 40), GUEST_TS - 40,
@@ -448,6 +501,42 @@ ok(/if \(base === null\) return;/.test(viewSrc2) && !/\|\| Date\.now\(\) - 600\)
   // thoroughly as the wrong clock does, and silently.
   eqv(L.liveBaseline({ timestamp: GUEST_TS }, undefined), GUEST_TS, 'a missing buffer shifts nothing, and never yields NaN');
   eqv(L.liveBaseline({ timestamp: GUEST_TS }, -5), GUEST_TS, 'a negative buffer shifts nothing');
+
+  // ---- the WHOLE start decision, driven with a fake replayer ------------------------
+  // This is the assertion the two escaped mutations could not have survived: whatever
+  // the caller does before or after, the number this hands to `startLive` is a function
+  // of the EVENT. A viewer 45 seconds out of step is the case that blanked the mirror.
+  const mkRp = () => { const seen = []; return { seen, startLive: (b) => seen.push(b) }; };
+  {
+    const rp = mkRp(); const st = { started: false };
+    const got = L.startLiveOnce(rp, st, { timestamp: GUEST_TS }, 40);
+    eqv(got, GUEST_TS - 40, 'startLiveOnce returns the guest-derived baseline');
+    eqv(rp.seen.length, 1, 'and hands it to startLive exactly once');
+    eqv(rp.seen[0], GUEST_TS - 40, 'the number the replayer receives is the guest\'s, set back by the buffer');
+    ok(Math.abs(rp.seen[0] - Date.now()) > 60000,
+      'and it is nowhere near the VIEWER\'s clock — a 45s-skewed viewer is exactly what blanked the mirror');
+  }
+  {
+    const rp = mkRp(); const st = { started: false };
+    L.startLiveOnce(rp, st, { timestamp: GUEST_TS }, 40);
+    L.startLiveOnce(rp, st, { timestamp: GUEST_TS + 5000 }, 40);
+    L.startLiveOnce(rp, st, { timestamp: GUEST_TS + 9000 }, 40);
+    eqv(rp.seen.length, 1, 'ONLY ONCE is owned by the function, not by a flag the caller has to keep');
+  }
+  {
+    const rp = mkRp(); const st = { started: false };
+    eqv(L.startLiveOnce(rp, st, { timestamp: null }, 40), null, 'an unusable event defers');
+    eqv(rp.seen.length, 0, 'and the replayer is not started on it');
+    eqv(st.started, false, 'so a later good event can still start it');
+    eqv(L.startLiveOnce(rp, st, { timestamp: GUEST_TS }, 40), GUEST_TS - 40, 'and the next good event does');
+    eqv(rp.seen.length, 1, 'started, once, on the first event it could trust');
+  }
+  {
+    const rp = mkRp();
+    eqv(L.startLiveOnce(null, { started: false }, { timestamp: GUEST_TS }, 40), null, 'no replayer, no start');
+    eqv(L.startLiveOnce(rp, null, { timestamp: GUEST_TS }, 40), null, 'no state, no start');
+    eqv(rp.seen.length, 0, 'and nothing was started along the way');
+  }
 }
 // A REFUSED EVENT IS NEVER SILENT. An rrweb mutation against ids no snapshot established
 // throws, and swallowing it leaves an empty stage for ever with nothing said.
@@ -523,7 +612,7 @@ ok(/ONLY PLACE A SECRET IS KEPT OUT OF THE STREAM/.test(mask), 'the mask module 
   // justified the last cut cannot both happen quietly in one commit.
   ok(/533 ms floor/.test(guestLib) && /533 ms floor/.test(viewerSrc),
     'both constants still record the measured latency they were cut from (documentation)');
-  ok(/liveBaseline\(ev, LIVE_BUFFER_MS\)/.test(viewerSrc), 'the live baseline uses that named buffer, not a literal');
+  ok(/startLiveOnce\(rp, liveState, ev, LIVE_BUFFER_MS\)/.test(viewerSrc), 'the live baseline uses that named buffer, not a literal');
   // The faster flush DOUBLES the batch rate, so the hub's bookkeeping write must not
   // double with it — the two are kept in inverse step.
   {

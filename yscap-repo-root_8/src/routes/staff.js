@@ -12074,6 +12074,12 @@ router.post('/borrowers/:id/set-password', async (req, res) => {
              failed_attempts=0, locked_until=NULL,
              email_verified=true, email_verified_at=COALESCE(email_verified_at, now())
          WHERE borrower_id=$1`, [req.params.id, hash]);
+      // AND ANY LIVE CO-BROWSE OF THIS BORROWER ENDS WITH IT (2026-09-02). Taking a
+      // borrower's login over is the moment their screen must stop being shown: the
+      // token bump stops the next connect and the hub's heartbeat closes the socket
+      // within a beat, but "within a beat" is not what somebody resetting a password
+      // expects. Best-effort, never blocks.
+      try { require('../lib/cobrowse/sessions').endAllFor('borrower', req.params.id, 'revoked').catch(() => {}); } catch (_) {}
     } else {
       await db.query(
         `INSERT INTO borrower_auth (borrower_id,password_hash,token_version,email_verified,email_verified_at)

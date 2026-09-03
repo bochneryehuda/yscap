@@ -308,11 +308,20 @@ function armDriving(state) {
   // identical defect with a `pointermove` listener and every guard stayed green.
   // `pointermove` is the SAME SIGNAL from the same trackpad, and it is the
   // modern API somebody would reach for. So: no `mousemove`, no `pointermove`,
-  // no `touchmove`, no `movementX`/`movementY` accumulation, no distance or
-  // travel threshold, under any name. `test-cobrowse-pure` holds this by
-  // asserting the COMPLETE inventory of listeners this file registers and that
-  // `releaseFromGuest` has exactly one call site — so a new motion listener
-  // fails whatever it is called.
+  // no `touchmove`, no `movementX`/`movementY` or `clientX`/`clientY`
+  // accumulation, no distance or travel threshold — under any name, and by any
+  // registration mechanism: `addEventListener`, a handler property, a computed
+  // one, or an alias of `releaseFromGuest`.
+  //
+  // AND THE SOURCE CHECKS FOR THOSE SHAPES ARE A TRIPWIRE, NOT A PROOF. A second
+  // audit walked through the version that asserted the listener inventory, using
+  // all three of its exits in one mutation — an alias, `clientX` instead of
+  // `movementX`, and `window['on' + ['pointer','move'].join('')] = handler` —
+  // with the suite at 232/0 and the owner's bug live on every session. THE GUARD
+  // THAT ACTUALLY HOLDS THIS is `render-cobrowse-e2e.js`: it moves a real mouse
+  // across a real page and asserts the grant survives, and it catches every one
+  // of them. `check-bundle-fresh.js` is what gives it authority over THIS file,
+  // by refusing a committed bundle that has drifted behind its source.
   const armedAt = Date.now();
   const takeBack = (e) => {
     if (!e.isTrusted || live !== state || state.control !== 'granted') return;
