@@ -82,7 +82,7 @@ const RECEIPT_RE = /receipt|payment (was |has been )?(received|successful|proces
 // The same, for the BODY: a bare "receipt" there is as often forward-looking ("a receipt
 // will be emailed once payment is complete") as it is a receipt, so only the phrasings a
 // receipt actually uses count (re-audit 2026-09-03).
-const BODY_RECEIPT_RE = /your receipt|view (your |the )?receipt|receipt (for|of) (your |the |this )?payment|payment (was |has been )?(received|successful|processed|confirmed|completed)|received your payment|paid in full|thank you for (your |the )?payment|confirmation of (your |the )?payment|payment confirmation/i;
+const BODY_RECEIPT_RE = /your receipt|view (your |the )?receipt|receipt (for|of) (your |the |this )?payment|payment (was |has been )?(received|successful|processed|confirmed|completed)|(?<!\b(?:once|after|when|until|upon|as soon as) (?:we have |we've |we )?)(?:we have |we've |we )?received your payment|paid in full|thank you for (your |the )?payment|confirmation of (your |the )?payment|payment confirmation/i;
 // Wording that ASKS for a payment, as opposed to mentioning one. Decided FIRST, so a link
 // email that also mentions a receipt is still the link.
 const ASK_RE = /pay now|pay here|pay online|payment link|make (a |your |the )?payment|payment (is |will be )?(due|required|requested|needed|owed)|requires payment|balance due|amount due|due on receipt|to pay\b|pay for|please pay|complete (your |the )?payment|payment (page|portal|request)|submit (your |the )?payment|proceed (to|with) (the |your )?payment/i;

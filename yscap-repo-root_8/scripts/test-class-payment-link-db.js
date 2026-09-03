@@ -66,7 +66,7 @@ async function main() {
     const apps = [appId, app2].filter(Boolean);
     await db.query('DELETE FROM notifications WHERE application_id = ANY($1::uuid[])', [apps]);
     await db.query('DELETE FROM class_orders WHERE application_id = ANY($1::uuid[])', [apps]);
-    await db.query('DELETE FROM inbound_file_emails WHERE application_id = ANY($1::uuid[])', [apps]);
+    await db.query('DELETE FROM inbound_file_emails WHERE application_id = ANY($1::uuid[]) OR resend_email_id LIKE $2', [apps, '%-' + tag]);
     await db.query('DELETE FROM applications WHERE id = ANY($1::uuid[])', [apps]);
     await db.query('DELETE FROM borrowers WHERE id=$1', [borrowerId]);
     await db.query('DELETE FROM staff_users WHERE id = ANY($1::uuid[])', [[officer, processor, officer2].filter(Boolean)]);
