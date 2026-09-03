@@ -501,7 +501,11 @@ async function price(req, res) {
     const effectiveFull = effectiveOf(board.request); // requested-vs-effective transparency
     const out = {
       ok: true,
-      ...board.parsed,                       // the FULL parse, its programme list already routed
+      // The FULL parse, its programme list already routed. Its programCount/lenderCount
+      // describe the ROUTED board (recomputed in boardForScenario); rungCount and
+      // disqualifiedCount stay the Lender Price half only (no board-level consumer reads
+      // them on this door — the desk reads per-programme p.rungCount).
+      ...board.parsed,
       programs: board.programs,
       investorRoster: board.roster,          // the lens roster, for the routed board
       investorsUnmapped: board.unmapped,     // a lender quoting with no white-label name yet
