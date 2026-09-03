@@ -135,12 +135,30 @@ ok(/r\.control = String\(row\.control_status/.test(hubSrc), 'a room re-created a
 // check, under any name. An rrweb stream is stateful; one dropped batch desynchronises
 // the mirror for the session.
 {
-  const from = hubSrc.indexOf("if (t !== 'rrweb'");
+  // THE WINDOW STARTS AT THE FUNCTION'S OWN BOUNDARY, not at the type check. The
+  // first version began at `if (t !== 'rrweb'` — three lines above the relay — and a
+  // cap placed ABOVE that line walked it while reproducing the outage exactly
+  // (pre-merge audit, 2026-09-02). A positional window is only as wide as somebody
+  // remembered to make it, so this one covers everything from the message arriving
+  // to the relay, and every DELIBERATE early exit is named. A new `return` that is
+  // not on this list fails, wherever it is put.
+  const from = hubSrc.indexOf('function onGuestMessage');
   const to = hubSrc.indexOf('broadcastViewers(r, text);');
   ok(from > 0 && to > from, 'the relay path is where this suite expects it in hub.js');
-  const between = hubSrc.slice(hubSrc.indexOf('\n', from), to);
-  ok(!/\breturn\b/.test(between),
-    `nothing returns between "is this relayable?" and the relay — no cap of any kind may drop a batch (found: ${JSON.stringify(between.trim().slice(0, 160))})`);
+  const ALLOWED = [
+    'closeWs(ws, 1009,',        // one message over the hard cap: a connection-level refusal
+    'closeWs(ws, 1008,',        // the per-window byte budget: also connection-level
+    'if (isBinary) return;',    // Phase A speaks JSON text only
+    'catch (_) { return; }',    // unparseable JSON
+    "if (t === 'ping')",        // answered, not relayed
+    "if (t !== 'rrweb'",        // an unknown kind is dropped, never relayed
+  ];
+  const body = hubSrc.slice(from, to);
+  const strays = body.split('\n')
+    .filter((l) => /\breturn\b/.test(l) && !ALLOWED.some((a) => l.includes(a)))
+    .map((l) => l.trim());
+  ok(strays.length === 0,
+    `nothing new refuses a batch between arrival and the relay — no cap of any kind, wherever it is placed (found: ${JSON.stringify(strays)})`);
 }
 ok(/router\.use\(notAProxy\)/.test(routes), 'every co-browse door refuses a helper / guest-link token');
 ok(/router\.get\('\/mine', notInsideAView/.test(routes) && /router\.get\('\/:id', notInsideAView/.test(routes), '/mine and /:id refuse a view-as token too (no prompt, no banner inside a view)');
@@ -193,8 +211,8 @@ ok(/TAKEBACK_EVENTS = \['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchst
 // event. `clientX: cx` as an object key is the driver BUILDING a synthetic click and is
 // fine; `e.clientX` is somebody measuring how far a hand moved, which is the defect.
 ok(!/(?:mouse|pointer|touch)move/.test(libNow), 'no motion event name appears in the recorder');
-ok(!/\.\s*(?:movement|client)[XY]\b/.test(libNow),
-  'and no motion coordinate is ever READ off an event — a travel threshold has to accumulate one');
+ok(!/\.\s*(?:movement|client|page|screen|offset|layer)[XY]\b/.test(libNow),
+  'and no motion coordinate is ever READ off an event, in any of its six families — a travel threshold has to accumulate one');
 // NO HANDLER-PROPERTY REGISTRATION ON window OR document, and no computed assignment on
 // either. `window.onpointermove = f` and `window['on' + x] = f` are listeners that an
 // `addEventListener` inventory cannot see — the audit used exactly the second one. The
@@ -203,11 +221,23 @@ ok(!/\.\s*(?:movement|client)[XY]\b/.test(libNow),
 ok(!/(?:window|document)\s*\.\s*on[a-z]+\s*=(?!=)/.test(libNow)
   && !/(?:window|document)\s*\[[^\]]+\]\s*=(?!=)/.test(libNow),
   'the recorder registers no handler PROPERTY on window or document — every DOM listener goes through addEventListener, where it can be counted');
-// THE RELEASE FUNCTION IS NEVER ALIASED, so counting its call sites means something.
-ok(!/=\s*releaseFromGuest\s*[;,)]/.test(libNow),
-  'releaseFromGuest is never aliased to another name — an alias is how a second release hides from a call count');
-ok((libNow.match(/releaseFromGuest\(/g) || []).length === 2,
-  `control is given back from exactly ONE place in the recorder — the definition and one call (found ${(libNow.match(/releaseFromGuest\(/g) || []).length})`);
+// THE RELEASE FUNCTION APPEARS ONLY AS A CALL — never assigned, never passed, never
+// stored on an object. `const giveBack = releaseFromGuest` was one exit the audit used;
+// `{ rel: releaseFromGuest }` is the same trick with a colon, and enumerating spellings
+// is how the last three versions of this guard were beaten. So: every occurrence of the
+// identifier must be followed by `(`, and the count must be two — the definition and
+// the one call inside `takeBack`.
+{
+  const all = (libNow.match(/\breleaseFromGuest\b/g) || []).length;
+  const called = (libNow.match(/\breleaseFromGuest\(/g) || []).length;
+  ok(all === called && called === 2,
+    `releaseFromGuest is only ever CALLED, from exactly one place (${all} mentions, ${called} calls — expected 2 and 2)`);
+}
+// AND `addEventListener` IS ONLY EVER CALLED DIRECTLY. `window.addEventListener.bind(window)`
+// registers a listener that no count of `addEventListener(` can see — the audit's full
+// rebuild used exactly that, together with the two aliases above.
+ok(!/addEventListener\s*(?!\()/.test(libNow),
+  'addEventListener is never bound, aliased or passed as a value — only called, where it can be counted');
 // THE LITERAL EVENT NAMES THIS FILE REGISTERS, plus the single loop over the take-back
 // list. The loop variable may be renamed freely; a NEW listener may not appear.
 {
@@ -472,6 +502,16 @@ ok(/startLiveOnce\(rp, liveState, ev, LIVE_BUFFER_MS\)/.test(viewSrc2) && !/star
 // the function below; this pins only that the caller honours its "wait for the next one".
 ok(!/\|\| Date\.now\(\) - 600\)/.test(viewSrc2),
   'the old truthiness-trap fallback is gone from the screen (the behaviour is asserted by calling the function below)');
+// AND THE EVENT REACHES `startFrom` AS ITSELF, not as something built from it.
+// `startFrom({ ...ev, timestamp: Date.now() })` moves the number without touching a
+// single pinned string or tripping the write tripwire above — the whole blank mirror,
+// at 251/0 (pre-merge audit, 2026-09-02). Also a tripwire, not a proof: the drive is.
+{
+  const calls = [...viewSrc2.matchAll(/startFrom\(([^)]*)\)/g)].map((m) => m[1].trim());
+  const built = calls.filter((a) => a !== 'ev');
+  ok(built.length === 0,
+    `tripwire: startFrom is only ever handed the received event itself, never one built from it (found: ${JSON.stringify(built)})`);
+}
 
 // ---- the baseline arithmetic, called with real numbers -------------------------------------
 {

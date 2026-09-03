@@ -12462,6 +12462,19 @@ router.patch('/borrowers/:id', async (req, res) => {
         for (const a of coApps) enqueueClickupPush(a.id, ['co_borrower']).catch(() => {});
       } catch (_) { /* best-effort */ }
     }
+    // ⛔ REASSIGNING A BORROWER ENDS ANY LIVE CO-BROWSE OF THEM (2026-09-02).
+    // `sessions.mayWatch` gates a borrower target on `visibleBorrowerSql`, which
+    // reads `borrowers.primary_officer_id` — so moving a borrower to another officer
+    // is exactly a revocation of the old officer's right to watch them, and it
+    // touches nothing the co-browse hub's own re-check can see (no `token_version`,
+    // no staff row at all). Without this the officer the file was taken FROM keeps
+    // receiving that borrower's live screen indefinitely — the same failure that was
+    // closed for role and permissions, in the half that was missed (pre-merge audit).
+    // Ending it for both parties is the safe direction: the borrower's own screen is
+    // the thing being protected. Best-effort, never blocks the response.
+    if (b.primaryOfficerId !== undefined) {
+      try { require('../lib/cobrowse/sessions').endAllFor('borrower', req.params.id, 'revoked').catch(() => {}); } catch (_) {}
+    }
     await audit(req, 'update_borrower', 'borrower', req.params.id, {
       fields: sets.filter((s) => !s.startsWith('updated_at')).map((s) => s.split('=')[0]).concat(dobDay ? ['date_of_birth'] : []),
       ...(dobResult ? { dob: dobResult } : {}) });

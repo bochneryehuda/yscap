@@ -269,7 +269,13 @@ router.patch('/staff/:id', async (req, res) => {
     // S1-01: deactivation also force-closes any live SSE stream this staffer is
     // holding right now, so a fired staffer stops receiving live chat instantly
     // (the token bump only stops the NEXT connect; this ends the current one).
-    // ⛔ AND WHENEVER WHAT THEY MAY SEE CHANGES, NOT ONLY WHEN THEY ARE TURNED OFF.
+    // ⛔ AND WHENEVER ANY OF THE THREE SCOPE FIELDS IS SUBMITTED, not only when they
+    // are turned off. This keys on the field being PRESENT, not on its value having
+    // moved, so an idempotent PATCH that echoes an unchanged role ends the session
+    // too — and because `endAllFor` matches viewer OR watched, toggling any single
+    // capability on somebody who is currently being watched ends theirs. That is the
+    // fail-safe direction and it is cheap; it is written down here rather than left
+    // for somebody to discover as a mystery disconnect.
     // `token_version` is bumped only on deactivation (above), so demoting a
     // super-admin, clearing a permissions override, or stripping visible officers
     // moves what `sessions.mayWatch` would allow WITHOUT invalidating anything the

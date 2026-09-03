@@ -15,8 +15,9 @@ const PORTAL = 'web/v2/portal';
 const MANIFEST = `${PORTAL}/.bundle-manifest.json`;
 
 /**
- * Everything that can change what `vite build` emits: the source tree, the HTML
- * entry, the build config, and the dependency versions. NOT node_modules itself
+ * Everything that can change what `vite build` emits: the source tree, the static
+ * `public/` tree it copies verbatim, the HTML entry, the build config, and the
+ * dependency versions. NOT node_modules itself
  * — CI does not install app-v2's dependencies, and a check that needs them would
  * simply skip in the one place it matters.
  */
@@ -31,6 +32,11 @@ function inputs(root) {
     }
   };
   walk(path.join(root, APP, 'src'));
+  // `public/**` IS PART OF WHAT THE DRIVE SERVES. Vite copies it verbatim into the
+  // bundle, so `sw.js` — real caching behaviour — could change with the check still
+  // green (pre-merge audit, 2026-09-02).
+  const pub = path.join(root, APP, 'public');
+  if (fs.existsSync(pub)) walk(pub);
   for (const f of ['index.html', 'vite.config.js', 'package.json']) {
     const p = path.join(root, APP, f);
     if (fs.existsSync(p)) out.push(p);

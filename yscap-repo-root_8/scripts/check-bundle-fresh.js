@@ -23,16 +23,22 @@
  * =============================================================================
  *
  * The obvious check is "run `vite build` and diff". It cannot run where it
- * matters: CI installs dependencies for the repo root, NOT for `app-v2/`, which
- * is why every `render-*` harness SKIPs there. A check that skips in CI is not a
- * check.
+ * matters: CI installs dependencies for the repo root only, and `vite` lives in
+ * `app-v2/node_modules`, which is never installed there. (The `render-*` harnesses
+ * skip in CI for a different reason — Playwright is not a dependency of this repo
+ * at all; an earlier draft of this paragraph gave that as the same reason.) A check
+ * that skips in CI is not a check.
  *
  * So the BUILD stamps what it consumed (`scripts/write-bundle-manifest.js`, run
  * by app-v2's own `npm run build`) and this recomputes it from the same
  * definition (`scripts/lib/bundle-hash.js`). Pure: a directory walk and a
  * SHA-256. No node_modules, no browser, no database, ~30ms.
  *
- * IT CANNOT PROVE THE BYTES ARE A CORRECT BUILD — only that the source has not
+ * WHAT IT CANNOT PROVE, said plainly: that the asset BYTES are a correct build.
+ * Filenames and `index.html` are compared; the hashed asset contents are not, so a
+ * hand-patched `index-*.js` passes. Nor can it stop somebody re-running
+ * `write-bundle-manifest.js` on its own to re-stamp a stale bundle — a stamp is a
+ * record of intent, not a proof. What it does prove is that the source has not
  * moved since the build that was stamped. That is the failure this is for: not a
  * malicious bundle, but the ordinary Tuesday one where somebody edits a screen,
  * runs the suite, sees green, and ships the old bundle.
@@ -42,6 +48,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { sourceHash, MANIFEST, PORTAL } = require('./lib/bundle-hash');
 
 const root = path.join(__dirname, '..');
@@ -72,9 +79,17 @@ if (!fs.existsSync(manifestPath)) {
     if (JSON.stringify(onDisk) !== JSON.stringify(man.assets || [])) {
       bad(`web/v2/portal/assets does not match the stamp (on disk ${JSON.stringify(onDisk)}, stamped ${JSON.stringify(man.assets)})`);
     } else {
-      ok(`the ${onDisk.length} committed asset(s) are the ones that build produced`);
+      ok(`the ${onDisk.length} committed asset FILENAMES are the ones that build produced`);
     }
     const html = fs.readFileSync(path.join(root, PORTAL, 'index.html'), 'utf8');
+    // index.html IS COMPARED, not merely stamped. It was written into the manifest
+    // and never checked, so a hand-injected <script> passed (pre-merge audit).
+    const indexHash = crypto.createHash('sha256').update(html).digest('hex').slice(0, 16);
+    if (man.indexHash && man.indexHash !== indexHash) {
+      bad(`web/v2/portal/index.html has been edited since the build (stamped ${man.indexHash}, now ${indexHash})`);
+    } else if (man.indexHash) {
+      ok('index.html is byte-for-byte the one that build produced');
+    }
     const referenced = [...html.matchAll(/assets\/([A-Za-z0-9._-]+)/g)].map((m) => m[1]);
     const missing = referenced.filter((f) => !onDisk.includes(f));
     if (missing.length) bad(`index.html asks for assets that are not committed: ${JSON.stringify(missing)}`);
@@ -82,5 +97,5 @@ if (!fs.existsSync(manifestPath)) {
   }
 }
 
-console.log(fail ? `\n${fail} problem(s) with the committed bundle` : '\nThe committed bundle matches the committed source.');
+console.log(fail ? `\n${fail} problem(s) with the committed bundle` : '\nThe committed bundle was built from this source (see this file\'s header for what that does and does not prove).');
 process.exit(fail ? 1 : 0);

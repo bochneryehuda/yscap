@@ -109,8 +109,14 @@ export default function StaffCobrowse() {
     // moved out but the caller still held the answer, and re-seeding
     // `base = Date.now() - LIVE_BUFFER_MS` after the call restored it again. Both
     // times every pinned string was still present and the suite read 232/0.
-    // There is nothing left here to slip between: which event, what number, and
-    // "only once" are all one call, tested by calling it.
+    // Which event, what number, and "only once" are now ONE call, tested by calling
+    // it — but that is not the same as "nothing can slip between", and an earlier
+    // draft of this comment claimed it was. The caller still chooses the OBJECT it
+    // passes: `startFrom({ ...ev, timestamp: Date.now() })` restores the blank
+    // mirror with the whole pure suite at 251/0 (pre-merge audit, 2026-09-02).
+    // `test-cobrowse-pure` trips on a constructed argument, and the browser drive
+    // — made authoritative over this file by `check-bundle-fresh.js` — is what
+    // actually catches it, in the same way it catches the take-back drift.
     const liveState = { started: false };
     const startFrom = (ev) => startLiveOnce(rp, liveState, ev, LIVE_BUFFER_MS);
     rp.on('resize', fit);

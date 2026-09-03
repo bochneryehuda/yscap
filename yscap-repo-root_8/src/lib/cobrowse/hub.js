@@ -170,7 +170,15 @@ async function stillAllowed(claims) {
     try {
       const rv = await db.query(`SELECT 1 FROM revoked_sessions WHERE sid = $1`, [claims.sid]);
       if (rv.rows.length) return null;
-    } catch (_) { /* revocation table unavailable — token_version above still applied */ }
+    } catch (_) {
+      // ⛔ ALSO UNKNOWN, NOT ALLOWED. This `catch` used to fall through to
+      // "allowed" — a deliberate choice back when the only answers were yes and
+      // no, and `token_version` still applied. With a third answer available that
+      // is simply the wrong one: a per-device sign-out fails OPEN whenever this
+      // one table is the thing that is unwell, at connect and on every beat, and
+      // the doc-comment above now promises otherwise (pre-merge audit).
+      return AUTH_UNKNOWN;
+    }
   }
   return { kind: claims.kind, id: String(claims.sub) };
 }
@@ -381,43 +389,58 @@ function close(sessionId, reason) {
  * touching `token_version`, so this check still resolves them and the socket
  * stays open. That gap is closed at the source instead — `PATCH /api/admin/
  * staff/:id` ends the sessions outright when any of those three change (see
- * `src/routes/admin.js`) — because re-deriving a permission scope here would
- * mean teaching the hub the whole permission model.
+ * `src/routes/admin.js`) and wherever else the scope moves — because re-deriving a
+ * permission scope here would mean teaching the hub the whole permission model.
  *
  * THE PATHS THAT END A SESSION OUTRIGHT, so this is a backstop and not the whole
- * answer, named rather than gestured at: signing out (`POST /auth/logout`),
- * deactivating a staffer or moving their role / permissions / visible officers
- * (`PATCH /api/admin/staff/:id`), an admin resetting a staffer's password, and a
- * loan officer setting a borrower's password. EVERY OTHER revocation — a person
- * changing their own password, a reset-by-token, the TPO firm-wide bump — is
- * bounded by ONE BEAT by the check below, and by nothing else. There is no
- * borrower-deactivation endpoint in this product at all; an earlier draft of this
- * comment said there was.
+ * answer, named rather than gestured at: signing out (`POST /auth/logout`);
+ * deactivating a staffer or submitting their role / permissions / visible officers
+ * (`PATCH /api/admin/staff/:id`); an admin resetting a staffer's password; a loan
+ * officer setting a borrower's password; and REASSIGNING A BORROWER to another
+ * officer (`PATCH /api/staff/borrowers/:id`, `primaryOfficerId`) — that last one
+ * moves `visibleBorrowerSql` out from under the watcher and was missed when the
+ * other scope changes were wired. EVERY OTHER revocation — a person changing their
+ * own password, a reset-by-token, the TPO firm-wide bump, a `borrower_officers`
+ * row written anywhere else — is bounded by ONE BEAT by the check below, and by
+ * nothing else. There is no borrower-deactivation endpoint in this product at all;
+ * an earlier draft of this comment said there was.
  *
- * NOT RE-ENTRANT, AND THAT IS LOAD-BEARING. `setInterval` fires regardless of
- * whether the previous beat finished, and a beat that overlaps its predecessor
- * terminates HEALTHY sockets: the `isAlive` flag is cleared by the first beat
- * and the pong that would clear it has not been processed yet. The pre-merge
- * audit reproduced exactly that. Worse, it is a positive feedback loop — the
- * thing that makes a beat slow (a busy loop, a slow database) is the same thing
- * that stops the pongs landing — so a single flag is what keeps a slow tick from
- * becoming an outage.
+ * NOT RE-ENTRANT, AND THE WHOLE BEAT IS INSIDE THE GUARD — including the ping
+ * loop, which is the half that actually kills. `setInterval` fires regardless of
+ * whether the previous beat finished, and an overlapping beat terminates HEALTHY
+ * sockets: the first beat clears `isAlive`, and the pong that would set it again
+ * has not been processed yet, so the second beat sees `isAlive === false` and
+ * calls `terminate()`. It is a positive feedback loop — whatever makes a beat
+ * slow (a busy event loop, a slow database) is the same thing that stops the
+ * pongs landing.
  *
- * ONE LOOKUP PER PERSON, NOT PER SOCKET. The re-check is two queries; a serial
- * loop over N sockets was 2N round trips every 25 seconds. Sockets held by the
- * same identity share one answer for the beat, and the rooms are asked once each.
+ * THE FIRST VERSION OF THIS GUARD PUT THE FLAG BELOW THE PING LOOP, so it
+ * serialised only the database re-check and left the terminating half exactly as
+ * re-entrant as it had been — while this paragraph claimed the opposite. The
+ * pre-merge audit ran it and watched a healthy socket die. Skipping a keep-alive
+ * round because the previous beat is still working is the right trade: a missed
+ * ping costs one interval of liveness detection, a wrong `terminate()` costs a
+ * live session.
+ *
+ * WHAT A BEAT COSTS, stated rather than implied: `2U + S` queries, where U is the
+ * number of distinct identities holding sockets and S the number of distinct
+ * sessions. Co-browse's ordinary shape is one identity per socket, so the
+ * per-identity cache saves nothing there and the `loadRaw` per session is new —
+ * at 40 sockets that is 100 queries against the 81 this replaced. It buys the
+ * party re-check (see above) and it collapses the case that would actually hurt,
+ * one person holding many viewer tabs.
  */
 let beating = false;
 async function heartbeat() {
   if (!wss) return;
-  for (const ws of wss.clients) {
-    if (ws.isAlive === false) { try { ws.terminate(); } catch (_) { /* gone */ } continue; }
-    ws.isAlive = false;
-    try { ws.ping(); } catch (_) { /* closes on its own */ }
-  }
   if (beating) return;           // a slow beat must never be joined by the next one
   beating = true;
   try {
+    for (const ws of wss.clients) {
+      if (ws.isAlive === false) { try { ws.terminate(); } catch (_) { /* gone */ } continue; }
+      ws.isAlive = false;
+      try { ws.ping(); } catch (_) { /* closes on its own */ }
+    }
     const answers = new Map();   // one identity -> one answer, for this beat only
     const rowsById = new Map();  // one session -> one row, for this beat only
     for (const ws of wss.clients) {

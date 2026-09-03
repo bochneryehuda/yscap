@@ -481,6 +481,61 @@ async function main() {
       } finally { db.query = realQuery; }
       await call('POST', `/api/cobrowse/${sA}/end`, null, d3Tok).catch(() => {});
     }
+
+    // AN OVERLAPPING BEAT MUST NOT KILL A HEALTHY SOCKET. `setInterval` fires
+    // whether or not the last beat finished. The first beat clears `isAlive`; the
+    // pong that would set it again has not been processed yet; so a second beat
+    // that runs the ping loop sees `isAlive === false` and calls `terminate()` on a
+    // socket whose only fault is a pong in flight. And whatever made the first beat
+    // slow — a busy event loop, a slow database — is the same thing keeping the
+    // pong from landing, so it feeds itself.
+    //
+    // The first version of the guard sat BELOW the ping loop and protected only the
+    // database re-check, while its comment claimed otherwise; the pre-merge audit
+    // ran it and watched a socket die (2026-09-02). This drives the real thing: a
+    // beat held open inside `stillAllowed`, a second beat fired underneath it, and
+    // the socket required to survive.
+    {
+      const watcher4 = await mk('super_admin', 'Watcher4');
+      const watched4 = await mk('loan_officer', 'Watched4');
+      const w4Tok = tok(watcher4), d4Tok = tok(watched4);
+      r = await call('POST', '/api/cobrowse/request', { kind: 'staff', id: watched4.id }, w4Tok);
+      const sB = r.data.session.id;
+      await call('POST', `/api/cobrowse/${sB}/respond`, { accept: true }, d4Tok);
+      const gB = await open(wsUrl(d4Tok, sB, 'guest'));
+      const vB = await open(wsUrl(w4Tok, sB, 'viewer'));
+      assert(await waitFor(vB.msgs, (m) => m.includes('"t":"hello"')), 'a fourth session is attached for the overlap case');
+      const realQuery = db.query.bind(db);
+      let release = null;
+      const held = new Promise((rr) => { release = rr; });
+      db.query = async (text, params) => {
+        if (/FROM staff_users/.test(String(text))) { await held; }
+        return realQuery(text, params);
+      };
+      // THE PONG MUST NOT LAND INSIDE THE WINDOW, or the killing condition never
+      // arises and this test passes for the wrong reason — it did on the first
+      // run, because a loopback pong returns in about a millisecond. Silencing
+      // the server's own ping is the honest model of the case that matters: a
+      // busy event loop or a slow link, where the pong is in flight when the next
+      // tick fires. The sockets themselves are perfectly healthy throughout.
+      const room = hub._internals.rooms.get(sB);
+      const live = [room && room.guest, ...(room ? room.viewers : [])].filter(Boolean);
+      assert(live.length === 2, `both server-side sockets are in the room (${live.length})`);
+      const realPings = live.map((w) => w.ping.bind(w));
+      for (const w of live) w.ping = () => {};
+      let firstDone = false;
+      const first = hub._internals.heartbeat().then(() => { firstDone = true; });
+      await new Promise((rr) => setTimeout(rr, 150));
+      assert(!firstDone, 'the first beat really is held open inside the identity lookup');
+      await hub._internals.heartbeat();              // the overlapping tick
+      await new Promise((rr) => setTimeout(rr, 150));
+      assert(vB.ws.readyState === 1 && gB.ws.readyState === 1,
+        'a beat that overlaps a slow one terminates NOBODY — the guard covers the ping loop, not just the re-check');
+      release(); await first;
+      live.forEach((w, i) => { w.ping = realPings[i]; });
+      db.query = realQuery;
+      await call('POST', `/api/cobrowse/${sB}/end`, null, d4Tok).catch(() => {});
+    }
   }
 
   // AND DEACTIVATION DOES NOT WAIT FOR A HEARTBEAT. The re-check above bounds the

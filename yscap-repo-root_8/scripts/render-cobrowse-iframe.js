@@ -144,20 +144,49 @@ async function main() {
       'while ordinary text beside it in the same child document does — the mask is selective, not a blanket');
     // NOT "the marker appears somewhere" — it appears all over a 237 KB stream from
     // `maskAllInputs` on the term sheet's own inputs, so that assertion passed while
-    // NOTHING was blocked (pre-merge audit, 2026-09-02). Ask where the secret WAS.
-    const secretNode = await guest.evaluate(() => {
-      const ev = window.__ev.find((e) => e.type === 2);
-      const hunt = (n) => {
-        if (!n) return null;
-        if (n.attributes && n.attributes.id === 'cb-secret') return n;
-        for (const c of n.childNodes || []) { const f = hunt(c); if (f) return f; }
-        return null;
+    // NOTHING was blocked. The SECOND attempt hunted `ev.data.node` of the guest's
+    // own type-2 snapshot — and the child iframe's document is not in that tree at
+    // all, so it always answered "absent" and passed identically with the mask
+    // removed. Two vacuous assertions in a row on the same line (pre-merge audits,
+    // 2026-09-02). This one walks EVERY recorded event, and proves the walk reaches
+    // the child before concluding anything from an absence.
+    const probe = await guest.evaluate(({ secret, plain }) => {
+      const texts = [];
+      const attrs = [];
+      const seen = new Set();
+      const walk = (n) => {
+        if (!n || typeof n !== 'object' || seen.has(n)) return;
+        seen.add(n);
+        if (typeof n.textContent === 'string') texts.push(n.textContent);
+        if (n.attributes && typeof n.attributes === 'object') {
+          for (const v of Object.values(n.attributes)) if (typeof v === 'string') attrs.push(v);
+        }
+        for (const v of Object.values(n)) {
+          if (Array.isArray(v)) v.forEach(walk);
+          else if (v && typeof v === 'object') walk(v);
+        }
       };
-      const found = hunt(ev && ev.data && ev.data.node);
-      return found ? JSON.stringify(found) : null;
-    });
-    ok(secretNode === null || (!secretNode.includes(CHILD_SECRET) && secretNode.includes(window_MASK_MARK)),
-      `the secret's own node is either absent from the snapshot or carries the mask marker in place of the value (${secretNode ? secretNode.slice(0, 120) : 'node blocked entirely'})`);
+      for (const ev of window.__ev) walk(ev);
+      return {
+        total: texts.length,
+        secret: texts.filter((t) => t.includes(secret)).length,
+        plain: texts.filter((t) => t.includes(plain)).length,
+        maskedAttrs: attrs.filter((v) => v === window.__mask.MASK).length,
+      };
+    }, { secret: CHILD_SECRET, plain: CHILD_PLAIN });
+    // THE CONTROL FIRST: the walk must actually reach the child's own text, or "the
+    // secret is not there" is a statement about a broken walk and nothing else.
+    ok(probe.plain > 0,
+      `the node walk really reaches the child document's text (plain marker found ${probe.plain}x across ${probe.total} text nodes)`);
+    ok(probe.secret === 0,
+      `and the blocked secret appears in NO node of ANY recorded event (${probe.secret} occurrences)`);
+    // A SECOND, INDEPENDENT PROPERTY: `maskAllInputs` is reaching the child too. The
+    // block above removes a marked subtree; this is the other half of the mask, and
+    // it lands on ATTRIBUTES (an input's value), not on text — the first version of
+    // this assertion counted masked TEXT nodes and failed for that reason, which is
+    // the mask working, not the mask broken.
+    ok(probe.maskedAttrs > 0,
+      `every input inside the tool iframe is masked too (${probe.maskedAttrs} masked attribute value(s))`);
 
     const viewer = await ctx.newPage();
     await viewer.setContent(`<!doctype html><html><head><meta charset="utf-8"><style>${replayCss}</style></head><body><div id="stage"></div></body></html>`);
