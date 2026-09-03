@@ -30,7 +30,8 @@ top of the more conservative programs. Maximum loan out for the speed program is
 | Origination | the higher of the two parents' resolved origination |
 | Minimum earned interest | ON if ON for either parent |
 | Assignment fee | financeable to **10%** of the seller's contract price — the company's 15% formula with 0.10; the excess is cash to close |
-| Interest reserve | funded at the Speed rate (the higher-rate parent's evaluation is the structure — decision D3) |
+| Interest reserve | **never financed** (owner 2026-09-03, second message). A requested reserve is zeroed before either parent prices; the quote carries "Interest reserve is not financed on the Speed Program — the N months requested are not in this loan"; the borrower pays interest from own funds and the liquidity to show is measured on the full payment as before |
+| Loan-to-cost wall | **never more than 90%**, even where both parents allow 92.5% — applied as a MIN through the parents' `targetLTC` lever and credited to the Speed Program on the derivation page |
 | Bank statements / reserve months / draw fees / min loan | as Standard and Silver (identical on both) |
 
 **Never "the lesser of the two loan amounts."** A 10% effective price is a smaller base; a loan below either
@@ -44,7 +45,14 @@ frozen waterfall. Measured: the shortcut over-lends by $9,424 and $13,331 on two
   `silver-program.js`. `SPP.evaluate(input)` returns the same shape as the engines plus a `speed` block
   (`capDonor`, `rateDonor`, `standard`, `silver`, `maxLoanCap`, `assignmentMaxPct`); `SPP.priceLadder(input)`
   returns Standard's ladder shape.
-- **The algorithm.** Speed basis = the caller's input + `assignmentMaxPct 0.10` + `targetLoan ≤ $1M`. Pass A: each
+- **The four overlays of Speed's own** (`speed-program.js` constants, the only numbers in the file): `SPEED_MAX_LOAN`
+  1,000,000 · `SPEED_MAX_LTC` 0.90 · `FINANCED_RESERVE_ALLOWED` false · `ASSIGNMENT_MAX_PCT` 0.10. The owner's reasoning
+  for the reserve rule: *"interest reserve usually helps bring up the cap … this program is gonna have even a smaller loan
+  amount because we don't allow financed interest reserve"* — the reserve sits in both parents' cost basis, so refusing it
+  is one more way the Speed loan is smaller while still under every parent cap. Measured on scenario B of the research
+  ($200k seller + $30k fee, 6-month reserve requested): $229,715 with the reserve → **$216,000** without it at the 90% wall.
+- **The algorithm.** Speed basis = the caller's input + `assignmentMaxPct 0.10` + `targetLoan ≤ $1M` + `targetLTC ≤ 0.90`
+  + `irMonths = irAmount = 0` (the request is remembered on `speed.reserveRequested`). Pass A: each
   parent's own ceiling for the deal on that basis (Standard `caps`, Silver `pricedCeiling`). Combine: elementwise
   MIN (+ the $1M wall), with who-set-it recorded per axis. Pass B: pin both parents to the combined ceiling
   through `targetLoan / targetAcqLTV / targetARLTV / targetLTC`, iterated to a fixed point (≤ 4 passes — Silver's

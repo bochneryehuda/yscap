@@ -69,6 +69,16 @@
   /* ---------------- the Speed Program's OWN overlays (owner 2026-09-03) ---------------- */
   var SPEED_MAX_LOAN = 1000000;        // "Maximum loan out for the speed program is $1 million."
   var ASSIGNMENT_MAX_PCT = 0.10;       // "only going to allow a 10% assignment fee (wholesale fee)"
+  /* Two more overlays (owner-directed 2026-09-03, second message): "on this Speed Program
+     we never allow interest reserve. Financed interest reserve … even if you're putting
+     in the pricer that you need interest reserve, this program is gonna have even a
+     smaller loan amount because we don't allow financed interest reserve. We're going
+     to cap it at 90% LTC, never more than 90% LTC, even if both programs allow."
+     The reserve is part of the cost basis on both parents, so financing it lifts the
+     loan-to-cost wall the loan can reach; refusing it is one more way the Speed loan
+     is smaller than either parent's while still under every one of their caps. */
+  var SPEED_MAX_LTC = 0.90;            // never more than 90% loan-to-cost
+  var FINANCED_RESERVE_ALLOWED = false; // no financed interest reserve, whatever was requested
   var MAX_PASSES = 4;                  // the ceiling fixed point (Silver may step down under a pin)
   var ORIG_PCT = 0.0125;               // never used for pricing here — the server takes the HIGHER of
                                        // the two programs' resolved origination (pricing.js normalize)
@@ -111,6 +121,7 @@
       else { out[k] = v; donor[k] = "silver"; }
     }
     if (SPEED_MAX_LOAN < out.maxLoan - 1e-9) { out.maxLoan = SPEED_MAX_LOAN; donor.maxLoan = "speed"; }
+    if (SPEED_MAX_LTC < out.maxLTC - 1e-9) { out.maxLTC = SPEED_MAX_LTC; donor.maxLTC = "speed"; }
     return { caps: out, donor: donor };
   }
   /* WHO REALLY SET THE DOLLAR WALL. The Speed wall is applied through `targetLoan`
@@ -122,16 +133,21 @@
      regime/loan type/strategy/tier it landed in, Silver's verbatim tier row — and the
      wall is credited only when it is genuinely below both. Attribution only: the
      figure itself is the MIN either way. */
-  function maxLoanDonor(evS, evV, combined) {
+  function wallDonor(evS, evV, key, speedWall, combined) {
     var wallS = Infinity, wallV = Infinity;
-    try { var row = YSP.caps(evS.regime, evS.loanType, evS.strategyCode, evS.tier); if (row && num(row.maxLoan) > 0) wallS = num(row.maxLoan); } catch (_) { /* attribution only */ }
-    var tc = evV && (evV.tierCaps || evV.caps); if (tc && num(tc.maxLoan) > 0) wallV = num(tc.maxLoan);
+    try { var row = YSP.caps(evS.regime, evS.loanType, evS.strategyCode, evS.tier); if (row && num(row[key]) > 0) wallS = num(row[key]); } catch (_) { /* attribution only */ }
+    var tc = evV && (evV.tierCaps || evV.caps); if (tc && num(tc[key]) > 0) wallV = num(tc[key]);
     var own = Math.min(wallS, wallV);
     if (!(own < Infinity)) return combined;
-    if (SPEED_MAX_LOAN < own - 1e-9) return "speed";
+    if (speedWall < own - 1e-9) return "speed";
     if (Math.abs(wallS - wallV) < 1e-9) return "both";
     return wallS < wallV ? "standard" : "silver";
   }
+  function maxLoanDonor(evS, evV, combined) { return wallDonor(evS, evV, "maxLoan", SPEED_MAX_LOAN, combined); }
+  /* The 90% loan-to-cost wall, attributed the same way. (Standard's own row can sit
+     below the wall on a square-footage addition — 87.5% — and then pass A already
+     credits Standard through `combine`; this only resolves the tie the pin creates.) */
+  function maxLtcDonor(evS, evV, combined) { return combined === "both" ? wallDonor(evS, evV, "maxLTC", SPEED_MAX_LTC, combined) : combined; }
   function sameCaps(a, b) {
     for (var i = 0; i < CAP_KEYS.length; i++) if (Math.abs(num(a[CAP_KEYS[i]]) - num(b[CAP_KEYS[i]])) > 1e-9) return false;
     return true;
@@ -146,7 +162,19 @@
     inp.assignmentMaxPct = callerPct > 0 ? Math.min(ASSIGNMENT_MAX_PCT, callerPct) : ASSIGNMENT_MAX_PCT;
     var callerLoan = num(inp.targetLoan);
     inp.targetLoan = callerLoan > 0 ? Math.min(SPEED_MAX_LOAN, callerLoan) : SPEED_MAX_LOAN;
+    // Never more than 90% loan-to-cost — a MIN against the caller's own voluntary ceiling.
+    var callerLtc = num(inp.targetLTC);
+    inp.targetLTC = callerLtc > 0 ? Math.min(SPEED_MAX_LTC, callerLtc) : SPEED_MAX_LTC;
+    // No financed interest reserve, whatever was requested: both parents read irMonths /
+    // irAmount as the request to finance, so zeroing them here is the whole rule — the
+    // parents then size, price and settle the rate on a reserve-free structure. What was
+    // asked for is remembered on `speed.reserveRequested` so the surfaces can say so.
+    if (!FINANCED_RESERVE_ALLOWED) { inp.irMonths = 0; inp.irAmount = 0; }
     return inp;
+  }
+  function reserveRequested(input) {
+    var m = num(input && input.irMonths), a = num(input && input.irAmount);
+    return (m > 0 || a > 0) ? { months: m > 0 ? m : null, amount: a > 0 ? a : null } : null;
   }
   function pinTo(inp, caps) {
     return assign({}, inp, { targetLoan: caps.maxLoan, targetAcqLTV: caps.maxAcqLTV, targetARLTV: caps.maxARLTV, targetLTC: caps.maxLTC });
@@ -204,14 +232,19 @@
   }
 
   function speedLine(caps, donor, evS, evV, rateDonor) {
-    var who = function (k) { return LABEL[donor[k]] || donor[k]; };
+    var who = function (k) { return donor[k] === "speed" ? "the Speed Program's own wall" : (LABEL[donor[k]] || donor[k]); };
     var rS = num(evS.noteRate), rV = num(evV.noteRate);
-    return "Sized under the lesser of the Standard and Silver programs" +
-      (donor.maxLoan === "speed" ? " and the Speed Program's " + usd(SPEED_MAX_LOAN) + " maximum" : "") +
+    return "Sized under the lesser of the Standard and Silver programs and the Speed Program's own walls (" + usd(SPEED_MAX_LOAN) + " maximum, " + pct(SPEED_MAX_LTC) + " loan-to-cost, no financed interest reserve)" +
       ": max loan " + usd(caps.maxLoan) + " (" + who("maxLoan") + "), acquisition LTV " + pct(caps.maxAcqLTV) + " (" + who("maxAcqLTV") +
       "), after-repair LTV " + pct(caps.maxARLTV) + " (" + who("maxARLTV") + "), loan-to-cost " + pct(caps.maxLTC) + " (" + who("maxLTC") +
       "); priced at the higher of the two rates for this structure — Standard " + (rS ? pct(rS) : "unpriced") + ", Silver " + (rV ? pct(rV) : "unpriced") +
       " → " + LABEL[rateDonor] + "; assignment fees financeable to " + pct(ASSIGNMENT_MAX_PCT) + " of the seller's contract price.";
+  }
+  function reserveLine(req) {
+    if (!req) return null;
+    var asked = req.months ? (req.months + " month" + (req.months === 1 ? "" : "s")) : usd(req.amount);
+    return { level: "ELIGIBLE", program: "speed", code: "speed_no_financed_reserve",
+      msg: "Interest reserve is not financed on the Speed Program — the " + asked + " requested are not in this loan; interest is paid from the borrower's own funds and the liquidity to show is measured accordingly." };
   }
 
   function result(status, reasons, extra) {
@@ -277,13 +310,14 @@
       var st0 = typed > SPEED_MAX_LOAN ? "INELIGIBLE" : (status === "ELIGIBLE" ? "MANUAL" : status);
       return result(st0, reasons, assign(baseFields(evS, evV, pickDonor(evS, evV) === "silver" ? evV : evS), {
         caps: null, pricedCeiling: null, noteRate: 0, sizing: null,
-        speed: { maxLoanCap: SPEED_MAX_LOAN, assignmentMaxPct: inp.assignmentMaxPct, passes: 0, converged: false, rateDonor: null, capDonor: null,
+        speed: { maxLoanCap: SPEED_MAX_LOAN, maxLtcCap: SPEED_MAX_LTC, financedReserveAllowed: FINANCED_RESERVE_ALLOWED, reserveRequested: reserveRequested(input), assignmentMaxPct: inp.assignmentMaxPct, passes: 0, converged: false, rateDonor: null, capDonor: null,
           standard: summary(evS, cS), silver: summary(evV, cV) },
       }));
     }
     var ownS = cS, ownV = cV;
     var comb = combine(cS, cV), caps = comb.caps, donor = comb.donor;
     donor.maxLoan = maxLoanDonor(evS, evV, donor.maxLoan);
+    donor.maxLTC = maxLtcDonor(evS, evV, donor.maxLTC);
 
     // Pass B — both engines under the SAME ceiling. Silver's step-down lattice may
     // lower its ceiling again under the pin (an unpriced cell), so iterate to a
@@ -300,7 +334,7 @@
         if (!reasons.length) reasons.push({ level: "MANUAL", msg: "The Speed Program could not size this deal on both programs under the combined ceiling — submit for individual review.", program: "speed" });
         return result(status === "ELIGIBLE" ? "MANUAL" : status, reasons, assign(baseFields(evS, evV, pickDonor(evS, evV) === "silver" ? evV : evS), {
           caps: caps, pricedCeiling: caps, noteRate: 0, sizing: null,
-          speed: { maxLoanCap: SPEED_MAX_LOAN, assignmentMaxPct: inp.assignmentMaxPct, passes: passes, converged: false, rateDonor: null, capDonor: donor,
+          speed: { maxLoanCap: SPEED_MAX_LOAN, maxLtcCap: SPEED_MAX_LTC, financedReserveAllowed: FINANCED_RESERVE_ALLOWED, reserveRequested: reserveRequested(input), assignmentMaxPct: inp.assignmentMaxPct, passes: passes, converged: false, rateDonor: null, capDonor: donor,
             standard: summary(evS, ownS), silver: summary(evV, ownV) },
         }));
       }
@@ -380,6 +414,7 @@
     }
     if (typed > SPEED_MAX_LOAN) reasons.unshift({ level: "INELIGIBLE", msg: "Loan amount exceeds the Speed Program's " + usd(SPEED_MAX_LOAN) + " maximum.", program: "speed" });
     reasons.unshift({ level: "ELIGIBLE", msg: speedLine(caps, donor, evS, evV, rateDonor), program: "speed", code: "speed_composition" });
+    var rl = reserveLine(reserveRequested(input)); if (rl) reasons.splice(1, 0, rl);
     if (status !== "INELIGIBLE" && reasons.length === 1) reasons.push({ level: "ELIGIBLE", msg: "Meets the Speed Program guidelines — the stricter of the Standard and Silver programs.", program: "speed" });
 
     return result(status, reasons, assign(baseFields(evS, evV, donorEv), {
@@ -387,7 +422,7 @@
       noteRate: noteRate || 0,
       sizing: donorEv.sizing,
       speed: {
-        maxLoanCap: SPEED_MAX_LOAN, assignmentMaxPct: inp.assignmentMaxPct, passes: passes, converged: converged,
+        maxLoanCap: SPEED_MAX_LOAN, maxLtcCap: SPEED_MAX_LTC, financedReserveAllowed: FINANCED_RESERVE_ALLOWED, reserveRequested: reserveRequested(input), assignmentMaxPct: inp.assignmentMaxPct, passes: passes, converged: converged,
         rateDonor: rateDonor, capDonor: donor,
         standard: summary(evS, ownS), silver: summary(evV, ownV),
       },
@@ -435,6 +470,6 @@
     priceLadder: priceLadder,
     setMarkup: setMarkup, setMarkupTiers: setMarkupTiers,
     speedInput: speedInput, combine: combine, ceilingOf: ceilingOf,
-    constants: { SPEED_MAX_LOAN: SPEED_MAX_LOAN, ASSIGNMENT_MAX_PCT: ASSIGNMENT_MAX_PCT, MAX_PASSES: MAX_PASSES, ORIG_PCT: ORIG_PCT, LADDER_BUCKETS: LADDER_BUCKETS.slice() }
+    constants: { SPEED_MAX_LOAN: SPEED_MAX_LOAN, SPEED_MAX_LTC: SPEED_MAX_LTC, FINANCED_RESERVE_ALLOWED: FINANCED_RESERVE_ALLOWED, ASSIGNMENT_MAX_PCT: ASSIGNMENT_MAX_PCT, MAX_PASSES: MAX_PASSES, ORIG_PCT: ORIG_PCT, LADDER_BUCKETS: LADDER_BUCKETS.slice() }
   };
 }));

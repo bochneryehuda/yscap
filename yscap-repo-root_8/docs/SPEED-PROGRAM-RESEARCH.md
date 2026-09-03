@@ -15,6 +15,11 @@ for the speed program is $1 million. Go ahead."* Two things that adds to the rul
   the combined ceiling (`capMin.maxLoan = min(Standard's tier max, Silver's tier max, 1,000,000)`),
   pinned through the engines' existing `targetLoan` lever. It is an overlay of the composition, not a
   number in either engine, and it is a constant of the composition module, `SPEED_MAX_LOAN`.
+- **R12 — no financed interest reserve** and **R13 — never more than 90% loan-to-cost** (owner 2026-09-03, second
+  message: *"we never allow interest reserve … even if you're putting in the pricer that you need interest reserve, this
+  program is gonna have even a smaller loan amount … We're going to cap it at 90% LTC, never more than 90% LTC, even if
+  both programs allow"*). Both are overlays of the composition: the reserve request is zeroed before either parent prices
+  (and explained on the quote), and 0.90 is one more MIN on the loan-to-cost ceiling through the parents' `targetLTC`.
 - **The per-tier maximum loan is already the lesser of the two**: each engine reads its own tier row
   for the deal (Standard `MATRIX`, Silver `TG`, with Silver's tier itself depending on loan size), and
   R3 takes the min of the two `maxLoan` figures for THIS deal — scenario F in §4 shows both walls at

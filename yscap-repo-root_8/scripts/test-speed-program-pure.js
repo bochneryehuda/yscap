@@ -43,6 +43,11 @@
  *       payment) counts — beyond the reserve the two price at different rates.
  *   R4  GEOGRAPHY: Indiana (Standard's ban) and Nevada (Silver's ban) are both refused,
  *       each carrying the parent's own sentence.
+ *   S12 NO FINANCED INTEREST RESERVE (owner 2026-09-03, second message): no Speed loan
+ *       finances a reserve whatever was requested; a request is remembered and explained
+ *       on the quote (`speed_no_financed_reserve`), and only then.
+ *   S13 NEVER MORE THAN 90% LOAN-TO-COST, even where both parents allow 92.5%; the wall
+ *       binds on real scenarios and is credited to the Speed Program when it is the wall.
  *
  * Also runs in SOAK MODE (seeded random deals appended to the matrix — see below); the
  * soak is what found the two edge shapes now pinned into the matrix.
@@ -51,7 +56,9 @@
  * donor flipped to the LOWER rate fails S3; the combined ceiling taking the LARGER of the
  * two fails S2/S5/S6; the $1M wall removed fails S7; Silver's program maximum read instead
  * of its deal ceiling fails S2/S11; the own-basis gate pass removed fails S2a; the
- * lesser-initial alignment removed fails S11 — the unmutated module green either side.
+ * lesser-initial alignment removed fails S11; the financed reserve allowed again fails
+ * S12a (2,344 loans); the wall lifted to 92.5% fails S13b; the request left unexplained
+ * fails S12b (6,552 requests) — the unmutated module green either side.
  */
 'use strict';
 
@@ -69,9 +76,12 @@ const sized = (ev) => !!(ev && ev.sizing && num(ev.sizing.totalLoan) > 0);
 const RANK = { ELIGIBLE: 0, MANUAL: 1, INELIGIBLE: 2, ERROR: 3 };
 const WALL = SPP.constants.SPEED_MAX_LOAN;
 const SHARE = SPP.constants.ASSIGNMENT_MAX_PCT;
+const LTC_WALL = SPP.constants.SPEED_MAX_LTC;
 
 assert(WALL === 1000000, `R11 the Speed Program's own wall is $1,000,000 (got ${WALL})`);
 assert(SHARE === 0.10, `R7 the Speed Program's assignment share is 10% (got ${SHARE})`);
+assert(LTC_WALL === 0.90, `R13 the Speed Program's loan-to-cost wall is 90% (got ${LTC_WALL})`);
+assert(SPP.constants.FINANCED_RESERVE_ALLOWED === false, 'R12 the Speed Program finances no interest reserve');
 
 function scenarios() {
   const out = [];
@@ -159,6 +169,7 @@ let priced = 0, eligible = 0, manual = 0, inel = 0;
 const s1 = { bad: 0 }, s2 = { checked: 0, refused: 0, offTotal: 0, overCap: 0 }, s3 = { bad: 0, notMax: 0 };
 const s4 = { checked: 0, bad: 0 }, s5 = { initOver: 0, arvOver: 0, wallOver: 0 }, s6 = { bad: 0, parentBelow: 0 };
 const s7 = { held: 0 }, s8 = { nondet: 0, mutated: 0, leaked: 0 }, s11 = { bad: 0 };
+const s12 = { requested: 0, financed: 0, noLine: 0, lineWithout: 0 }, s13 = { over: 0, held: 0, misattributed: 0 };
 const first = {};
 const note = (k, v) => { if (!first[k]) first[k] = v; };
 
@@ -189,6 +200,18 @@ for (const c of CASES) {
   if (T > WALL + 0.5) { s5.wallOver++; note('wall', { c, T }); }
   if (Math.abs(T - WALL) < 1) s7.held++;
 
+  // S12 — no financed interest reserve, whatever was requested (and the file says so)
+  const asked = num(c.irMonths) > 0 || num(c.irAmount) > 0;
+  const line = ev.reasons.some((r) => r.code === 'speed_no_financed_reserve');
+  if (num(s.financedIR) > 0.5) { s12.financed++; note('s12f', { c, financedIR: s.financedIR }); }
+  if (asked) { s12.requested++; if (!line || !sp.reserveRequested) { s12.noLine++; note('s12l', c); } }
+  else if (line || sp.reserveRequested) { s12.lineWithout++; note('s12w', c); }
+
+  // S13 — never more than 90% loan-to-cost, and the wall is credited to Speed when it is the wall
+  if (num(s.ltcPct) > LTC_WALL + 1e-6) { s13.over++; note('s13', { c, ltc: s.ltcPct }); }
+  if (Math.abs(num(s.ltcPct) - LTC_WALL) < 1e-6) s13.held++;
+  if (sp.capDonor.maxLTC === 'speed' && Math.abs(ev.pricedCeiling.maxLTC - LTC_WALL) > 1e-9) { s13.misattributed++; note('s13a', { c, cap: ev.pricedCeiling.maxLTC }); }
+
   // S3 — the higher price, and exactly the higher
   const rS = num(sp.standard.noteRate), rV = num(sp.silver.noteRate);
   if (ev.noteRate < Math.max(rS, rV) - 1e-12) { s3.bad++; note('s3', { c, rate: ev.noteRate, rS, rV }); }
@@ -216,11 +239,12 @@ for (const c of CASES) {
   for (const k of ['maxLoan', 'maxAcqLTV', 'maxARLTV', 'maxLTC']) {
     const who = sp.capDonor[k];
     const enforced = caps[k];
+    const speedWall = k === 'maxLoan' ? WALL : k === 'maxLTC' ? LTC_WALL : Infinity;   // the Speed Program's own walls
     let want = null;
-    if (who === 'speed') want = WALL;
+    if (who === 'speed') want = speedWall;
     else if (who === 'both') want = own.standard[k];
     else want = own[who][k];
-    if (who === 'speed' ? Math.abs(enforced - WALL) > 1e-9 : Math.abs(enforced - Math.min(want, k === 'maxLoan' ? WALL : Infinity)) > 1e-9) { s6.bad++; note('s6', { c, k, who, enforced, want }); }
+    if (who === 'speed' ? Math.abs(enforced - speedWall) > 1e-9 : Math.abs(enforced - Math.min(want, speedWall)) > 1e-9) { s6.bad++; note('s6', { c, k, who, enforced, want }); }
     if (own.standard[k] < enforced - 1e-9 || own.silver[k] < enforced - 1e-9) { s6.parentBelow++; note('s6b', { c, k, enforced, own }); }
   }
 
@@ -273,6 +297,11 @@ assert(s8.nondet === 0, `S8a deterministic — same input, same output (violatio
 assert(s8.mutated === 0, `S8b the caller's input is never mutated (violations: ${s8.mutated})`);
 assert(s8.leaked === 0, `S8c the parents' markup state is untouched after a Speed quote (violations: ${s8.leaked})`);
 assert(s11.bad === 0, `S11 the lesser max initial — Speed's initial advance never exceeds either parent's under the combined ceiling, a parent's own floor included (violations: ${s11.bad})`);
+assert(s12.financed === 0, `S12a no Speed loan finances an interest reserve, whatever was requested (violations: ${s12.financed})`);
+assert(s12.requested > 0 && s12.noLine === 0 && s12.lineWithout === 0, `S12b a requested reserve is remembered and explained on the quote, and only then (${s12.requested} requests; missing: ${s12.noLine}, spurious: ${s12.lineWithout})`);
+assert(s13.over === 0, `S13a no Speed loan exceeds 90% loan-to-cost (violations: ${s13.over})`);
+assert(s13.held > 0, `S13b the 90% wall genuinely binds — ${s13.held} scenarios sized at exactly 90% loan-to-cost`);
+assert(s13.misattributed === 0, `S13c when the wall is credited to Speed, the enforced ceiling IS 90% (violations: ${s13.misattributed})`);
 for (const k of Object.keys(first)) console.log(`    first ${k}:`, JSON.stringify(first[k]).slice(0, 400));
 
 // ---- S7c — a typed loan amount above the wall is refused, naming the wall ---------
