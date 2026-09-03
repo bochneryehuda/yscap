@@ -141,6 +141,7 @@ function canonical(root) {
       // A leaf array is emitted by the native serializer in one call: with no keys to
       // sort its JSON IS the canonical form, element for element (undefined and holes
       // both print null, -0 prints 0 — exactly what scalar() does).
+      if (it.length === 0) { out.push('[]'); continue; }
       if (allScalar(it)) { out.push(JSON.stringify(it)); continue; }
       out.push('[');
       stack.push(']');
@@ -150,6 +151,7 @@ function canonical(root) {
       }
     } else {
       const keys = Object.keys(it).sort();
+      if (keys.length === 0) { out.push('{}'); continue; }
       if (allScalarValues(it, keys)) {
         out.push('{' + keys.map((k) => JSON.stringify(k) + ':' + scalar(it[k])).join(',') + '}');
         continue;
@@ -170,6 +172,10 @@ function scalar(v) {
   return j === undefined ? 'null' : j;
 }
 function allScalar(arr) {
+  // A toJSON reachable on the array itself would let the native call answer for it —
+  // only a polluted Array/Object prototype can put one there, but then the slow path
+  // is the one that still emits the elements.
+  if (typeof arr.toJSON === 'function') return false;
   for (let i = 0; i < arr.length; i++) { const v = arr[i]; if (v !== null && typeof v === 'object') return false; }
   return true;
 }

@@ -2,7 +2,10 @@
 // The UTC-default proof below only bites when the server's clock is NOT UTC — under
 // UTC an offset-less created parses to the same instant either way. CI sets no TZ,
 // so pin one here before the first Date is ever built.
-if (!process.env.TZ || /^(UTC|Etc\/UTC|GMT)$/i.test(process.env.TZ)) process.env.TZ = 'America/New_York';
+// Pinned by MEASURED offset, not by spelling: any zone that reads zero in January or
+// July (UTC, Etc/GMT, Europe/London in winter, Africa/Abidjan …) is replaced. Node
+// honours a runtime change to process.env.TZ on Linux.
+if (new Date(2026, 0, 15).getTimezoneOffset() === 0 || new Date(2026, 6, 15).getTimezoneOffset() === 0) process.env.TZ = 'America/New_York';
 /**
  * Class Valuation callback tool — the pure half (no database, no network).
  *
@@ -130,6 +133,10 @@ const d8a = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: arrDe
 const d9a = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: arrDeep(20000), sent: 'B' }, 'y', '2026-09-03');
 ok(d8a.material === d9a.material, 'the same holds for deep arrays');
 ok(hook.canonical({ b: [1, { z: null, y: 'ü' }], a: 'x' }) === JSON.stringify({ a: 'x', b: [1, { y: 'ü', z: null }] }), 'canonical output IS JSON with keys sorted at every level');
+ok(hook.canonical({ a: [], b: {}, c: [[], {}] }) === '{"a":[],"b":{},"c":[[],{}]}', 'empty containers print as themselves');
+Array.prototype.toJSON = () => 'POLLUTED';
+try { ok(hook.canonical([1, 'a', null]) === '[1,"a",null]', 'a toJSON planted on Array.prototype never speaks for a leaf array'); }
+finally { delete Array.prototype.toJSON; }
 const d12 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: { big: 1n } }, 'MARKER-A', '2026-09-03');
 const d13 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: { big: 1n } }, 'MARKER-B', '2026-09-03');
 ok(d12.keyed && d13.keyed && d12.material !== d13.material, 'a body nothing can serialise falls back to the stored marker for its digest, never a throw');
