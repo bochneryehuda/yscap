@@ -56,6 +56,10 @@ const LINE_KEYS = ['group', 'label', 'detail', 'kind', 'valueType', 'value', 'va
  */
 const NO_BREAKDOWN = {
   not_requested: 'Nobody has asked this rate sheet to explain this price yet.',
+  /* OURS, NOT THE SHEET'S. The quote reached the breakdown without the ids the vendor
+     addresses a quote by, so it was never asked. Worded so nobody reads it as the rate
+     sheet refusing — that mistake is what this reason exists to end. */
+  quote_incomplete: 'This price reached the breakdown without everything needed to identify it, so the rate sheet was not asked. This one is ours to fix, not the sheet\'s.',
   vendor_returned_no_evidence: 'The rate sheet accepted the question and returned no breakdown for this quote.',
   unrecognised_answer_shape: 'The rate sheet answered in a shape this system does not recognise, so nothing is shown rather than a guess.',
   no_answer: 'The rate sheet was asked and nothing came back.',

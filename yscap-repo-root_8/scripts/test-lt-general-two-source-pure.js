@@ -125,6 +125,52 @@ const byInvestor = (programs) => {
   ok(!noNexBy.has('eresi') && noNexBy.get('deephaven') === 1,
     'GEN-19 with LoanNEX not asked at all the board is Lender Price only — so the LoanNEX rows above are really coming from LoanNEX');
 
+  console.log('\n\u2500\u2500 EVERY ROW CAN IDENTIFY ITSELF TO THE RATE SHEET \u2500\u2500');
+  {
+    /* ⛔ THE OWNER'S REPORT (2026-09-03), on a live NQM row: *"The rate sheet accepted the
+       question and returned no breakdown for this quote."* The recorded live capture holds
+       the same failure with the request kept beside it — `"request": {}` — so the sheet was
+       answering about NO QUOTE, because we had asked with no product, no investor and no
+       price hash. The vendor addresses a quote by product AND investor AND price hash, so a
+       row that reaches the panel without them can never be explained.
+       This walks EVERY option of a real board and fails if one cannot identify itself. */
+    const nexParse2 = require(path.join(ROOT, 'src/longterm/loannex/parse.js'));
+    const qs = require(path.join(ROOT, 'src/longterm/pricing/quote-shape.js'));
+    const nexClient = require(path.join(ROOT, 'src/longterm/loannex/client.js'));
+    const all = nexParse2.parse(require(path.join(ROOT, 'src/longterm/loannex/capture/quick-prices.json')).response);
+    const merged = { investors: [{ key: 'nqm', whiteLabel: 'Ruby', programs: all.programs }] };
+    // The ORDINARY board — reveal off, which is the state the owner is in and the state
+    // that strips the vendor's own ids off every row.
+    const rows = qs.programsForBoard(merged, { reveal: false, transactionId: 'T-ef8ce9', loanAmount: 375000, fico: 760, ltv: 75, loanPurpose: 'Purchase' });
+    let options = 0; let unexplainable = 0; let firstBad = null;
+    for (const pg of rows) {
+      for (const o of (pg.options || [])) {
+        options++;
+        const miss = nexClient._internals && nexClient._internals.missingIdentity
+          ? nexClient._internals.missingIdentity(o.explain)
+          : null;
+        if (miss === null) continue;
+        if (!o.explain || miss.length) { unexplainable++; if (!firstBad) firstBad = { miss, handle: o.explain }; }
+      }
+    }
+    ok(options > 200, `IDENT-1 a real board's worth of rows to check (${options} options)`);
+    ok(unexplainable === 0,
+      `IDENT-2 every row carries what the rate sheet needs to find it — product, investor, price hash, rate and lock (${unexplainable} could not)${firstBad ? ' — first: ' + JSON.stringify(firstBad.miss) : ''}`);
+
+    /* AND THE REFUSAL IS REAL. A quote that cannot identify itself must be refused by
+       name rather than sent, so the panel stops blaming the sheet for our own empty
+       question. This is the control: without it the two checks above prove nothing. */
+    const res = await nexClient.evidence({}, { rate: 6.875, lockDays: 30 }, {});
+    ok(res && res.evidence === null && res.absence && res.absence.reason === 'quote_incomplete',
+      `IDENT-3 an unidentifiable quote is refused before the vendor is called (${res && res.absence && res.absence.reason})`);
+    ok(res.absence.missing.includes('priceHashKey') && res.absence.missing.includes('productId') && res.absence.missing.includes('investorId'),
+      `IDENT-4 …and it names exactly what was missing (${JSON.stringify(res.absence.missing)})`);
+    const bd = require(path.join(ROOT, 'src/longterm/pricing/breakdown.js'));
+    const wording = (bd._internals && bd._internals.NO_BREAKDOWN) || null;
+    ok(wording === null || /ours to fix/i.test(String(wording.quote_incomplete || '')),
+      'IDENT-5 …and the screen says it is ours, not the rate sheet refusing');
+  }
+
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('THREW', (e && e.stack) || e); process.exit(1); });

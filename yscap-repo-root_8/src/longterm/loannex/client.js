@@ -332,7 +332,50 @@ async function fails(transactionId, opts = {}) {
 }
 
 /** The LLPA breakdown behind one quote, and the sheet date the merge elects on. */
+/**
+ * WHAT THE VENDOR NEEDS TO FIND A QUOTE. It addresses one by product AND investor AND
+ * the price hash — `selectedPriceData` plus `{productId, investorId}` — so a request
+ * missing any of them names no quote at all.
+ */
+const EVIDENCE_IDENTITY = [
+  ['priceHashKey', (q) => q.priceHashKey],
+  ['productId', (q) => q.productId],
+  ['investorId', (q) => q.lenderId],
+  ['rate', (q) => q.rate],
+  ['lockDays', (q) => q.lockDays],
+];
+
+/** Which parts of a quote's identity are missing, if any. */
+function missingIdentity(quote) {
+  const q = quote || {};
+  return EVIDENCE_IDENTITY.filter(([, read]) => {
+    const v = read(q);
+    return v === undefined || v === null || v === '';
+  }).map(([name]) => name);
+}
+
 async function evidence(sc, quote, opts = {}) {
+  /* ⛔ REFUSE BEFORE ASKING, AND SAY WHAT WAS MISSING. Recorded live on 2026-08-30, one
+     investor of four came back `{"status":"Success"}` with no body — and the capture
+     kept the request beside it, which is empty: `"request": {}`. We had asked with no
+     product, no investor and no price hash, so the vendor answered about no quote.
+     That was read at the time as the SHEET being silent, and the screen has said "the
+     rate sheet accepted the question and returned no breakdown" ever since — blaming
+     the vendor for our own empty question, on the one panel whose job is to explain.
+     A quote that cannot identify itself is now refused here, by name, without spending
+     a vendor call. */
+  const missing = missingIdentity(quote);
+  if (missing.length) {
+    return {
+      evidence: null,
+      absence: {
+        reason: 'quote_incomplete',
+        message: `This quote reached the breakdown without ${missing.join(', ')}, so the rate sheet was not asked — it could not have found the quote.`,
+        missing,
+      },
+      transactionId: opts.transactionId || null,
+    };
+  }
   const s = await getSession(opts.portal, opts);
   const registry = await fieldRegistry(opts.portal, opts);
   const county = await resolveCounty(opts.portal, sc, opts);
@@ -378,6 +421,10 @@ module.exports = {
   configured, getSession, loginCheck, price, fails, evidence, rateStack,
   fieldRegistry, resolveCounty, invalidateSession, newTransactionId,
   _internals: {
+    // Exported so the board's own guard can ask the SAME question the client asks —
+    // "can this row identify itself to the sheet?" — rather than keeping a second copy
+    // of the answer that could drift from the one that actually gates the call.
+    missingIdentity, EVIDENCE_IDENTITY,
     request, assertReadOnly, pathMatches, READ_ONLY_PATHS, scrub, claimsOf,
     tokenKeyFromIframeHtml, portalLogin, PORTAL_HOST, sessions, TOKEN_SKEW_MS, portalLoginMod,
   },
