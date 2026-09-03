@@ -246,6 +246,9 @@ const orderBuild = require(path.join(ROOT, 'src/class/order-build'));
     // Pre-merge audit of #1432: "once we have received your payment" is forward-looking, so a link.
     eq(plink.looksLikePaymentLink({ subject: 'Order 555', text: 'Once we have received your payment, the appraisal will be scheduled. https://pay.classvaluation.com/p/1', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, '"once we have received your payment" is a promise, not a receipt');
     eq(plink.looksLikePaymentLink({ subject: 'Order 555', text: 'After we have received your payment the appraiser will be assigned. https://pay.classvaluation.com/p/1', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, 'and so is "after we have received your payment"');
+    eq(plink.looksLikePaymentLink({ subject: 'Order 555', text: 'Once your payment has been received we will schedule. https://pay.classvaluation.com/p/1', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, '"once your payment has been received" is a promise too');
+    eq(plink.looksLikePaymentLink({ subject: 'Order 555', text: 'Upon receipt of your payment we will schedule. https://pay.classvaluation.com/p/1', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, 'and "upon receipt of your payment"');
+    eq(plink.looksLikePaymentLink({ subject: 'Order 555', text: 'This confirms we have received your payment.', html: '', link: null }), false, 'while "this confirms we have received your payment" stays a receipt');
     eq(plink.namesOrder('Payment link for order 555 (ref YSCAP-abc)', '555'), true, 'an order number in the subject names the order');
     eq(plink.namesOrder('Your payment of $5550 is due', '555'), false, 'but a digit run inside another number does not');
     eq(plink.namesOrder('ref YSCAP-abc', 'YSCAP-abc'), true, 'and our reference names it too');
