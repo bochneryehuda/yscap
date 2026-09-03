@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
 import { GENERAL_ENGINE } from './pricerEngine.js';
+import LtInvestorSources from './LtInvestorSources.jsx';
 
 /**
  * The long-term SETTINGS screen — the sellable-LOS rule made usable.
@@ -473,7 +474,18 @@ export function SettingsScreen({ engine = GENERAL_ENGINE, slots = {} }) {
  * The General Pricing Engine's settings — the screen the company has always had. It is the shared
  * screen with the general engine's descriptor, which is what makes "the general screen did not
  * move" a property of one line rather than of two files staying in step.
+ *
+ * ⛔ ONE NEW SECTION, AND NOTHING ELSE MOVED (owner-directed 2026-09-03: *"I want the side-by-side
+ * list… in the settings of the regular pricing engine"*, and *"basically don't touch anything from
+ * the general pricing engine"*). It rides the SAME `slots.before` extension point the combined
+ * engine's own panels use — so the settings the company has always had are still drawn by the
+ * shared screen from the server, and a setting declared tomorrow appears here tomorrow with nobody
+ * porting anything.
+ *
+ * ⛔ AND IT IS SILENT FOR EVERYBODY BUT A SUPER ADMIN. Its door answers 404 to anyone else and the
+ * section renders NOTHING rather than an error, so an ordinary admin's settings screen is exactly
+ * the screen it was.
  */
 export default function LtSettings() {
-  return <SettingsScreen engine={GENERAL_ENGINE} />;
+  return <SettingsScreen engine={GENERAL_ENGINE} slots={{ before: () => <LtInvestorSources /> }} />;
 }

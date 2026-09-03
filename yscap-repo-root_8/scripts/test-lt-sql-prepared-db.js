@@ -249,6 +249,16 @@ async function main() {
     // suite's own fixture UPDATE by the interpolated COLS it returns, because the
     // first reading counted the fixture's and overstated the coverage.
     'pricer-scenarios.js': 'test-lt-pricer-scenarios-db.js drives all four live — measured with a probe on the driver: the list SELECT, the single-read SELECT and the save\'s RETURNING each assemble the shared COLS, and the patch assembles TWO different SET shapes (a rename, and a re-save of the deal bag)',
+    // The missing-investor review log (db/689). ONE statement, and it assembles
+    // TWO shapes: the reviewer's list either carries `WHERE reviewed_at IS NULL`
+    // or does not, so the waiting-only view and the whole log are different
+    // statements and a phantom column in either would sit behind the other. The
+    // module's own catch turns any failure into `{ok:false}` — an unreadable log
+    // is REPORTED rather than shown as empty — which is right for a reviewer and
+    // is exactly the swallow that would hide a bad column from every test that
+    // only checks `rows`. Measured with a probe on the driver rather than read
+    // off the source: both assembled shapes reached Postgres.
+    'pricing/source-misses.js': 'test-lt-source-misses-db.js section G drives list({}) and list({openOnly:true}) live — measured with a probe: both assembled shapes (with and without the WHERE) are executed, and the section asserts on the ROWS, so a statement that failed into the module\'s own catch could not pass',
   };
   const byFile = new Map();
   for (const b of built) byFile.set(b.rel, (byFile.get(b.rel) || 0) + 1);

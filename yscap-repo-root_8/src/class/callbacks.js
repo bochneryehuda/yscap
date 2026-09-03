@@ -187,6 +187,15 @@ function changesFor(eventName, payload) {
       break;
     case 'OrderPaid':
       out.paid_at = at || new Date().toISOString();
+      // Their word is final on the balance: a paid order owes nothing. The next
+      // payment-details read (src/class/payment.js) fills the exact amounts back in.
+      out.outstanding_cents = 0;
+      break;
+    case 'PaymentLinkSentToBorrower':
+      // The envelope carries no data — the fact IS the event. Recorded so the desk
+      // can say "Class emailed the borrower their payment page on <date>" instead of
+      // leaving a staffer to wonder whether the link ever went out.
+      out.payment_link_sent_at = at || new Date().toISOString();
       break;
     case 'ClientFeeChanged': {
       const n = money(d.NewAmountValue != null ? d.NewAmountValue : d.newAmountValue);
@@ -286,9 +295,9 @@ async function processEvent(row, { dbc } = {}) {
       if (eventName === 'NewAttachments') {
         for (const a of attachmentsFrom(payload)) {
           await q.query(
-            `INSERT INTO class_attachments (class_order_row, application_id, name, content_type, class_attachment_id)
-             VALUES ($1,$2,$3,$4,$5)
-             ON CONFLICT (class_order_row, name) WHERE name IS NOT NULL DO NOTHING`,
+            `INSERT INTO class_attachments (class_order_row, application_id, name, content_type, class_attachment_id, direction)
+             VALUES ($1,$2,$3,$4,$5,'inbound')
+             ON CONFLICT (class_order_row, name) WHERE name IS NOT NULL AND direction = 'inbound' DO NOTHING`,
             [order.id, order.application_id, a.name, a.contentType, a.attachmentId]);
         }
       }

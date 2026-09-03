@@ -68,6 +68,12 @@ const OWNER_SHEET = [
   ['Redwood Trust', 'Sequoia'],
   ['SGCG', 'Sterling'],
   ['adams NYMT', 'Empire'],
+  // Added by the owner 2026-09-02. ClearEdge was a HAND-ADDED investor until that
+  // message put it on the sheet; Button Finance has been in the registry since
+  // 2026-08-30 and stays pre-filled OFF — the sheet says what a row would be
+  // CALLED, never whether it is shown.
+  ['ClearEdge Lending', 'Crystal'],
+  ['Button Finance', 'Jade'],
 ];
 for (const [ownerName, programName] of OWNER_SHEET) {
   const r = investors.resolve(ownerName);

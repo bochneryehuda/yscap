@@ -56,6 +56,7 @@
  */
 
 const round3 = (n) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n) * 1000) / 1000);
+const pricePoints = require('./price-points');
 
 /**
  * A loan term, in BOTH units, from whichever one the vendor stated.
@@ -90,6 +91,10 @@ function emptyOption() {
       parRate: null, baseRate: null, rateAdjustment: null, noteRate: null,
       basePoints: null, adjustmentPoints: null, adjustedPoints: null, borrowerPaidPoints: null,
       price: null, basePrice: null, priceFloor: null, priceCeiling: null,
+      // Which half of the base the SHEET published — 'price', 'points', or null for a
+      // vendor that published neither. Read by `breakdown.priceOf` and its browser
+      // twin `priceBuild.baseOf` to say which figure is the vendor's and which is ours.
+      baseStated: null,
       priceDerivedFromPoints: false, pointsDerivedFromPrice: false, apr: null, apor: null,
     },
     adjustments: null,       // null = not fetched. [] = fetched and there were none.
@@ -141,6 +146,48 @@ function deepMerge(base, patch) {
 }
 
 /**
+ * THE TERMS BLOCK ON A LOANNEX OPTION — ONE DEFINITION, BOTH BUILDERS.
+ *
+ * ⛔ THIS WAS TWO COPIES AND THEY HAD DRIFTED, AND THE COPY THAT DRIFTED IS THE ONE THE SCREEN
+ * DRAWS (owner-reported: "I realized that, by the loannex, it's missing the loan amount by the
+ * terms"). `optionsFromLoanNex` — the `?shape=options` builder — is handed the SEARCH INPUTS by
+ * its route and filled `loanAmount` / `fico` / `ltv` / `loanPurpose`. `programsFromLoanNex`,
+ * which is what `programsForBoard` calls and therefore what the Details panel reads, was never
+ * given them and filled none of the four. So the panel printed an em dash for the loan amount on
+ * every LoanNEX row while that exact figure sat in the other builder's output. The two also
+ * disagreed on `dayLock`: one wrote `r.lockDays` raw (`undefined` on a rung that omits it, which
+ * JSON DROPS, so the key vanished rather than reading null) and the other guarded it. The guarded
+ * form is the one kept.
+ *
+ * WHY THE FOUR COME FROM THE SEARCH AND NOT FROM THE VENDOR. A LoanNEX board rung is a PRICE for a
+ * scenario; the scenario's own figures are the QUESTION we asked, not part of the answer, so they
+ * appear nowhere on the rung. Lender Price restates them on every option leaf, which is the only
+ * reason its board never needed this. Restating our own inputs is not inventing a fact — it is
+ * saying what this price was quoted FOR, and a panel that cannot say that is a panel nobody can
+ * check a quote against.
+ *
+ * An input we were not handed stays NULL, never 0 — "nobody said" and "zero" are different facts,
+ * and `money(0)` prints "$0" against a loan that plainly has an amount.
+ */
+function loanNexTerms(p, r, opts = {}) {
+  return {
+    loanAmount: numOrNull(opts.loanAmount),
+    fico: numOrNull(opts.fico),
+    ltv: numOrNull(opts.ltv),
+    loanPurpose: opts.loanPurpose || null,
+    dayLock: r.lockDays == null ? null : r.lockDays,
+    cushionedLockDays: r.cushionedLockDays == null ? null : r.cushionedLockDays,
+    interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
+    interestOnlyTerm: p.interestOnlyTerm == null ? null : p.interestOnlyTerm,
+    amortizationType: p.amortizationType || null,
+    term: p.termInMonths == null ? null : p.termInMonths,
+    termInMonths: p.termInMonths != null,
+    ...termPair(p.termInMonths, 'months'),
+    dscr: numOrNull(r.dscr),
+  };
+}
+
+/**
  * LoanNEX board rows → the common option shape.
  *
  * One option per (investor, program, product, rate, LOCK). The lock is part of
@@ -163,21 +210,28 @@ function optionsFromLoanNex(board, opts = {}) {
           // LoanNEX quotes PRICE; Lender Price quotes POINTS. `100 − price` is
           // the identity between them, and the flag says it was derived so a
           // reader never mistakes it for a number the vendor sent.
-          adjustedPoints: price == null ? null : round3(100 - price),
+          adjustedPoints: pricePoints.pointsFromPrice(price),
           pointsDerivedFromPrice: price != null,
         },
-        terms: {
-          loanAmount: numOrNull(opts.loanAmount),
-          dayLock: r.lockDays, cushionedLockDays: r.cushionedLockDays,
-          interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
-          interestOnlyTerm: p.interestOnlyTerm == null ? null : p.interestOnlyTerm,
-          amortizationType: p.amortizationType || null,
-          term: p.termInMonths == null ? null : p.termInMonths, termInMonths: p.termInMonths != null,
-          ...termPair(p.termInMonths, 'months'),
-          dscr: numOrNull(r.dscr), fico: numOrNull(opts.fico),
-          ltv: numOrNull(opts.ltv), loanPurpose: opts.loanPurpose || null,
-        },
-        monthlyPayment: r.payment == null ? null : { total: numOrNull(r.payment) },
+        terms: loanNexTerms(p, r, opts),
+        /**
+         * ⛔ `monthlyPI`, NOT `total` (audit F9). The very same `r.payment` is written as
+         * `{ monthlyPI }` by `programsFromLoanNex` forty lines down, and `monthlyPI` is the key
+         * EVERY reader uses — `LtPricer` twice, `bracket-board`, and `lenderprice/client` which
+         * reads it first and only falls back to `total`. So one value carried two names, and the
+         * one written here was the name nothing reads: `monthlyPayment.monthlyPI` came back
+         * `undefined` off this list while the row beside it answered 2500.
+         *
+         * `total` was also the wrong WORD. The figure is the vendor's `payment` on the rung, the
+         * screen labels it "Monthly P&I", and a key called `total` invites a reader to take it for
+         * PITI — a bigger number than this is. Renamed rather than duplicated: writing both would
+         * keep two names alive, which is the drift itself.
+         *
+         * Latent rather than live: no browser code reads this flat option list today (it is the
+         * `shape=options` answer), so nothing on a screen was blank. An API caller asking for that
+         * shape did get the wrong key.
+         */
+        monthlyPayment: r.payment == null ? null : { monthlyPI: numOrNull(r.payment) },
         flags: {
           isException: !!r.isException,
           softStop: !!r.hasSoftStopViolation,
@@ -304,8 +358,15 @@ function attachEvidence(option, ev, opts = {}) {
       baseRate: numOrNull(ev.baseRate),
       priceFloor: numOrNull(ev.priceFloor),
       priceCeiling: numOrNull(ev.priceCeiling),
-      basePoints: ev.basePrice == null ? null : round3(100 - Number(ev.basePrice)),
+      basePoints: pricePoints.pointsFromPrice(ev.basePrice),
       adjustmentPoints: all.length ? round3(-totalGiven) : null,
+      /* THE SHEET PUBLISHED A PRICE; THE POINTS ON THE LINE ABOVE ARE OURS. Saying so is the
+         whole of it: both halves are filled here, so the panel could no longer tell the
+         vendor's figure from our arithmetic and captioned both as the rate sheet's. Lender
+         Price needs no such marker — it states points and no price, so its absence already
+         says which is which — and it is exactly that asymmetry this closes, so a LoanNEX row
+         and a Lender Price row now describe their own base the same way round. */
+      baseStated: ev.basePrice == null ? null : 'price',
     },
     adjustments: all,
     rateSheet: { validAsOf: ev.rateSheetLastUpdated || null },
@@ -421,6 +482,7 @@ function filterInterestOnly(options, want) {
  * board's transaction — the commonest way a per-row fetch silently explains the wrong quote.
  */
 const { EXPLAIN_LENDER_ID } = require('./investor-routing');
+const sealedPrice = require('./sealed-price');
 
 function explainHandle(r, p, price, opts = {}) {
   if (!r || !r.priceHashKey) return null;
@@ -438,6 +500,36 @@ function explainHandle(r, p, price, opts = {}) {
     priceHashKey: r.priceHashKey,
     rate: round3(r.rate),
     price,
+    /**
+     * ⛔ AND THE VENDOR'S OWN PRICE, UNROUNDED — SEALED, BECAUSE IN THE CLEAR IT IS THE HOLDBACK.
+     *
+     * The sheet matches a quote on the price we hand back, to the decimal. `price` above has been
+     * rounded to three for display and then had our holdback taken out of it, so it is OUR number,
+     * not the sheet's — handed back, the sheet finds nothing and answers with an empty body, and
+     * the panel says the rate sheet returned no breakdown. `loannex/parse` carries the measurement
+     * that proved it. So the vendor's own figure has to travel; `price` stays because the panel
+     * prints it and because it is what somebody quotes.
+     *
+     * ⛔ THE TWO OF THEM SIDE BY SIDE ARE THE HOLDBACK, ONE SUBTRACTION OFF THE WIRE — measured on
+     * a live board: `priceExact 101.0355 − price 100.786 = 0.2495`, on all 2,133 handles. That is
+     * the exact class `investor-routing.stripHoldbackTrail` exists to close for `vendorPrice`,
+     * `vendorPriceFloor` and `vendorPriceCeiling` (audit F5); this field was added afterwards and
+     * walked through the same door. It cannot simply be dropped (that re-opens the empty-breakdown
+     * bug) and it cannot be rebuilt from the rounded price (`sealed-price` carries that
+     * measurement) — so it travels SEALED, under a key only this server holds.
+     *
+     * ⛔ THE KEY IS `priceSeal`, NOT `priceExact`, AND THAT IS DELIBERATE: the sealed value is a
+     * STRING, and a reader expecting the number would otherwise be handed a blob that is truthy,
+     * not finite, and silently wrong. Nothing may read a price off this handle except the explain
+     * door, which opens it (`combined-pricer.quoteFromBody`).
+     *
+     * Absent on a Lender Price row — that vendor publishes its itemisation with the quote and is
+     * never asked a second question — and absent when the seal cannot be made, which degrades to
+     * the holdback add-back path rather than sending the number in the clear.
+     */
+    priceSeal: sealedPrice.seal(
+      r.priceExact != null ? r.priceExact : (r.vendorPrice != null ? r.vendorPrice : null),
+    ) || undefined,
     lockDays: r.lockDays,
     productId: p.productId,
     // BOTH ids, on the ordinary board too. The vendor addresses a quote by product AND investor
@@ -448,6 +540,7 @@ function explainHandle(r, p, price, opts = {}) {
     lenderId: p.lenderId != null ? p.lenderId : (p[EXPLAIN_LENDER_ID] != null ? p[EXPLAIN_LENDER_ID] : undefined),
   };
   if (h.lenderId === undefined) delete h.lenderId;
+  if (h.priceSeal === undefined) delete h.priceSeal;
   // Omitted rather than sent as null: a null would read as "asked and there was none",
   // and the route falls back to the request body only when the key is genuinely absent.
   if (opts.transactionId != null) h.transactionId = opts.transactionId;
@@ -491,7 +584,7 @@ function programsFromLoanNex(board, opts = {}) {
           // LoanNEX quotes PRICE, Lender Price quotes POINTS; `100 − price` is
           // the identity, flagged as derived so a reader never mistakes it for
           // something the vendor sent.
-          adjustedPoints: price == null ? null : round3(100 - price),
+          adjustedPoints: pricePoints.pointsFromPrice(price),
           pointsDerivedFromPrice: price != null,
           basePoints: null, adjustmentPoints: null,
         },
@@ -513,16 +606,7 @@ function programsFromLoanNex(board, opts = {}) {
          * published facts, restated where they are read; the top-level copies stay for anything
          * that reads them there.
          */
-        terms: {
-          dayLock: r.lockDays == null ? null : r.lockDays,
-          cushionedLockDays: r.cushionedLockDays == null ? null : r.cushionedLockDays,
-          interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
-          interestOnlyTerm: p.interestOnlyTerm == null ? null : p.interestOnlyTerm,
-          amortizationType: p.amortizationType || null,
-          term: p.termInMonths == null ? null : p.termInMonths, termInMonths: p.termInMonths != null,
-          ...termPair(p.termInMonths, 'months'),
-          dscr: numOrNull(r.dscr),
-        },
+        terms: loanNexTerms(p, r, opts),
         isException: !!r.isException,
         softStop: !!r.hasSoftStopViolation,
         explain: explainHandle(r, p, price, opts),
@@ -572,6 +656,14 @@ function programsForBoard(merged, opts = {}) {
           // re-derived, so every row on one board names the one transaction that produced it.
           transactionId: opts.transactionId != null ? opts.transactionId : null,
           portal: opts.portal != null ? opts.portal : null,
+          /**
+           * THE SEARCH THIS PRICE WAS QUOTED FOR — see `loanNexTerms`. A LoanNEX rung states no
+           * loan amount, FICO, LTV or purpose, because those are the question rather than the
+           * answer; without them forwarded here the Details panel drew an em dash where the loan
+           * amount belongs on every LoanNEX row. Forwarded, never re-derived, so a row and the
+           * board it sits on can never describe two different searches.
+           */
+          loanAmount: opts.loanAmount, fico: opts.fico, ltv: opts.ltv, loanPurpose: opts.loanPurpose,
         }));
       } else {
         rows.push(base);
@@ -598,7 +690,7 @@ function handlePatch(quote = {}) {
     priceBuild: {
       noteRate: numOrNull(q.rate),
       price: numOrNull(q.price),
-      adjustedPoints: q.price == null ? null : round3(100 - Number(q.price)),
+      adjustedPoints: pricePoints.pointsFromPrice(q.price),
     },
     terms: { dayLock: q.lockDays == null ? null : Number(q.lockDays) },
     explain: q.priceHashKey ? { ...q } : null,
@@ -685,6 +777,9 @@ function optionForExplain(quote = {}, row) {
 
 module.exports = {
   emptyOption, optionForQuote, optionFromRow, optionForExplain, optionsFromLoanNex, optionsFromLenderPrice,
+  // Exported for the anti-drift guard, which derives its key list from the real builder rather
+  // than keeping a hand-typed copy that goes stale the day a term is added.
+  loanNexTerms,
   programsFromLoanNex, programsForBoard,
   attachEvidence, evidenceCoversRate, splitInterestOnly, filterInterestOnly,
   _internals: { round3, numOrNull, deepMerge },

@@ -76,6 +76,7 @@ nexClient.price = async () => ({ board: {
 
 const { priceBoth } = require(path.join(ROOT, 'src/longterm/routes/combined-pricer'))._internals;
 const lpModel = require(path.join(ROOT, 'src/longterm/lenderprice/search-model'));
+const dupProgs = require(require('path').join(__dirname, '..', 'src/longterm/pricing/duplicate-programs.js'));
 const pf = require(path.join(ROOT, 'src/longterm/pricing/product-filter'));
 
 let pass = 0; let fail = 0;
@@ -225,9 +226,22 @@ const nexRows = (out) => (out.programs || []).filter((p) => NEX_PROGRAMS.some((n
   console.log('\n── THE SCREEN: the control exists where the officer may choose, and nowhere else ──');
   {
     const eng = read('app-v2/src/longterm/pricerEngine.js');
-    ok(/key: 'general',[\s\S]{0,4000}?amortizationChoice: false,/.test(eng),
+    /**
+     * ⛔ EACH ENGINE'S OWN SECTION, NOT A DISTANCE. These two used to search a fixed 4,000-character
+     * window forward from `key: '<engine>'` — so the day an unrelated field was added to the
+     * combined descriptor the flag fell 4,251 characters away and UI-2 went red while
+     * `amortizationChoice: true` was sitting right there, unchanged. A guard defeated by an
+     * addition it has no opinion about reads as a broken feature and gets "fixed" by loosening it.
+     * The boundary is the file's own structure: the general engine is everything before the
+     * combined one begins, and the combined engine is everything after.
+     */
+    const cut = eng.indexOf("key: 'combined',");
+    ok(cut > 0, 'UI-0 both engine descriptors are found by their own key, so the two sections below cannot overlap');
+    const generalSection = eng.slice(0, cut);
+    const combinedSection = eng.slice(cut);
+    ok(/amortizationChoice: false,/.test(generalSection) && !/amortizationChoice: true,/.test(generalSection),
       'UI-1 the GENERAL engine offers no rate-type control — its search has forced Fixed since it was written, and the owner\'s rule for that board is "don\'t touch it"');
-    ok(/key: 'combined',[\s\S]{0,4000}?amortizationChoice: true,/.test(eng),
+    ok(/amortizationChoice: true,/.test(combinedSection),
       'UI-2 the COMBINED engine offers it, because on that board it decides what comes back from both programs at once');
     const fields = read('app-v2/src/longterm/LtScenarioFields.jsx');
     ok(/engine\.amortizationChoice && \(/.test(fields),
@@ -315,9 +329,19 @@ const nexRows = (out) => (out.programs || []).filter((p) => NEX_PROGRAMS.some((n
     const before = pf.narrowBoard(REAL, { ...FULL, lockDays: null });
     const shape = (n) => `${n.kept}/${n.board.rungCount}`;
     const shapes = [15, 30, 45, 60].map((d) => shape(at(d)));
-    ok(shape(before) === '26/1553' && new Set(shapes).size === 4,
+    /* ⛔ 24/1553 BECAME 24/1349 ON PURPOSE (2026-09-03). This pinned 26/1553, and the
+       duplicate suppression now takes Acra's "(5% Fixed)" programmes off every board
+       before any narrowing runs — so this fixture's fixed/360 board is legitimately two
+       programmes and 204 rungs smaller. The number is re-pinned rather than derived,
+       because a derived one would agree with whatever the filter did; the check below
+       pins the REASON, so if this shape ever moves again for some other cause it fails
+       instead of being quietly re-typed. */
+    const deduped = dupProgs.dropDuplicates(REAL);
+    ok(deduped.dropped.length > 0 && (REAL.programs.length - deduped.board.programs.length) === deduped.dropped.length,
+      `LOCK-7pre the duplicate suppression accounts for the change of shape — ${deduped.dropped.length} programmes off this fixture before any narrowing`);
+    ok(shape(before) === '24/1349' && new Set(shapes).size === 4,
       `LOCK-7 one search, four locks: the board WAS ${shape(before)} whichever lock was asked, and is now ${shapes.join('  ')} — four different boards where there had been one, which is the whole defect`);
-    ok(shapes.every((x) => Number(x.split('/')[1]) < 1553),
+    ok(shapes.every((x) => Number(x.split('/')[1]) < 1349),
       `LOCK-7b …and every one of them is SMALLER than the board that ignored the lock — the rungs removed are the ones priced at a lock nobody asked for, never a shortening of the answer`);
     for (const d of [15, 30, 45, 60]) {
       const n = at(d);
@@ -372,6 +396,39 @@ const nexRows = (out) => (out.programs || []).filter((p) => NEX_PROGRAMS.some((n
       'ROW-4 …and it is drawn behind the engine flag, so a component rendered with no provider above it draws nothing new');
     ok((noComments(pricer).match(/\{lockNote\(/g) || []).length === 2,
       'ROW-5 …on BOTH row lines — the lender line and the per-programme line under it, so opening a lender does not lose the lock');
+  }
+
+
+  console.log('\n── AND A SHORT BOARD SAYS SO ON THE SCREEN, WITHOUT NAMING A VENDOR ──');
+  {
+    const pricer = read('app-v2/src/longterm/LtCombinedPricer.jsx');
+    ok(/export function ShortBoardNotice\(\{ completeness \}\)/.test(pricer),
+      'SHORT-1 the notice exists and takes ONLY the server\'s own answer — it works nothing out for itself');
+    ok(/if \(!c \|\| c\.complete !== false \|\| !c\.message\) return null;/.test(pricer),
+      'SHORT-2 …and renders NOTHING when the board is whole, which is almost always');
+    ok(/<ShortBoardNotice completeness=\{res\.completeness\} \/>/.test(pricer),
+      'SHORT-3 …and it is mounted on the combined screen, reading the key the route lifts to the top level');
+    const idxNotice = pricer.indexOf('<ShortBoardNotice');
+    const idxNear = pricer.indexOf('<NearTierFlag');
+    ok(idxNotice > 0 && idxNear > 0 && idxNotice < idxNear,
+      'SHORT-4 …ABOVE everything else on the strip — "some of your prices are missing" outranks every other thing a person could read there');
+    ok(!/loannex|LoanNEX|Lender Price/.test(pricer.slice(idxNotice - 1400, idxNotice + 200)),
+      'SHORT-5 …and the notice names no vendor, so it can be said on the one-system board at all');
+
+    /* THE EMPTY-BOARD SENTENCE. `sheetSubject` is RIGHT in the three places that describe ONE
+       quote's own sheet, and was wrong for the whole board, which two rate sheets quote. Forked
+       whole rather than assembled — "Neither rate sheet returned no priced rungs" is what splicing
+       a subject into a shared sentence produces. */
+    const eng = read('app-v2/src/longterm/pricerEngine.js');
+    ok(/key: 'general',[\s\S]{0,6000}?emptyBoardLine: 'Lender Price returned no priced rungs for this scenario\.',/.test(eng),
+      'SHORT-6 the GENERAL engine\'s empty-board sentence is unchanged, word for word');
+    ok(/key: 'combined',[\s\S]{0,6000}?emptyBoardLine: 'Neither rate sheet returned a priced rung for this scenario\.',/.test(eng),
+      'SHORT-7 …and the COMBINED engine says NEITHER, because two rate sheets quote that board');
+    const lt = read('app-v2/src/longterm/LtPricer.jsx');
+    ok(/\$\{engine\.emptyBoardLine\} The Ineligible view/.test(lt),
+      'SHORT-8 …and the shared screen draws the engine\'s own sentence rather than splicing a subject into one of its own');
+    ok((noComments(lt).match(/engine\.sheetSubject/g) || []).length === 3,
+      'SHORT-9 …while the three ONE-QUOTE messages still use `sheetSubject`, where the singular is correct — this forked the board sentence, not the word');
   }
 
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);

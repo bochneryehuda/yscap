@@ -38,6 +38,8 @@
  */
 
 const round3 = (n) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n) * 1000) / 1000);
+const pricePoints = require('./price-points');
+const sources = require('./sources');
 const numOrNull = (n) => (n == null || n === '' || !Number.isFinite(Number(n)) ? null : Number(n));
 const strOrNull = (s) => {
   const t = s == null ? '' : String(s).trim();
@@ -54,14 +56,7 @@ const LINE_KEYS = ['group', 'label', 'detail', 'kind', 'valueType', 'value', 'va
  * `not_requested` is the ONLY one that means we never asked. Everything else is
  * something that happened after we did.
  */
-const NO_BREAKDOWN = {
-  not_requested: 'Nobody has asked this rate sheet to explain this price yet.',
-  vendor_returned_no_evidence: 'The rate sheet accepted the question and returned no breakdown for this quote.',
-  unrecognised_answer_shape: 'The rate sheet answered in a shape this system does not recognise, so nothing is shown rather than a guess.',
-  no_answer: 'The rate sheet was asked and nothing came back.',
-  evidence_is_for_a_different_rate_or_lock: 'The breakdown that came back is for a different rate or lock, so it is not shown against this one.',
-  unknown: 'No breakdown could be read for this price.',
-};
+const NO_BREAKDOWN = sources.NO_BREAKDOWN;
 
 const ELIGIBILITY_ABSENT = 'This rate sheet does not publish the checks behind its answer, so there is nothing to list here.';
 
@@ -156,15 +151,27 @@ function priceOf(option) {
   const pb = (option && option.priceBuild) || {};
   const statedPrice = numOrNull(pb.basePrice);
   const statedPoints = numOrNull(pb.basePoints);
-  const basePrice = statedPrice != null ? statedPrice : (statedPoints == null ? null : round3(100 - statedPoints));
-  const basePoints = statedPoints != null ? statedPoints : (statedPrice == null ? null : round3(100 - statedPrice));
+  const basePrice = statedPrice != null ? statedPrice : pricePoints.priceFromPoints(statedPoints);
+  const basePoints = statedPoints != null ? statedPoints : pricePoints.pointsFromPrice(statedPrice);
+  /* WHICH HALF THE RATE SHEET ACTUALLY STATED. Absence answers it most of the time and needs no
+     help: Lender Price sends points and no price, so the price is ours; a LoanNEX board rung sends
+     neither. But a LoanNEX option that has been EXPLAINED carries BOTH halves — the vendor's own
+     price and the points this engine derived from it — and absence can no longer tell them apart.
+     So the mapper says which one the sheet published, and this prefers that answer over the guess.
+     Without it the panel called our own arithmetic "the base points the rate sheet quotes" on every
+     explained LoanNEX row, which is the exact defect this function was written to end. */
+  const stated = pb.baseStated === 'price' || pb.baseStated === 'points' ? pb.baseStated : null;
+  const known = statedPrice != null || statedPoints != null;
   return {
     baseRate: numOrNull(pb.baseRate),
     noteRate: numOrNull(pb.noteRate),
     basePrice,
     basePoints,
-    baseDerived: statedPrice == null && statedPoints != null ? 'price_from_points'
-      : (statedPoints == null && statedPrice != null ? 'points_from_price' : null),
+    baseDerived: !known ? null
+      : (stated === 'points' ? 'price_from_points'
+        : (stated === 'price' ? 'points_from_price'
+          : (statedPrice == null && statedPoints != null ? 'price_from_points'
+            : (statedPoints == null && statedPrice != null ? 'points_from_price' : null)))),
     adjustmentPoints: numOrNull(pb.adjustmentPoints),
     adjustedPoints: numOrNull(pb.adjustedPoints),
     price: numOrNull(pb.price),

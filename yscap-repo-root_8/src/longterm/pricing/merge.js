@@ -66,6 +66,7 @@ const whiteLabel = require('../lenderprice/investor-programs');
 const { classify } = require('./product-class');
 
 const SOURCES = ['lenderprice', 'loannex'];
+const sources = require('./sources');
 const round3 = (n) => (n == null ? null : Math.round(Number(n) * 1000) / 1000);
 
 /**
@@ -194,7 +195,8 @@ function elect(presentIn, cmp) {
   };
 }
 
-function label(src) { return src === 'loannex' ? 'LoanNEX' : 'Lender Price'; }
+// ONE definition — and an unknown source is NAMED, never called Lender Price.
+const label = sources.sourceLabel;
 
 /**
  * Merge two normalised boards.
@@ -211,6 +213,9 @@ function merge(boards, opts = {}) {
   // The human's "these two names are the same investor" map. Absent → the code
   // registry alone, which is exactly what this did before it existed.
   const links = opts.links || null;
+  /* THE PER-INVESTOR SETTINGS, so the client-safe name here is the one the routing and the
+     settings screen already agree on. Absent → the sheet alone, which is what this did before. */
+  const settings = opts.settings || null;
   // The investors added by hand. Absent → the registry alone.
   const custom = opts.custom === undefined ? null : opts.custom;
   const byInvestor = new Map();
@@ -242,7 +247,20 @@ function merge(boards, opts = {}) {
       if (investorLinks.isGuess(id.match)) matchedByGuess.add(id.key);
       if (id.linked) matchedByLink.add(id.key);
       let e = byInvestor.get(id.key);
-      if (!e) { e = { key: id.key, label: id.label, whiteLabel: whiteLabel.whiteLabelOf(id.key, custom), programs: { lenderprice: [], loannex: [] } }; byInvestor.set(id.key, e); }
+      /**
+       * ⛔ THE ONE ANSWER TO "WHAT MAY A CLIENT CALL THIS INVESTOR" (audit F9).
+       *
+       * This asked `whiteLabelOf` — the owner's SHEET and nothing else — while `investor-routing`
+       * asked `settingFor(...).whiteLabel`, which is the name somebody TYPED on the settings screen
+       * OR the sheet's. Two answers to one question, and this was the copy that drifted: measured,
+       * an investor with a typed name and no sheet entry answered `null` here and "Slate" there.
+       *
+       * Today that only reaches the sort order, which is why it went unnoticed. But the question is
+       * the one rule 10 turns on, and a second answer to it is how a name a person never chose ends
+       * up on something a client reads. `effectiveWhiteLabel` is the single definition — the typed
+       * setting, else the hand-added roster, else the sheet — and both readers now ask it.
+       */
+      if (!e) { e = { key: id.key, label: id.label, whiteLabel: whiteLabel.effectiveWhiteLabel(id.key, custom, settings), programs: { lenderprice: [], loannex: [] } }; byInvestor.set(id.key, e); }
       e.programs[src].push(row);
     }
   }

@@ -374,6 +374,41 @@ check(!/require\(['"]\.\/encompass\/investors['"]\)/.test(src),
 check(A.summary().spellingsBlocked >= 80,
   `${A.summary().spellingsBlocked} spellings are actively blocked`);
 
+/* ── THE NUMBER IN THE DOCS IS THE NUMBER IN THE CODE (audit F10) ────────────────────────────
+   Three places disagreed — CLAUDE.md said 117, AUDIENCE-RULES.md said 151 and then 150,
+   investors.js says 151 — while the code answered 135. The disagreement was that TWO DIFFERENT
+   FACTS were being quoted as one: 151 is how many spellings the live Encompass fields held on
+   2026-08-14 (a fact about the book, and why this registry exists); 135 is how many the REGISTRY
+   records and this file sweeps. Both are true. A prose number nothing checks is a number that goes
+   stale the first time somebody adds an investor — so the registry's own count is asserted against
+   the sentence that quotes it. */
+{
+  /* ⛔ COUNTED WITH NOTHING ELSE IN FORCE, and this guard caught its own first draft: run as it
+     stood it read 138 blocked against 135 registry spellings, because the sections above leave a
+     hand-added investor installed. The block was right and the comparison was wrong. Both extra
+     maps are cleared, the registry's own number is taken, and they are restored after — otherwise
+     this would be a number about the fixture rather than about the registry. */
+  const registry = investors;
+  const fsDocs = require('fs');
+  A.useCustomInvestors(null);
+  A.useInvestorLinks(null);
+  const distinct = new Set();
+  let rawRows = 0;
+  for (const inv of registry.INVESTORS) {
+    for (const one of [inv.label].concat(inv.aliases || [])) { rawRows += 1; distinct.add(String(one).toLowerCase()); }
+  }
+  check(A.summary().spellingsBlocked === distinct.size,
+    `the block sweeps EVERY distinct registry spelling and no more (${A.summary().spellingsBlocked} blocked, ${distinct.size} distinct, from ${registry.INVESTORS.length} investors and ${rawRows} label+alias rows)`);
+
+  const rulesDoc = fsDocs.readFileSync(path.join(ROOT, 'docs/longterm/AUDIENCE-RULES.md'), 'utf8');
+  check(rulesDoc.includes(`every one of the ${distinct.size} recorded spellings`),
+    `AUDIENCE-RULES.md quotes the registry's REAL count (${distinct.size}) — the sentence that promises the sweep must not name a number the sweep does not cover`);
+  const claude = fsDocs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  check(claude.includes(`REGISTRY (**${distinct.size}** recorded spellings`),
+    `CLAUDE.md quotes it too (${distinct.size}) — it was 117, stale by three separate additions`);
+  A.useCustomInvestors(CUSTOM_FIXTURE);
+}
+
 // ── THE INVESTOR IDENTITY CHAIN NEVER LEAVES THE STAFF SIDE ─────────────────
 //
 // `lt_loan_investors` holds who bought the loan, their own loan number, their

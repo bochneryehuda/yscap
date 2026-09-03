@@ -90,6 +90,13 @@ const PROGRAM_NAMES = {
   redwood_trust: 'Sequoia',       // Redwood Trust
   sgcg: 'Sterling',               // SGCG
   adams_nymt: 'Empire',           // adams NYMT
+  // Added 2026-09-02 from the owner's updated sheet. ClearEdge was only ever a
+  // hand-added investor before this; Button Finance has been in the registry all
+  // along and stays PRE-FILLED OFF (owner-directed 2026-08-30) — a white-label
+  // name is the label a row would carry IF it were shown, never a decision to
+  // show it. Turning it on is still the enabled flag, and still the owner's call.
+  clearedge: 'Crystal',           // ClearEdge Lending
+  button_finance: 'Jade',         // Button Finance
 };
 
 /**

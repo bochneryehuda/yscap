@@ -358,6 +358,32 @@ jobs:
       # above the measurement is a cap that fails on the next suite anybody
       # adds — which is how this note came to be written twice. 60 leaves ~33%
       # headroom and still kills a genuinely wedged step well inside the hour.
+      #
+      # ⛔ THE THIRD TIME (2026-09-02) WAS NOT THIS. Read the two notes above and
+      # the reflex is to raise the cap again; it would have been wrong, and at 90
+      # minutes it would have failed exactly the same way. The step was not slow.
+      # IT WAS WEDGED — the hang guard doing its job, reported as a stopwatch.
+      #
+      # The measurement that separates them, and it takes one look at the log's
+      # last lines rather than its duration: main bd73e12f ran this step in
+      # 37m11s and PASSED; the very next commit, eb5b7978, was killed at 60. The
+      # chain grew by ONE suite between them, which runs in 0.8s. The log tail is
+      # the whole story — the chain reached scripts/test-draw-findings-public.js
+      # SEVEN MINUTES IN, printed "14 passed, 0 failed", and then nothing for 53
+      # minutes but a background heartbeat every 5 minutes. The ~1,300 suites
+      # behind it never ran.
+      #
+      # WHY: Long-Term now warms its settings at require time and re-reads them
+      # every 15s, which opens a connection on Long-Term's own pool. A suite that
+      # ends by letting Node exit could not, because that socket was still open.
+      # Fixed at the pool (`allowExitOnIdle`, src/longterm/db.js) and guarded by
+      # scripts/test-lt-process-exits-db.js, which is placed SECOND in the chain
+      # so the next one of these fails in the first minute instead of the sixtieth.
+      #
+      # SO: before touching this number again, read the last twenty lines of the
+      # killed step. A chain that stopped early is a hang and raising the cap only
+      # buys a longer wait; a chain that reached its last suites has genuinely
+      # grown, and that is the case the two notes above are about.
       - name: Run the tests
         timeout-minutes: 60
         run: |

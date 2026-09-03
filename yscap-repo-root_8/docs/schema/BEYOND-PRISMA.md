@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**963 objects**, and a database rebuilt from the Prisma
+**966 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 682 numbered migrations in `db/` (highest `db/685`) remain the only thing that builds this database.
+rebuild a database from them.** The 686 numbered migrations in `db/` (highest `db/689`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 410 |
-| Columns | 6572 |
+| Tables | 411 |
+| Columns | 6604 |
 | Triggers | 38 |
 | Functions | 142 |
-| CHECK constraints | 353 |
+| CHECK constraints | 354 |
 | Generated columns | 12 |
-| Partial indexes | 418 |
-| Primary keys | 410 |
-| Foreign keys | 831 |
+| Partial indexes | 420 |
+| Primary keys | 411 |
+| Foreign keys | 832 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1425 |
+| Indexes (all kinds) | 1430 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -234,7 +234,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (418)
+## Partial indexes (420)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -562,6 +562,7 @@ the live database.
 - **lt_ppe_rule_lookup_idx** on `lt_ppe_rule`
 - **lt_ppe_rule_suggestion_open_idx** on `lt_ppe_rule_suggestion`
 - **lt_pricer_scenarios_mine_idx** on `lt_pricer_scenarios`
+- **lt_pricing_source_misses_open_idx** on `lt_pricing_source_misses`
 - **lt_reo_properties_enc_uk** on `lt_reo_properties`
 - **lt_report_definitions_shared_idx** on `lt_report_definitions`
 - **lt_residences_enc_uk** on `lt_residences`
@@ -592,6 +593,7 @@ the live database.
 - **uq_assignee_one_primary** on `application_assignees`
 - **uq_checklist_items_lt_one_per_template** on `checklist_items`
 - **uq_class_attach_name** on `class_attachments`
+- **uq_class_attach_outbound_doc** on `class_attachments`
 - **uq_class_cb_reg** on `class_callback_registrations`
 - **uq_class_form_map_default** on `class_form_map`
 - **uq_class_notes_vendor_id** on `class_notes`
@@ -655,7 +657,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (353)
+## CHECK constraints (354)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -750,6 +752,7 @@ the live database.
 - **chk_trinity_media_kind** on `trinity_order_media`
 - **chk_trinity_order_status** on `trinity_inspection_orders`
 - **chk_workflow_submission_type** on `workflow_items`
+- **class_attachments_direction_check** on `class_attachments`
 - **class_notes_direction_check** on `class_notes`
 - **class_orders_api_version_check** on `class_orders`
 - **class_orders_uad_check** on `class_orders`
@@ -1011,7 +1014,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (831)
+## Foreign keys (832)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1192,6 +1195,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **class_attachments** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
 - **class_attachments** → `class_orders` — `FOREIGN KEY (class_order_row) REFERENCES class_orders(id) ON DELETE CASCADE`
 - **class_attachments** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **class_attachments** → `staff_users` — `FOREIGN KEY (uploaded_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **class_callback_events** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
 - **class_callback_events** → `class_orders` — `FOREIGN KEY (class_order_row) REFERENCES class_orders(id) ON DELETE SET NULL`
 - **class_callback_registrations** → `staff_users` — `FOREIGN KEY (registered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
@@ -1919,7 +1923,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 410 primary keys and 1425 indexes is
+Every one of the 411 primary keys and 1430 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

@@ -92,10 +92,12 @@ const HOSTS = {
   // real create call at `POST https://api.uat.classvaluation.com/orders` — so the
   // order paths hang off the ROOT of these hosts.
   production: { orders: 'https://api.classvaluation.com',      ordersConfirmed: true,
-                token:  'https://ids.classvaluation.com/connect/token',     tokenConfirmed: false },
-  // The vendor confirmed the UAT identity host directly, so its token URL is
-  // confirmed. Production's identity host is still INFERRED from the shape of the
-  // test/UAT ones — confirm it before switching production on.
+                token:  'https://ids.classvaluation.com/connect/token',     tokenConfirmed: true },
+  // The vendor confirmed the UAT identity host directly. Production's identity host
+  // was confirmed the hard way on 2026-09-02: the production credentials Class
+  // issued minted a real bearer at `ids.classvaluation.com/connect/token`, and the
+  // same token read `/intg/products` (49 products) and `/intg/orders` on
+  // `api.classvaluation.com`. The UAT and test hosts rejected those credentials.
   uat:        { orders: 'https://api.uat.classvaluation.com',  ordersConfirmed: true,
                 token:  'https://ids.uat.classvaluation.com/connect/token', tokenConfirmed: true },
   test:       { orders: 'https://api.test.classvaluation.com', ordersConfirmed: true,
@@ -114,9 +116,14 @@ function apiPrefix() {
 // token route deliberately does NOT go through here — it uses `hosts().tokenUrl`.
 function apiBase() { return hosts().ordersUrl + apiPrefix(); }
 
+let _warnedEnv = false;
 function hosts() {
   const c = CLASS();
   const env = HOSTS[c.environment] ? c.environment : 'uat';
+  if (env !== c.environment && !_warnedEnv) {
+    _warnedEnv = true;
+    console.warn(`[class] CLASS_ENVIRONMENT=${JSON.stringify(c.environment)} is not one of ${Object.keys(HOSTS).join('/')} — falling back to UAT hosts`);
+  }
   const row = HOSTS[env];
   const ordersUrl = c.ordersUrl || row.orders;
   const tokenUrl = c.tokenUrl || row.token;
@@ -245,13 +252,13 @@ async function getAccessToken() {
 //                 CLASS_OUTBOUND_ENABLED and short-circuited by CLASS_DRYRUN.
 //   opts.label  — what to call it in an error.
 // ---------------------------------------------------------------------------
-async function request(method, path, { body, query, write, label } = {}) {
+async function request(method, path, { body, query, write, label, form } = {}) {
   if (!switches.on('CLASS_ENABLED')) throw gateError('CLASS_DISABLED', 'the Class Valuation integration master switch is off');
 
   // Dry-run is checked BEFORE the write gate, so it is always safe to leave on
   // while verifying — exactly the AMC ordering.
   if (write && switches.on('CLASS_DRYRUN')) {
-    console.warn(`[class][DRYRUN] would ${method} ${path} body=${JSON.stringify(maskSafe(body))}`);
+    console.warn(`[class][DRYRUN] would ${method} ${path} body=${form ? describeForm(form) : JSON.stringify(maskSafe(body))}`);
     return { __dryrun: true };
   }
   if (write && !switches.on('CLASS_OUTBOUND_ENABLED')) {
@@ -274,8 +281,14 @@ async function request(method, path, { body, query, write, label } = {}) {
     try {
       const token = await getAccessToken();
       const headers = { Authorization: `Bearer ${token}` };
-      if (payload !== undefined) headers['Content-Type'] = 'application/json';
-      ({ res, buf } = await fetchWithTimeout(url, { method, headers, body: payload }, CLASS().timeoutMs));
+      // A multipart upload (their `POST /{orderId}/attachments/{category}` takes a
+      // file field + an AttachmentType field) is built FRESH on every attempt: a
+      // FormData body is a stream, and a retried request must not reuse a consumed
+      // one. fetch sets the multipart boundary header itself, so none is set here.
+      let sendBody = payload;
+      if (form) sendBody = buildForm(form);
+      else if (payload !== undefined) headers['Content-Type'] = 'application/json';
+      ({ res, buf } = await fetchWithTimeout(url, { method, headers, body: sendBody }, CLASS().timeoutMs));
     } catch (netErr) {
       netErr.retryable = true; lastErr = netErr;
       if (attempt < MAX_TRIES) { await sleep(backoff(attempt)); continue; }
@@ -311,6 +324,32 @@ async function request(method, path, { body, query, write, label } = {}) {
 function backoff(attempt, retryAfterSec) {
   if (retryAfterSec > 0) return Math.min(retryAfterSec * 1000, 60000);
   return Math.min(BASE_BACKOFF_MS * 2 ** (attempt - 1), 8000) + Math.floor(Math.random() * 250);
+}
+
+// ---------------------------------------------------------------------------
+// Multipart bodies. `form` is { fields:{name:value}, file:{ field, fileName,
+// contentType, bytes } } — plain data, so a test can describe one and the dry-run
+// can print it without a Buffer in the log. Built on the global FormData/Blob
+// (Node 18+), which is what `fetch` accepts natively.
+// ---------------------------------------------------------------------------
+function buildForm(form) {
+  const fd = new FormData();
+  for (const [k, v] of Object.entries((form && form.fields) || {})) {
+    if (v != null && v !== '') fd.append(k, String(v));
+  }
+  const f = form && form.file;
+  if (f && f.bytes) {
+    fd.append(f.field || 'FileData', new Blob([f.bytes], { type: f.contentType || 'application/octet-stream' }),
+      f.fileName || 'document');
+  }
+  return fd;
+}
+function describeForm(form) {
+  const f = (form && form.file) || {};
+  return JSON.stringify({
+    ...((form && form.fields) || {}),
+    [f.field || 'FileData']: f.bytes ? `<${f.fileName || 'document'} ${f.contentType || ''} ${f.bytes.length} bytes>` : null,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -484,9 +523,27 @@ module.exports = {
   requestRevision: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/request-revision`, body, { label: 'requestRevision' }),
   requestCancel: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/request-cancel`, body, { label: 'requestCancel' }),
   requestGseRevision: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/request-gse-revision`, body, { label: 'requestGseRevision' }),
+  // SEND A DOCUMENT TO THE ORDER — their `POST /{orderId}/attachments/{category}`
+  // (multipart: `FileData` + `AttachmentType` ∈ HyperLink/PDF/XML/Image). The
+  // attachments path has the same two documented shapes as the reads, so it rides the
+  // same remembered-path search. A WRITE: gated by CLASS_OUTBOUND_ENABLED and
+  // short-circuited by CLASS_DRYRUN like every other change we make at Class.
+  uploadAttachment: (orderId, category, { fileName, contentType, bytes, attachmentType }) =>
+    attachmentPathTry((p) => request('POST', `${p}/attachments/${encodeURIComponent(category)}`, {
+      write: true, label: 'uploadAttachment',
+      form: { fields: { AttachmentType: attachmentType }, file: { field: 'FileData', fileName, contentType, bytes } },
+    }), orderId),
+  // Which file types each attachment category accepts (their `GET /attachments/types`).
+  attachmentTypes: () => get('/attachments/types', undefined, 'attachmentTypes'),
+  // THE MONEY PICTURE — fee, additional fees, total, paid, outstanding. A read.
+  paymentDetails: (orderId) => get(`/orders/${encodeURIComponent(orderId)}/payment-details`, undefined, 'paymentDetails'),
+  // RECORD a card payment taken elsewhere (their endpoint carries only the holder's
+  // name, the amount, the LAST FOUR and an authorization code — it processes nothing).
+  recordCardPayment: (orderId, body) =>
+    post(`/orders/${encodeURIComponent(orderId)}/add-creditcard-payment`, body, { label: 'recordCardPayment' }),
   registerCallback: (body) => post('/callbacks', body, { label: 'registerCallback' }),
   registerAllCallbacks: (body) => post('/callbacks/addAll', body, { label: 'registerAllCallbacks' }),
   deleteCallback: (id) => request('DELETE', '/callbacks', { query: { id }, write: true, label: 'deleteCallback' }),
-  _internals: { maskSafe, readBody, backoff, HOSTS, apiPrefix, apiBase,
+  _internals: { maskSafe, readBody, backoff, HOSTS, apiPrefix, apiBase, buildForm, describeForm,
     attachmentPathTry, ATTACH_PATHS, resetAttachPath: () => { _attachPathIdx = 0; } },
 };

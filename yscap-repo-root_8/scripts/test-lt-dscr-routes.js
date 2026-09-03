@@ -189,10 +189,16 @@ ok(g.nexted && g.code === null, 'gate passes through on correct token');
   const rows = [{
     key: 'pricing.customInvestors',
     value: {
-      clearedge_lending: {
-        label: 'ClearEdge Lending',
+      // ⛔ FICTIONAL ON PURPOSE. A hand-added name that is already a recorded
+      // spelling of a REGISTRY investor is refused at the door, so this fixture
+      // must never be a real investor's name: ClearEdge Lending was used here
+      // until the owner put it in the registry (2026-09-02, as "Crystal"), at
+      // which point the CONTROL below silently had nothing in force and the
+      // suite went red. A name no roster can take is the only stable fixture.
+      meridian_trust: {
+        label: 'Meridian Trust Partners',
         whiteLabel: 'Summit',
-        aliases: ['ClearEdge Lending', 'ClearEdge'],
+        aliases: ['Meridian Trust Partners', 'Meridian Trust'],
       },
     },
   }];
@@ -220,12 +226,16 @@ ok(g.nexted && g.code === null, 'gate passes through on correct token');
     'the roster handler is SYNCHRONOUS — it awaits nothing, because there is nothing to await');
   ok(queries === 0,
     `THE ONE THAT MATTERS: it read NOTHING — no settings, no database (${queries} queries) — so no combined-engine setting can reach the general screen`);
-  ok(sent && sent.ok === true && Array.isArray(sent.investors) && sent.investors.length === 24,
-    `it answers the whole 24-name sheet (${sent && sent.investors ? sent.investors.length : 0})`);
+  // DERIVED from the sheet, never a hand-typed count: the owner adds names to it
+  // (26 as of 2026-09-02, 24 before that) and a literal here turns every such
+  // addition into a red build that reads as a broken feature.
+  const sheetSize = require('../src/longterm/lenderprice/investor-programs').fullRoster().length;
+  ok(sent && sent.ok === true && Array.isArray(sent.investors) && sent.investors.length === sheetSize,
+    `it answers the whole ${sheetSize}-name sheet (${sent && sent.investors ? sent.investors.length : 0})`);
   const keys = sent.investors.map((i) => i.key);
   ok(new Set(keys).size === keys.length,
     '…each investor exactly once — an overlay laid over a registry is how one comes to be listed twice');
-  ok(!keys.includes('clearedge_lending')
+  ok(!keys.includes('meridian_trust')
     && !sent.investors.some((i) => i.whiteLabel === 'Summit'),
   'THE ONE THAT MATTERS: a hand-added investor is NOT on it — this engine prices Lender Price alone, and offering a LoanNEX-only name here is an empty board nobody can explain');
   ok(!('degraded' in sent),

@@ -18,6 +18,14 @@ const lp = require('../lenderprice/client');
 // never filters, narrows or re-orders anything — the display overlay lives on
 // the screen, and the search always asks for everything.
 const investorPrograms = require('../lenderprice/investor-programs');
+const generalBoard = require('../pricing/general-board');
+const investorConfig = require('../pricing/investor-config');
+const sourceMisses = require('../pricing/source-misses');
+/* THE SECOND RATE SHEET. Required here so the bracket loop can hand both clients to
+   `generalBoard`; it is never called unless an investor is routed to it, and a portal
+   with no credentials simply refuses, which leaves the board Lender Price's alone —
+   exactly what this screen did before. */
+const nex = require('../loannex/client');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
 const zipCounty = require('../lenderprice/zip-county');
 const settingsStore = require('../settings/store');
@@ -325,25 +333,65 @@ async function priceBrackets(req, res) {
   // echoing what the vendor understood and where the pricing config came from.
   let firstRequest = null;
   let provenance = null;
+  /* ⛔ THE ONE PLACE THE SECOND RATE SHEET ENTERS THIS SCREEN (owner-directed 2026-09-03:
+     *"we're just adding a new source for these investors"*). The configuration is read
+     ONCE for the whole search — not per band, which would spend a settings round trip on
+     every band and could price two bands under two different configurations if somebody
+     saved between them. With nobody routed to LoanNEX this costs nothing and no second
+     vendor call is made at all. */
+  const cfg = await generalBoard.loadConfig({
+    routes: body.routes, links: body.links, marginHoldback: body.marginHoldback,
+  });
+
+  /* WHAT EACH SHEET ACTUALLY PRODUCED, ACROSS THE WHOLE SEARCH. One search asks the sheets
+     once per DSCR band, and an investor that answers in one band and not another is still an
+     investor that sheet CARRIES — so the bands are unioned and the register is written ONCE at
+     the end. Writing per band would spend a settings round trip per band and, worse, would
+     record a narrow band's silence as evidence about the sheet. */
+  const sighted = {
+    lenderprice: { answered: false, keys: new Set() },
+    loannex: { answered: false, keys: new Set() },
+  };
+  /* WHO THE SECOND SHEET WAS EXPECTED TO CARRY AND DID NOT. Unioned across the bands for
+     the same reason the sightings are: an investor that answers in one band and not another
+     is carried, and reporting the narrow band as a miss would file a review nobody can act
+     on. Recorded once, after the search. */
+  const missedKeys = new Set();
+
   const runSearch = async (dscr) => {
     // A null ratio is the officer's own scenario, untouched — the probe.
     const one = dscr == null ? sc : Object.assign({}, sc, { dscr });
-    const r = await lp.price(one);
+    /* Both sheets, at once, for THIS band. The Lender Price half is passed through
+       untouched but for its programme list, so the bracket loop, the board and the
+       details panel below read exactly what they read before. */
+    const r = await generalBoard.boardForScenario(one, { lp, nex, investorPrograms }, cfg);
     if (!r.ok) return { ok: false, error: r.error || 'lp_price_failed', message: r.message || null, http: r.http || null };
     if (firstRequest == null) { firstRequest = r.request; provenance = r.provenance || null; }
-    /* ⛔ THE FULL PARSE, NOT THE SUMMARY. A band has to render with the SAME code the
-       whole board renders with — the same rows, the same lender grouping, the same
-       details panel behind each quote (the owner: *"Every rate and every investor
-       added, but that whole section should be divided in brackets, and it should work
-       the same"*). The details panel is built on `priceBuild` / the itemised LLPAs,
-       which only `parseFull` carries; the summary parse would give a thinner second
-       board beside the real one, which is exactly what was rejected. */
-    const parsed = lp.parseFull(r.raw);
-    const deco = investorPrograms.decorate(parsed.programs);
+    for (const src of ['lenderprice', 'loannex']) {
+      const o = r.sightings && r.sightings[src];
+      if (!o || !o.answered) continue;
+      sighted[src].answered = true;
+      for (const k of o.keys || []) sighted[src].keys.add(k);
+    }
+    for (const k of r.missing || []) missedKeys.add(k);
+    /* ⛔ THE FULL PARSE, NOT THE SUMMARY — done inside `boardForScenario`, which returns
+       the same `parseFull` answer with only its programme list replaced. A band has to
+       render with the SAME code the whole board renders with (the owner: *"Every rate and
+       every investor added, but that whole section should be divided in brackets, and it
+       should work the same"*), and the details panel is built on `priceBuild` / the
+       itemised LLPAs, which only the full parse carries. */
     return {
       ok: true,
-      parsed: Object.assign({}, parsed, { programs: deco.programs }),
-      meta: { searchKey: r.searchKey, sentDscr: dscr, pricedAt: parsed.pricedAt || null },
+      parsed: r.parsed,
+      meta: {
+        searchKey: r.searchKey,
+        sentDscr: dscr,
+        pricedAt: r.parsed.pricedAt || null,
+        // Investors this search expected from the second sheet and did not get. Carried
+        // out for the review record; the board itself says nothing about them.
+        missingFromLoanNex: r.missing,
+        sources: r.sources,
+      },
     };
   };
 
@@ -361,6 +409,42 @@ async function priceBrackets(req, res) {
        than the band's floor). Optional by design: the loop works without them. */
     seenQuotes: Array.isArray(body.seenQuotes) ? body.seenQuotes : [],
   });
+  /* ⛔ RECORD WHAT THE SHEETS PRODUCED — ONCE, AFTER THE SEARCH, AND NEVER AT ITS COST.
+     Owner-directed 2026-09-03: the side-by-side list shows *"which systems that investor is
+     available on"*, and *"If you see a new investor populating in any of the systems, just add
+     that to the list."* This is the only place that register is written from a general-engine
+     search; `recordSightings` swallows its own failures, so a settings store that is briefly
+     unwritable costs a column on a settings screen and never a board. */
+  await investorConfig.recordSightings({
+    lenderprice: { answered: sighted.lenderprice.answered, keys: [...sighted.lenderprice.keys] },
+    loannex: { answered: sighted.loannex.answered, keys: [...sighted.loannex.keys] },
+  }, { staffId: (req.actor && req.actor.id) || null });
+
+  /* AN INVESTOR THE SECOND SHEET DID NOT CARRY IS LEFT OFF THE BOARD SILENTLY AND
+     RECORDED HERE (owner-directed 2026-09-03: the miss is left out silently and the super
+     admin is emailed, plus a manual review section recording the scenario, which investor
+     was missed, and whether the other sheet had it).
+
+     Silently, because once an investor is switched over the other sheet's copy of its
+     pricing is second-hand — showing it would be quoting a sheet we have stopped trusting
+     for that investor.
+
+     The band loop only ever adds a key when that sheet ANSWERED (the board returns an
+     empty `missing` for a sheet that refused), so one outage can never file forty reviews.
+     Best-effort throughout: the officer's board has already been built. */
+  if (missedKeys.size) {
+    await sourceMisses.record(
+      [...missedKeys].map((key) => ({
+        key,
+        /* Did the OTHER sheet have them? The owner's own question, and the one that tells
+           'the second sheet is having a bad day' apart from 'this investor has no product
+           for this loan'. Only answerable when that sheet actually answered. */
+        otherSourceHad: sighted.lenderprice.answered ? sighted.lenderprice.keys.has(key) : null,
+      })),
+      { source: 'loannex', scenario: sc, note: 'The second rate sheet answered this search and did not carry this investor.' },
+    );
+  }
+
   if (!out.ok) {
     // A refusal here is about the DEAL (not enough figures to bracket by) or the
     // vendor (the first search did not answer). Those need different actions, so

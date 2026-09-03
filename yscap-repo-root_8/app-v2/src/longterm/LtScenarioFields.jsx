@@ -689,7 +689,7 @@ export function ScenarioFields({ form }) {
       </Field>
       {/* ⛔ FIXED OR ARM — A REAL CRITERION AT BOTH PROGRAMS, NEVER A WORD IN A PRODUCT NAME
           (owner-directed 2026-09-01: *"filter this in a legit way, not by looking at the words, but
-          in a real legit way, out of Lender, out of LoanX"*).
+          in a real legit way, out of Lender, out of LoanNEX"*).
 
           Lender Price takes it as `criteria.loanType` + `loanTypeCriteria`; LoanNEX takes no such
           input at all, so its board is narrowed afterwards on the `amortizationType` it publishes

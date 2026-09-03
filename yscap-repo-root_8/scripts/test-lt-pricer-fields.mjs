@@ -102,6 +102,51 @@ ok(F.unitsFor('Unit2_4', '1') === '2', 'B5 …and switching to a 2–4 family li
 ok(F.unitsFor('MultiFamily', '2') === '5', 'B6 …and a multifamily cannot start under 5');
 ok(F.unitsFor('Unit2_4', '3') === '3', 'B7 …while a value already in range is left alone');
 
+/* ⛔ AND THE RULE IS PROVEN AGAINST THE SERVER, NOT AGAINST A COMMENT — audit drift 7.
+ *
+ * Every assertion above pins a LITERAL the browser holds and only a comment claimed it matched
+ * `validateInputs`. So the day the SERVER'S rule moves — a 2–4 family allowed five units, a
+ * multifamily allowed four — this block stays green while the control offers a number the server
+ * refuses, which is a dead end the person cannot get out of: the box will not let them type a
+ * legal value and the server will not take the one it offers.
+ *
+ * This runs the SERVER'S OWN validator over what the CONTROL can produce, both ways, so the two
+ * cannot drift apart in silence. */
+{
+  const scenarioWith = (propertyType, units) => ({
+    purpose: 'Purchase', value: 500000, loan: 375000, ltv: 75, fico: 760, dscr: 1.3,
+    propertyType, units, zip: '06001', state: 'CT', county: 'Hartford',
+    borrowerType: 'LLC', prepayMonths: 60,
+  });
+  const serverRefusesUnits = (propertyType, units) => {
+    const r = model.validateScenario(scenarioWith(propertyType, units));
+    return !!(r && r.ok === false && r.error === 'units_conflict');
+  };
+
+  // Forward: EVERY number the control can produce must be one the server accepts.
+  const offered = [];
+  for (const t of ['SingleFamily', 'Unit2_4', 'MultiFamily', 'Condo', 'Townhouse']) {
+    const m = F.unitsMode(t);
+    if (m.mode === 'fixed') offered.push([t, m.value]);
+    else if (m.mode === 'choice') for (const n of m.options) offered.push([t, n]);
+    else for (const n of [m.min, m.min + 1, m.min + 20, 200]) offered.push([t, n]);
+  }
+  const refusedButOffered = offered.filter(([t, n]) => serverRefusesUnits(t, n));
+  ok(offered.length >= 10 && refusedButOffered.length === 0,
+    `B7a the server accepts EVERY unit count the control can produce (${offered.length} tried${refusedButOffered.length ? ' — refused: ' + JSON.stringify(refusedButOffered.slice(0, 3)) : ''})`);
+
+  // Backward: the numbers the control WITHHOLDS are withheld because the server refuses them,
+  // not because the screen decided to be tidy. A control narrower than the rule is its own defect.
+  const withheld = [['SingleFamily', 2], ['SingleFamily', 4], ['Unit2_4', 1], ['Unit2_4', 5], ['MultiFamily', 1], ['MultiFamily', 4]];
+  const withheldButAllowed = withheld.filter(([t, n]) => !serverRefusesUnits(t, n));
+  ok(withheldButAllowed.length === 0,
+    `B7b …and every count it withholds is one the server genuinely refuses${withheldButAllowed.length ? ' — wrongly withheld: ' + JSON.stringify(withheldButAllowed) : ''}`);
+
+  // ⛔ AND THE CHECK IS PROVEN TO BITE. If `validateScenario` ever stopped reporting a units
+  // conflict, both assertions above would pass vacuously and the guard would be decoration.
+  ok(serverRefusesUnits('SingleFamily', 4), 'B7c the server really does refuse a four-unit single family — without this, B7a/B7b prove nothing');
+}
+
 ok(F.showsNonWarrantable('Condo') === true, 'B8 the non-warrantable question appears on a condo');
 ok(F.showsNonWarrantable('SingleFamily') === false, 'B9 …and on nothing else');
 

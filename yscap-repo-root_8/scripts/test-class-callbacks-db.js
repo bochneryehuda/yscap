@@ -185,7 +185,7 @@ async function main() {
   // the same file, not a second one.
   await db.query(`INSERT INTO class_attachments (class_order_row, application_id, name, content_type)
                   VALUES ($1,$2,'Appraisal.pdf','application/pdf')
-                  ON CONFLICT (class_order_row, name) WHERE name IS NOT NULL DO NOTHING`, [order36, appId]);
+                  ON CONFLICT (class_order_row, name) WHERE name IS NOT NULL AND direction = 'inbound' DO NOTHING`, [order36, appId]);
   const at2 = await db.query('SELECT count(*)::int n FROM class_attachments WHERE class_order_row = $1', [order36]);
   ok(at2.rows[0].n === 1, 're-announcing the same document does not create a second row');
 

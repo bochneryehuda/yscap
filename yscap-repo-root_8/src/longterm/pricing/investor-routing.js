@@ -34,6 +34,7 @@
  */
 
 const settingsOf = require('./investor-settings');
+const sources = require('./sources');
 
 /** A route is now simply the investor's SOURCE. Kept as its own word because a
  *  board talks about routing and a settings screen talks about a source. */
@@ -177,8 +178,40 @@ function applyRouting(merged, opts = {}) {
       note: 'One investor, one source — so the board reads as one system. Ask for the source explicitly to see where each row came from.',
     },
   };
-  // `sources` names the two vendors and their errors; that is provenance, and
-  // provenance is what the reveal is for.
+  /**
+   * ⛔ A SHORTENED BOARD SAYS SO, WITHOUT NAMING A VENDOR (audit F2 — the most expensive failure
+   * class this integration has).
+   *
+   * `sources` names the two programs and their errors; that is provenance, and provenance is what
+   * the reveal is for. But deleting it left the ordinary board with NO WAY AT ALL to know half its
+   * prices were missing: the front end reads neither `sources` nor `provenance`, `hidden[]` can
+   * only report an investor that reached the merge, and the empty-board copy says "This rate sheet
+   * returned no priced rungs" — singular, about a board two rate sheets quote.
+   *
+   * Reproduced three ways: a program that is down, a program that refuses the scenario (occupancy
+   * "Second Home" takes the board from 15 programmes across 8 investors to 2 across 2 with
+   * `hidden[]` EMPTY), and an investor only the other program quotes. In every one the precise
+   * reason existed only under `revealSource`.
+   *
+   * So `sources` still goes — and a NEUTRAL count takes its place. "One of the two rate sheets this
+   * board asks did not answer" needs no vendor name to be useful, and it is the difference between
+   * a short board and a short board somebody knows about. An officer who needs to know WHICH asks
+   * for the source, exactly as they do for everything else here.
+   */
+  const asked = ['lenderprice', 'loannex'];
+  const answered = asked.filter((k) => out.sources && out.sources[k] && out.sources[k].answered === true);
+  out.completeness = {
+    programsAsked: asked.length,
+    programsAnswered: answered.length,
+    complete: answered.length === asked.length,
+    /* NULL when the board is whole, so a screen can draw nothing without deciding what "whole"
+       means for itself. A sentence rather than a code: this is read by a person, and a screen that
+       has to compose the wording is a screen that will one day word it differently from this one. */
+    message: answered.length === asked.length ? null
+      : (answered.length === 0
+        ? 'Neither rate sheet answered this search, so there are no prices to show. Try again, or ask an admin to show the source for the reason.'
+        : `Only ${answered.length} of the ${asked.length} rate sheets this board asks answered, so it is shorter than it should be — some investors are missing rather than unavailable. Ask an admin to show the source for the reason.`),
+  };
   if (!reveal) delete out.sources;
   return out;
 }
@@ -301,7 +334,7 @@ function bestOfMany(list) {
   return best;
 }
 
-function label(src) { return src === 'loannex' ? 'LoanNEX' : src === 'lenderprice' ? 'Lender Price' : src; }
+const label = sources.sourceLabel;   // ONE definition, shared with the merge
 
 /**
  * "WHAT DOES THIS ROW'S OWN INVESTOR ADD TO THE HOLDBACK?" — as a function of a

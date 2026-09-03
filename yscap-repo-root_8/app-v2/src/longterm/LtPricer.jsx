@@ -5,7 +5,7 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // The pure rules that decide what a fee/comp figure MEANS live in their own plain-JS module
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
-import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor, ambiguousProgramLabels, programLabelKey, programLine } from './priceBuild.js';
+import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor, ambiguousProgramLabels, programLabelKey, programLine, baseOf, baseNote, termText } from './priceBuild.js';
 // The compensation OVERLAY (owner-directed 2026-08-23) — display math on top of the numbers
 // Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
 // decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
@@ -42,6 +42,7 @@ import {
   Check, ModeTab, DscrCalc, useScenarioForm, ScenarioFields,
 } from './LtScenarioFields.jsx';
 import { useEngine, useExplain, EngineProvider, ExplainProvider, GENERAL_ENGINE } from './pricerEngine.js';
+import { NO_BREAKDOWN } from './sourceLabel.js';
 
 /**
  * THE PRICING ENGINE — every rate Lender Price is quoting, and every investor at each one.
@@ -854,19 +855,21 @@ export function ChargeList({ charges, sheet }) {
    disagree the screen says so on its face rather than quietly showing one of them.
    ────────────────────────────────────────────────────────────────────────── */
 /**
- * WHY THERE IS NO ITEMIZATION, in plain words â a FALLBACK, never a second copy of the rule.
+ * WHY THERE IS NO ITEMIZATION, in plain words — a FALLBACK, never a second copy of the rule.
  *
- * The vendor's own sentence (`evidence.message`) is preferred wherever the server has one; these
- * cover the two states that have a reason and no message, and the last resort. Keyed on the codes
- * `quote-shape.attachEvidence` and `loannex/parse.explainAbsence` actually emit.
+ * The vendor's own sentence (`evidence.message`) is preferred wherever the server has one; this
+ * is what to say when there is none.
+ *
+ * ⛔ IT CARRIES EVERY CODE THE SERVER CAN EMIT, and it did not use to. This map held FOUR of the
+ * server’s seven, missing exactly the two that describe a sheet which answered badly
+ * (`vendor_returned_no_evidence`, `unrecognised_answer_shape`) — so those fell through to the
+ * generic “no breakdown could be read”, losing the one fact the reader opened the panel for.
+ *
+ * It is the shared `sourceLabel.js` map now, mirrored from the server’s `pricing/sources.js` and
+ * held to it by `test-lt-source-vocabulary-pure`, which fails the moment the server grows a
+ * reason this cannot word.
  */
-const EXPLAIN_REASON = {
-  not_requested: 'This rate sheet has not been asked to itemise this price.',
-  no_answer: 'The rate sheet was asked and nothing came back, so there is no breakdown to show.',
-  evidence_is_for_a_different_rate_or_lock:
-    'The breakdown that came back is for a different rate or lock, so it is not shown against this one.',
-  unknown: 'No breakdown could be read from the rate sheet’s answer.',
-};
+const EXPLAIN_REASON = NO_BREAKDOWN;
 
 /**
  * WHAT THE RATE SHEET WAS ASKED, in one line — printed only where the table is empty.
@@ -986,7 +989,10 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
     ? (ev.message || EXPLAIN_REASON[ev.reason] || EXPLAIN_REASON.unknown)
     : null;
 
-  let run = nn(b.basePoints) ? b.basePoints : null;
+  const base = baseOf(b);
+  // The running total starts from the RESOLVED base points, so a sheet that quotes only a price
+  // still stacks its adjustments from a real starting point instead of showing none.
+  let run = nn(base.basePoints) ? base.basePoints : null;
   const stack = adj.map((a) => {
     if (run != null && nn(a.value)) run = Math.round((run + a.value) * 1000) / 1000;
     return { ...a, running: run };
@@ -1037,9 +1043,12 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
         <Track title="Price build"
           note={`Price is 100 minus points. Every line came from ${engine.sheetLabel}; the right-hand column is this page adding them up so the build can be followed.`}>
-          <Row k="Base price" v={price(nn(b.basePoints) ? 100 - b.basePoints : null)}
-            title="100 minus the base points the rate sheet quotes before any adjustment." />
-          <Row k="Base points" v={pts(b.basePoints)} />
+          {/* The base is read through ONE resolver (`baseOf`), which prefers whichever half the
+              rate sheet actually stated and derives the other — and each row SAYS which it is.
+              Drawing "100 − points" on a sheet that quotes a PRICE presented our own arithmetic as
+              the vendor's figure, on the one panel whose job is to show where a price comes from. */}
+          <Row k="Base price" v={price(base.basePrice)} title={baseNote(base.baseDerived, 'price')} />
+          <Row k="Base points" v={pts(base.basePoints)} title={baseNote(base.baseDerived, 'points')} />
           {groups.map((g) => (
             <div key={g.name} style={{ marginTop: 8 }}>
               <div style={{
@@ -1126,8 +1135,10 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
             which stays an em dash. */}
         <Track title="Terms">
           <Row k="Loan amount" v={money(o && o.terms && o.terms.loanAmount)} />
-          <Row k="Term" v={o && o.terms && nn(o.terms.term)
-            ? `${o.terms.term} ${o.terms.termInMonths ? 'months' : 'years'}` : '—'} />
+          {/* ONE UNIT FOR ONE LOAN — see `termText`. This row used to print the sheet's own unit,
+              so a thirty-year loan read "30 years" on a Lender Price row and "360 months" on the
+              LoanNEX row beside it. */}
+          <Row k="Term" v={termText(o && o.terms) || '—'} />
           {/* ⛔ AN UNSTATED INTEREST-ONLY FLAG IS AN EM DASH, NEVER "FULLY AMORTISING". `null` on this
               key means the rate sheet did not say, and printing the amortising answer turns a
               silence into a claim about the loan. Lender Price fills it with `!!leaf.isInterestOnly`
@@ -1828,8 +1839,13 @@ export function IneligibleView({ dq, onAsk, loanAmount, initialOpen, comp, invSe
  * copy nobody can diff.
  *
  * `slots` are the panels only ONE board has, handed in by that board rather than flagged here:
- * a screen that lists its own exceptions is a copy with extra steps. Each is given what it needs
- * from this screen's state and nothing else.
+ * a screen that lists its own exceptions is a copy with extra steps. There are TWO of them and the
+ * difference is WHERE they draw, never what they may know — both are handed the same bag:
+ *
+ *   · `afterStrip` — between the search and the board. ONLY for something that decides whether the
+ *     answer below is safe to read at all, or that changes the search. Anything else here is a
+ *     panel between somebody pressing Price and the prices.
+ *   · `afterBoard`  — after the answer. Everything else, and the default for a new panel.
  */
 /**
  * WHAT THE PRODUCT ANSWERS TOOK OFF THE BOARD, in one plain sentence — or nothing at all.
@@ -2472,9 +2488,13 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
          the workflow". A price is ALSO the kickoff for it upstream, so this is a POLL of a search
          that is already running, not a second search. */
       if (dqAuto.current.timer) clearTimeout(dqAuto.current.timer);
-      if (r && r.searchKey) {
-        dqAuto.current = { key: r.searchKey, tries: 0, timer: null };
-        askDisqualified({ auto: true, searchKey: r.searchKey });
+      // ⛔ THE HANDLE COMES FROM THIS ANSWER, never from `res` — the state set a line earlier has
+      // not landed yet — and from the ENGINE, never from `r.searchKey`, which is a Lender Price
+      // idea the combined answer does not carry and which is why this never started there.
+      const dqHandle = engine.disqualifyHandle ? engine.disqualifyHandle(r) : null;
+      if (dqHandle) {
+        dqAuto.current = { key: JSON.stringify(dqHandle), tries: 0, timer: null };
+        askDisqualified({ auto: true, handle: dqHandle });
       } else {
         dqAuto.current = { key: null, tries: 0, timer: null };
       }
@@ -2496,12 +2516,25 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
 
   async function askDisqualified(opts) {
     const auto = !!(opts && opts.auto);
-    const key = (opts && opts.searchKey) || (res && res.searchKey);
-    if (!key || dqBusy.current) return;
+    /**
+     * THE HANDLE COMES FROM THE ENGINE, NOT FROM THE ANSWER'S SHAPE.
+     *
+     * ⛔ This used to read `res.searchKey` directly, which is a LENDER PRICE idea — so on the
+     * Combined Pricing Engine, whose answer has never carried one, it returned early every time and
+     * the whole "not eligible" section was DEAD for both rate sheets. Asking the engine lets the
+     * combined board hand back its own two search identities and the general board keep the exact
+     * call it has always made.
+     *
+     * `key` is only an IDENTITY string, for the "is this still the search on screen?" guard on the
+     * bounded auto-retry — never the thing sent.
+     */
+    const handle = (opts && opts.handle) || (engine.disqualifyHandle ? engine.disqualifyHandle(res) : null);
+    const key = handle ? JSON.stringify(handle) : null;
+    if (!handle || dqBusy.current) return;
     dqBusy.current = true;
     setDq((s) => ({ ...s, status: 'loading', tries: s.tries + 1, message: null, auto }));
     try {
-      const r = await ltApi.dscrDisqualifications(key);
+      const r = await engine.disqualify(handle, { reveal });
       // 202 arrives as an ordinary body (`ready:false`) rather than a throw, so "still computing"
       // is READ from the answer and never inferred from a status code the client already swallowed.
       if (r && r.ready === false) {
@@ -2512,7 +2545,7 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
         if (auto && dqAuto.current.key === key && dqAuto.current.tries < DQ_AUTO_TRIES) {
           dqAuto.current.tries += 1;
           dqAuto.current.timer = setTimeout(() => {
-            if (dqAuto.current.key === key) askDisqualified({ auto: true, searchKey: key });
+            if (dqAuto.current.key === key) askDisqualified({ auto: true, handle });
           }, DQ_AUTO_EVERY_MS);
         } else if (auto) {
           // ⛔ GIVEN UP — AND THE SCREEN MUST STOP SAYING IT IS STILL CHECKING. Leaving `auto` set
@@ -2867,7 +2900,7 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
                          screen that could explain the emptiness reads as "nothing prices this loan",
                          which is a claim neither rate sheet made. Only ever ADDED to the vendor's
                          own sentence, never in place of it. */
-                      : `${engine.sheetSubject} returned no priced rungs for this scenario. The Ineligible view says which products it looked at and why each was ruled out.${narrowedAway(res)}`}
+                      : `${engine.emptyBoardLine} The Ineligible view says which products it looked at and why each was ruled out.${narrowedAway(res)}`}
                   </div>
                 ) : (banded || { items: stack.rates.map((row) => ({ kind: 'rate', key: row.key, row })) }).items.map((it) => (
                   /* ⛔ ONE LIST, TWO KINDS OF ROW. The board is the SAME board — the
@@ -2890,6 +2923,24 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
             ) : (
               <IneligibleView dq={dq} onAsk={askDisqualified} loanAmount={loanAmount} comp={comp} invSel={invSel} />
             )}
+            {/* ⛔ AND WHATEVER BELONGS *AFTER* THE ANSWER — owner-reported 2026-09-03: *"I don't
+                like the way you put it on the search page right after the search instead of
+                coming back right results."* A panel that is about reconciling names, not about
+                whether this board is safe to read, sits between somebody pressing Price and the
+                prices. It is the same finding the comparison area got on 2026-09-01, one panel
+                further up: the work happens in the order price → read → tidy up, so anything that
+                is not about THIS answer waits until after it.
+
+                It is INSIDE `{res && stack && …}` on purpose — unlike the cart below, which spans
+                searches and must survive an empty board. A slot here describes the answer that
+                just came back, so with no answer there is nothing for it to describe.
+
+                The bag is the SAME one `afterStrip` gets. Two slots on one screen handing out two
+                different sets of state is two contracts to keep in step, and the difference between
+                them is WHERE they draw, never WHAT they may know. */}
+            {typeof slots.afterBoard === 'function' && slots.afterBoard({
+              res, busy, reveal, setReveal, reprice: run, setForm: setF,
+            })}
           </>
         )}
 
