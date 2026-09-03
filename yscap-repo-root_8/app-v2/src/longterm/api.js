@@ -250,6 +250,13 @@ export const ltApi = {
   combinedExplain: (quote, scenario, option) => ltPost(lt('/dscr/combined/explain'), {
     quote, scenario, option, investorKey: (quote && quote.investorKey) || null,
   }),
+  /* WHY IS THIS PRICE THIS PRICE, on the GENERAL engine — the SAME door, at this engine's
+     own path (owner-directed 2026-09-03). It carries no `revealSource`: this board is ONE
+     SYSTEM and never names a vendor, and the server refuses a reveal here whatever is sent,
+     so asking would be a request that could only ever be declined. */
+  dscrExplain: (quote, scenario, option) => ltPost(lt('/dscr/explain'), {
+    quote, scenario, option, investorKey: (quote && quote.investorKey) || null,
+  }),
   // Saves the WHOLE map, always — see the route's own note. A per-key patch could
   // not express "take this setting back off and return the investor to its
   // pre-fill", which is the thing somebody auditing this will do most often.

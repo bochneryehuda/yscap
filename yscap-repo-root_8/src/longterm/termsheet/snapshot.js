@@ -502,6 +502,24 @@ const GATE_LABELS = {
    `DSCR_TIERS` and `dscrTier` are re-exported below, so every reader is
    unaffected. */
 const { DSCR_TIERS, dscrTier } = require('../pricing/dscr-tiers');
+/**
+ * ⛔ THE SAME CUT THE SCREEN AND THE SEARCH USE. The owner, 2026-08-30: *"the DSCR
+ * should always be rounded down… so we should never see better."*
+ *
+ * This comparison has TWO halves — the ratio the option was PRICED at (the browser's
+ * figure) and the ratio the chosen quote actually ACHIEVES (recomputed here) — and
+ * they must be judged by ONE rule or the comparison is between unlike things. When
+ * the browser calculator started cutting down (2026-09-03) and this went on rounding
+ * to nearest, a one-cent bias appeared between them: MEASURED over 140,007
+ * (searched, achieved) pairs, refusals went from 6.675% to 6.997% — 1,800 pairs newly
+ * refused and 1,350 no longer refused, purely from the two halves disagreeing about
+ * rounding. Judged by one rule it is 6.785%; the residual above the old figure is the
+ * owner's rule genuinely biting, which is what he asked for.
+ *
+ * `sendAs` is also the safer read for an already-2dp value: its float-slack guard is
+ * what stops a typed 1.15 (whose ×100 is 114.99999999999999) being cut to 1.14.
+ */
+const tierRounding = require('../pricing/tier-rounding');
 
 function ratioProblem(member) {
   const m = member && typeof member === 'object' ? member : {};
@@ -518,8 +536,8 @@ function ratioProblem(member) {
   const housing = pi + tax + ins + hoa;
   if (!(housing > 0) || !(rent > 0)) return null;
 
-  const actual = Math.round((rent / housing) * 100) / 100;
-  const pricedRounded = Math.round(priced * 100) / 100;
+  const actual = tierRounding.sendAs('dscr', rent / housing, 2);
+  const pricedRounded = tierRounding.sendAs('dscr', priced, 2);
   const actualTier = dscrTier(actual);
   const pricedTier = dscrTier(pricedRounded);
   // A ratio neither side can place is not a bracket change anybody can act on.

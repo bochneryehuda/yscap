@@ -56,7 +56,7 @@ const PAIRING_CACHE_KEY = 'lt.combined.lastPairing';
  * private windows and locked-down browsers throw on the accessor itself, and a
  * settings screen may not fail to draw because of that.
  */
-function rememberPairing(p) {
+export function rememberPairing(p) {
   try {
     if (p) window.sessionStorage.setItem(PAIRING_CACHE_KEY, JSON.stringify({ at: Date.now(), pairing: p }));
   } catch { /* a browser that refuses to remember is not an error */ }

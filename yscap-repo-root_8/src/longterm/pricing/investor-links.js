@@ -274,6 +274,25 @@ function validateLinks(raw, custom) {
  * nothing gets its own row with suggestions attached — that row is the whole
  * point, because today such a name is dropped and nobody can act on it.
  */
+/**
+ * THE NAMES A BOARD ACTUALLY CARRIED, in the vendor's own spelling — the input `pairing`
+ * takes. Lifted here from `combined-pricer.js`, where it was private, so the GENERAL engine
+ * can answer the same question without a second copy: two engines each deriving "which names
+ * did this sheet return" their own way is how one screen comes to offer a link the other
+ * cannot see.
+ *
+ * The INVESTOR field is preferred over the LENDER field because it is the fuller name
+ * (LoanNEX carries both), and that is the spelling a person is being asked to link.
+ */
+function namesFromBoard(board) {
+  const out = [];
+  for (const p of (board && board.programs) || []) {
+    const n = p.investor || p.lender;
+    if (n && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
 function pairing(namesBySource, links, custom) {
   const map = links instanceof Map ? links : readLinks(links, custom).links;
   const byKey = new Map();
@@ -305,7 +324,7 @@ function pairing(namesBySource, links, custom) {
   return { rows, unlinked, linkCount: map.size };
 }
 
-module.exports = {
+module.exports = { namesFromBoard,
   SETTING_KEY, SOURCES,
   linkKeyOf, readLinks, resolveWithLinks, isGuess, suggestFor, validateLinks, pairing,
 };
