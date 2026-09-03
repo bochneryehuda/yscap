@@ -38,6 +38,7 @@ const roster = require('./../pricing/investor-roster');
 const vendorMargin = require('./../pricing/vendor-margin');
 const investorConfig = require('./../pricing/investor-config');
 const sightings = require('./../pricing/investor-sightings');
+const investorSettings = require('./../pricing/investor-settings');
 const sourceMisses = require('./../pricing/source-misses');
 const { whiteLabelOf } = require('../lenderprice/investor-programs');
 
@@ -139,9 +140,46 @@ function attach(router) {
       const availability = sightings.availabilityFor(r.key, sight);
       return { ...r, availability, lockedOut: sightings.lockedOutFor(r.key, sight) };
     });
+    /**
+     * THE OWNER'S LIST, NOT OUR WHOLE REGISTRY (owner-reported 2026-09-03: *"the list of
+     * lenders that I put in my settings is way bigger than the list I gave you… I gave you
+     * a list only of ones that have white-labeled names"*).
+     *
+     * The rule lives in `investorSettings.belongsOnSettingsList` — one definition, with the
+     * reasoning — and is applied HERE rather than inside `roster()` on purpose: the board
+     * builds `expectedFromLoanNex` from the full roster, so narrowing that would change
+     * which investors it expects and reports as missing. This narrows the SCREEN only.
+     *
+     * A new investor a rate sheet has actually produced still comes through, off and
+     * unnamed, which is the case the owner asked for by name.
+     */
+    const shown = investorsWithAvailability.filter(
+      (r) => investorSettings.belongsOnSettingsList(r, r.availability),
+    );
     res.json({
       ok: true, ...d,
-      investors: investorsWithAvailability,
+      investors: shown,
+      /* THE COUNTS DESCRIBE WHAT IS ON SCREEN. `describeSettings` totals the whole roster,
+         so spreading it unchanged beside a narrowed list would print "43" above 26 rows and
+         make the screen contradict itself. */
+      summary: {
+        ...d.summary,
+        total: shown.length,
+        on: shown.filter((r) => r.enabled).length,
+        off: shown.filter((r) => !r.enabled).length,
+        fromLenderPrice: shown.filter((r) => r.enabled && r.source === 'lenderprice').length,
+        fromLoanNex: shown.filter((r) => r.enabled && r.source === 'loannex').length,
+        fromBoth: shown.filter((r) => r.enabled && r.source === 'both').length,
+        missingWhiteLabel: shown.filter((r) => r.whiteLabelMissing).length,
+        custom: shown.filter((r) => r.custom).length,
+        withExtraHoldback: shown.filter((r) => r.holdbackOrigin === 'setting' && r.holdback !== 0).length,
+      },
+      /* What the screen is NOT showing, and why — so an empty-looking list is never a
+         mystery and nobody goes hunting for an investor that is deliberately absent. */
+      hidden: {
+        count: investorsWithAvailability.length - shown.length,
+        reason: 'no white-label name, never seen on a rate sheet, and no setting of its own',
+      },
       /* Said plainly so a screen can explain an empty column rather than reading a
          cold register as "this investor is on nothing". */
       sightings: {
@@ -153,7 +191,7 @@ function attach(router) {
       // The ones with no client-safe name yet, named out loud so somebody can
       // go and name them — an investor with no white label may never be put in
       // front of a borrower or a broker.
-      needsWhiteLabel: d.investors.filter((r) => r.whiteLabelMissing).map((r) => ({ key: r.key, investor: r.label })),
+      needsWhiteLabel: shown.filter((r) => r.whiteLabelMissing).map((r) => ({ key: r.key, investor: r.label })),
       storedProblem: src.problem || null,
     });
   });
