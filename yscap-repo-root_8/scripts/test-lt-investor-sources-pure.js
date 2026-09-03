@@ -262,14 +262,21 @@ console.log('\nH · nothing about the pricing page moved');
   ok(!/settingsStore|require\('\.\.\/db'\)/.test(board),
     'H2b …and writes nothing itself — it touches no database, so the route records it');
   const route = strip(read('src/longterm/routes/dscr-pricer.js'));
-  /* ⛔ RE-POINTED, NEVER LOOSENED (2026-09-03). This pair used to pin the spelling
-     `investorConfig.recordSightings` appearing exactly once in the route. Its SUBJECT was
-     never that spelling — it is that the register is written by the ROUTE, ONCE per search
-     and never per band. Both doors now go through the shared `search-record` collector, so
-     the assertions follow the property to where it lives. And the owner's own report
-     (*"the side by side… is not actually connected"*) added a THIRD thing worth pinning:
-     the IMMEDIATE board is a search too, so it must record as well — a guard that only
-     watched the bands door is what let that door stay silent. */
+  /* ⛔ EVERY ASSERTION IN THIS BLOCK IS A SHAPE CHECK, NOT A PROOF THAT THE REGISTER IS
+     WRITTEN — and that distinction is not a caveat, it is the finding.
+
+     They are text-presence regexes over the route's source, and the pre-merge audit of
+     2026-09-03 DEFEATED ALL OF THEM with one token: `void 0 && searchRecord.recordOne(…)`
+     leaves every string here intact, kills the call, silences the register, and restores
+     the owner's own reported defect (*"it's not actually connected"*) with this suite
+     reporting all checks passed. A regex over a caller can only ever pin the SPELLING of a
+     call; it cannot pin that the call HAPPENS.
+
+     What holds that is `test-lt-search-record-wired-pure.js`, which RUNS BOTH DOORS with
+     the recorder stubbed and counts what it received — and against which all three of the
+     audit's mutations fail. These stay because the SHAPE is still worth pinning (one shared
+     collector rather than a second copy of the rules; the flush outside the band loop), and
+     they are labelled for what they are so nobody reads a green here as a live register. */
   ok(/searchRecord\.collector\(\)/.test(route),
     'H3 the bands door records through the SHARED collector — never a second copy of the rules');
   ok((route.match(/searchSeen\.flush\(/g) || []).length === 1,
@@ -281,7 +288,7 @@ console.log('\nH · nothing about the pricing page moved');
     'H3d …the bands are UNIONED instead: an investor that answers in one band is carried');
   const fullDoor = route.slice(route.indexOf('if (body.full)'), route.indexOf('// The SUMMARY door'));
   ok(/searchRecord\.recordOne\(board/.test(fullDoor),
-    'H3e THE IMMEDIATE BOARD RECORDS TOO — it is the first thing an officer sees and often the only door that runs');
+    'H3e the immediate door still NAMES the shared recorder — that it CALLS it is proven by running it, in test-lt-search-record-wired-pure.js');
 }
 
 /* ── I · THE SAVE THE OWNER COULD NOT MAKE ───────────────────────────────────
