@@ -63,7 +63,7 @@ async function main() {
   const post = (body, headers) => fetch(CB, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(headers || {}) },
-    body: JSON.stringify(body),
+    body: typeof body === 'string' ? body : JSON.stringify(body),
   });
   const envelope = (eventName, orderId, referenceNumber, data) =>
     ({ orderId, referenceNumber, eventName, sent: new Date().toISOString(), created: new Date().toISOString(), data });
@@ -424,6 +424,27 @@ async function main() {
   await post(bigK('a', new Date(Date.now() + 5000).toISOString()), { Authorization: basic });
   ok(await countFor(`OversizeKeyed-${tag}`) === 2,
      'a keyed retry of the same oversize body (moved sent) still collapses to the existing row');
+
+  // 5. A body too DEEP to store verbatim becomes a marker, and the marker's raw-body
+  //    digest moves with `sent` — so the dedupe must not lean on the stored bytes. The
+  //    digest is computed over the parsed body iteratively, whatever its depth, so a
+  //    retry of a very deep delivery still collapses to one row.
+  // Built as TEXT: the test's own JSON.stringify would overflow on it too, which is the
+  // very property the case is about (the server's serializer overflows into a marker).
+  const deepBody = (sent) => `{"eventName":"Deep-${tag}","orderId":"cls27-${tag}","created":"${kc}","sent":"${sent}","data":${'{"n":'.repeat(20000)}{}${'}'.repeat(20000)}}`;
+  const dp1 = await post(deepBody('A'), { Authorization: basic });
+  const dp2 = await post(deepBody('B'), { Authorization: basic });
+  ok(dp1.status === 200 && dp2.status === 200, 'a 20,000-deep body is accepted, twice');
+  const deepRow = (await db.query(`SELECT payload FROM class_callback_events WHERE event_name = $1`, [`Deep-${tag}`])).rows;
+  ok(deepRow.length === 1, 'and its retry with a moved sent collapses to ONE row even though the body was stored as a marker');
+  ok(deepRow[0] && deepRow[0].payload && deepRow[0].payload.truncated === true, '(stored as a marker — the storage path genuinely overflowed)');
+
+  // 6. A top-level "__proto__" key is content. JSON.parse yields it as an own key; the
+  //    NUL stripper used to assign it onto a plain object, which set the prototype and
+  //    dropped it from the stored document.
+  await post(JSON.parse(`{"eventName":"Proto-${tag}","orderId":"cls28-${tag}","created":"${kc}","__proto__":{"x":1},"k":2}`), { Authorization: basic });
+  const protoRow = (await db.query(`SELECT payload ? '__proto__' AS has FROM class_callback_events WHERE event_name = $1`, [`Proto-${tag}`])).rows[0];
+  ok(protoRow && protoRow.has === true, 'a top-level "__proto__" key reaches the stored document');
 
   await db.query('DELETE FROM class_callback_events WHERE event_name LIKE $1', [`%${tag}`]);
 

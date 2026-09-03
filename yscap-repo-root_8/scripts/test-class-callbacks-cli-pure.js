@@ -2,7 +2,7 @@
 // The UTC-default proof below only bites when the server's clock is NOT UTC — under
 // UTC an offset-less created parses to the same instant either way. CI sets no TZ,
 // so pin one here before the first Date is ever built.
-process.env.TZ = process.env.TZ || 'America/New_York';
+if (!process.env.TZ || /^(UTC|Etc\/UTC|GMT)$/i.test(process.env.TZ)) process.env.TZ = 'America/New_York';
 /**
  * Class Valuation callback tool — the pure half (no database, no network).
  *
@@ -116,12 +116,20 @@ const mkDeep = (n) => { const d = {}; let cur = d; for (let i = 0; i < n; i++) {
 const d6 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: mkDeep(200), sent: 'A' }, 'x', '2026-09-03');
 const d7 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: mkDeep(200), sent: 'B' }, 'y', '2026-09-03');
 ok(d6.keyed && d6.material === d7.material, 'a 200-deep body is canonicalised like any other — a retry with a moved sent still collapses');
-const d8 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: mkDeep(2000), sent: 'A' }, 'x', '2026-09-03');
-const d9 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: mkDeep(2000), sent: 'B' }, 'y', '2026-09-03');
-ok(d8.keyed && d8.material === d9.material, 'past the canonical depth cap the digest falls to plain JSON (still sans sent) — a deep retry still collapses');
-const d10 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: mkDeep(2000) }, 'x', '2026-09-03');
-const d11 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: { ...mkDeep(2000), other: 1 } }, 'x', '2026-09-03');
-ok(d10.material !== d11.material, 'and on that rung two different deep bodies are still two events');
+// Deeper than JSON.stringify's own recursion survives (~4-5k on a fresh stack), which is
+// where the STORED body becomes a marker. The digest is iterative, so the identity of
+// a retry never depends on how the body happened to be stored.
+const d8 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: mkDeep(20000), sent: 'A' }, 'MARKER-A', '2026-09-03');
+const d9 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: mkDeep(20000), sent: 'B' }, 'MARKER-B', '2026-09-03');
+ok(d8.keyed && d8.material === d9.material, 'a body too deep to store verbatim still digests by content — a retry with a moved sent collapses even when stored as a marker');
+const d10 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: mkDeep(20000) }, 'x', '2026-09-03');
+const d11 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: { ...mkDeep(20000), other: 1 } }, 'x', '2026-09-03');
+ok(d10.material !== d11.material, 'and two different very deep bodies are still two events');
+const arrDeep = (n) => { const a = []; let cur = a; for (let i = 0; i < n; i++) { const nx = []; cur.push(nx); cur = nx; } return a; };
+const d8a = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: arrDeep(20000), sent: 'A' }, 'x', '2026-09-03');
+const d9a = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: arrDeep(20000), sent: 'B' }, 'y', '2026-09-03');
+ok(d8a.material === d9a.material, 'the same holds for deep arrays');
+ok(hook.canonical({ b: [1, { z: null, y: 'ü' }], a: 'x' }) === JSON.stringify({ a: 'x', b: [1, { y: 'ü', z: null }] }), 'canonical output IS JSON with keys sorted at every level');
 const d12 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: { big: 1n } }, 'MARKER-A', '2026-09-03');
 const d13 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: { big: 1n } }, 'MARKER-B', '2026-09-03');
 ok(d12.keyed && d13.keyed && d12.material !== d13.material, 'a body nothing can serialise falls back to the stored marker for its digest, never a throw');
