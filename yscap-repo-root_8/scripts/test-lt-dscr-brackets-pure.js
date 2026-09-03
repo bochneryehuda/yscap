@@ -614,37 +614,23 @@ async function main() {
        asserted, and measured against a baseline built by NEUTRALISING this file's own
        changed line — never by reading git, which proves inertness only until the change
        is committed and then compares the engine to itself. */
-    const Module = require('module');
-    const bbPath = path.join(__dirname, '..', 'src', 'longterm', 'pricing', 'bracket-board.js');
+    /* ⛔ ONE DEFINITION OF WHAT "BEFORE" MEANS, shared with the battery the board's own
+       header cites (`scripts/lib/dscr-round-down-battery.js`). It used to be written out
+       here and would have been written out a second time by any re-measurement — two
+       copies of a baseline rule is two answers to "what was the engine before", and the
+       one that drifts is the one a safety proof rests on. The GUARDS stay here, on the
+       pieces it hands back, so nothing about what is asserted moved. */
+    const battery = require('./lib/dscr-round-down-battery');
+    const bbPath = battery.BOARD_PATH;
     const bbSrc = fs.readFileSync(bbPath, 'utf8');
-    /* ⛔ THE STRIP MATCHES THE LEVER'S SHAPE, NOT ITS EXACT TEXT, and that is not
-       convenience — it is what stops the whole comparison degenerating. A literal string
-       match fails the moment somebody edits the ARGUMENT (`… / pitia + 0.005`), the
-       baseline is then the UNCHANGED source, `BEFORE === AFTER`, and "not one ratio went
-       up" passes because nothing was compared. MEASURED: that exact mutation made N3 pass
-       for the wrong reason. So the shape is matched, and N4's `moved > 0` is folded into
-       N3 below so a degenerate baseline can never satisfy the safety property either. */
-    /* The FIELD is matched loosely too. A lever asking for the wrong field ('ltv' cuts
-       the other way) must still be STRIPPED, or the guard refuses to build a baseline and
-       N3 stands down on the very mutation it exists to catch. */
-    const LEVER_RE = /tierRounding\.sendAs\('[a-z]+',\s*([^;]*?),\s*2\)/g;
-    const found = bbSrc.match(LEVER_RE) || [];
-    ok(found.length === 2,
-      `N0 CONTROL: the board settles a DSCR through the one door in exactly two places (${found.length}) — the ratio and the search ratio`);
-    const inRatio = /function ratioAtRate\([\s\S]*?\n\}/.exec(bbSrc);
-    const ratioLever = inRatio ? (inRatio[0].match(LEVER_RE) || []) : [];
-    ok(ratioLever.length === 1,
-      `N0a …one of them inside \`ratioAtRate\`, which is the one this baseline neutralises (${ratioLever.length})`);
-    const baseSrc = ratioLever.length === 1
-      ? bbSrc.replace(ratioLever[0], ratioLever[0].replace(LEVER_RE, 'Math.round(($1) * 100) / 100'))
-      : bbSrc;
-    ok(baseSrc !== bbSrc && (inRatio ? !LEVER_RE.test(/function ratioAtRate\([\s\S]*?\n\}/.exec(baseSrc)[0]) : false),
+    const base = battery.baselineEngine();
+    ok(base.found.length === 2,
+      `N0 CONTROL: the board settles a DSCR through the one door in exactly two places (${base.found.length}) — the ratio and the search ratio`);
+    ok(base.ratioLever.length === 1,
+      `N0a …one of them inside \`ratioAtRate\`, which is the one this baseline neutralises (${base.ratioLever.length})`);
+    ok(base.stripped,
       'N0b …and the baseline genuinely has it replaced by the OLD round-to-nearest');
-    const mod = new Module(bbPath, null);
-    mod.filename = bbPath;
-    mod.paths = Module._nodeModulePaths(path.dirname(bbPath));
-    mod._compile(baseSrc, bbPath);
-    const BEFORE = mod.exports;
+    const BEFORE = base.BEFORE;
     ok(typeof BEFORE.ratioAtRate === 'function' && typeof BEFORE.sendRatioFor === 'function',
       'N0c …and the baseline engine really loaded');
 
@@ -969,7 +955,9 @@ async function main() {
     /* ⛔ N15 · WHAT IS ACTUALLY ONE-WAY ABOUT THE SEARCHED RATIO.
        The header claimed the searched ratio "moves in 5,176 — always downward."
        The pre-merge audit of 2026-09-03 measured that false, and it is: over the
-       header's own 69,696-pair battery about 1,214 of ~5,165 moves go UP.
+       header's own 69,696-pair battery a quarter of the moves go UP. N17 below
+       runs that full battery and prints the exact split; this section runs the
+       smaller sweep and asserts the same properties on it.
 
        THE MECHANISM is why that is the SAFE direction and not a defect.
        `sendRatioFor` asks for the LOWEST ratio any rate in the band achieves;
@@ -999,9 +987,11 @@ async function main() {
         if (tiers.dscrTier(a) !== t) { sOutside += 1; if (!firstOutside) firstOutside = { tier: t, ratio: a }; }
       }
     }
-    /* The suite's own battery is the smaller one (288 deals × the 11-band ladder);
-       the header's 69,696-pair figure comes from its own wider battery, measured
-       separately. Both show the same split, which is the point. */
+    /* The battery HERE is the smaller one (288 deals × the 11-band ladder); the
+       header's 69,696-pair one is run by N17 below, off the shared axes in
+       `scripts/lib/dscr-round-down-battery.js`. Both show the same split and the
+       same four safety properties, which is the point — and neither is quoted
+       from memory any more. */
     ok(sPairs > 1000 && (sUp + sDown) > 0,
       `N15 CONTROL: the ladder sweep really ran (${sPairs} pairs, ${sUp + sDown} moved)`);
     ok(sOutside === 0,
@@ -1010,6 +1000,43 @@ async function main() {
       `⛔ N15b …and NOT ONE band stopped being priceable (${sLost} lost, ${sGained} newly reachable)`);
     ok(sUp > 0 && sDown > 0,
       `N15c THE MEASURED SPLIT, recorded rather than claimed one-way: ${sDown} moves down and ${sUp} UP — the header said "always downward" and that was false`);
+
+    /* ⛔ N17 · THE HEADER'S OWN NUMBERS, MEASURED HERE RATHER THAN REMEMBERED.
+       `bracket-board.js` quotes counts for this change — how many ratios moved, how
+       many bands moved, how many SEARCHED ratios moved and which way. The script that
+       produced the originals was never committed, so THREE reconstructions of the
+       battery its paragraph describes produced three different sets of counts (the
+       battery module's own header records all three side by side). A number nobody can
+       re-derive is a claim, not a measurement — and this file's standing rule is that a
+       count is reported as measured or not reported at all.
+
+       So the axes now live in `scripts/lib/dscr-round-down-battery.js` as DATA and are
+       re-measured on every run of this suite. The header cites that file and this
+       assertion; `node scripts/test-lt-dscr-brackets-pure.js` is the one command that
+       reproduces the figures, and it prints them in the message below.
+
+       ⛔ THE TOTALS ARE PINNED EXACTLY, ON PURPOSE. They are the outcome of an
+       owner-authorised change to how a price is searched, so they may not drift
+       quietly: if a deliberate change moves them, re-read this message and update the
+       board's header with the numbers it prints. What the safety of the change rests on
+       is asserted separately and hard, immediately below. */
+    const M = battery.measure({ boardMod, BEFORE, tiers });
+    ok(M.deals === 6336 && M.rates === 51 && M.combos === 323136 && M.pairs === 69696,
+      `N17 CONTROL: the shared battery really ran at its declared size — ${M.deals} deals × ${M.rates} rates = ${M.combos} combinations, and ${M.pairs} deal/band pairs`);
+    /* `M.moved > 0` is PART of this assertion, not decoration — the same fold N3
+       carries one section up, for the same reason. A baseline that failed to build is
+       byte-identical to the engine, so nothing moves, and "not one ratio went up"
+       passes having compared the engine to itself. MEASURED: a mutation replacing the
+       lever with a round-UP defeats the strip, and this assertion reported 0 up and
+       0 better while the ratio was being rounded the wrong way. */
+    ok(M.moved > 0 && M.up === 0 && M.bandBetter === 0,
+      `⛔ N17a NOT ONE RATIO A RATE ACHIEVES MOVES UP, and not one band moves to a BETTER one (${M.up} up${M.firstUp ? ` — ${JSON.stringify(M.firstUp)}` : ''}, ${M.bandBetter} better, ${M.moved} moved at all) — the property the whole change rests on`);
+    ok(M.lost === 0 && M.outside === 0 && M.nullsBefore === M.nullsAfter,
+      `⛔ N17b …and nothing became unpriceable: ${M.lost} bands lost, ${M.outside} searched ratios outside their own band${M.firstOutside ? ` — ${JSON.stringify(M.firstOutside)}` : ''}, nulls ${M.nullsBefore} → ${M.nullsAfter}`);
+    ok(M.moved === 161448 && M.bandWorse === 9033,
+      `N17c THE MEASURED TOTALS — the ratio moves a cent in ${M.moved} of ${M.combos} (${(M.moved / M.combos * 100).toFixed(3)}%) and the BAND moves in ${M.bandWorse} (${(M.bandWorse / M.combos * 100).toFixed(3)}%); if that changed on purpose, put these numbers in bracket-board.js's header`);
+    ok(M.searchedMoved === 5308 && M.searchedDown === 3942 && M.searchedUp === 1366,
+      `N17d …and the SEARCHED ratio moves in ${M.searchedMoved} of ${M.pairs} pairs — ${M.searchedDown} down and ${M.searchedUp} UP (first up: ${JSON.stringify(M.firstSearchedUp)}), which is the split the header must state rather than "always downward"`);
 
     /* ONE DOOR, both places this file settles a ratio. A bare round in `sendRatioFor`
        would let the two answer differently the day either side gains a third decimal. */

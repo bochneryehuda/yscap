@@ -35,9 +35,24 @@ const ROOT = path.join(__dirname, '..');
 const sightings = require(path.join(ROOT, 'src/longterm/pricing/investor-sightings'));
 const settingsDefs = require(path.join(ROOT, 'src/longterm/settings/encompass-settings'));
 
+/* ⛔ A FAILURE IS COUNTED, NOT THROWN — the standing lesson of this repo, applied here
+   after the re-audit of 2026-09-03 watched one flaky timing assertion take the whole
+   suite down with it. `assert.ok` throws, so the FIRST failure stopped the run and every
+   later check silently never ran: a mutation proof against any assertion below the
+   failure was worthless, and a red suite reported one problem where there might be six.
+   So each check records its verdict and the run carries on to the end; the tally at the
+   bottom sets the exit code. */
 let pass = 0;
-const ok = (c, n) => { assert.ok(c, n); pass++; console.log('  ok  ' + n); };
-const eq = (a, b, n) => { assert.deepStrictEqual(a, b, `${n} — got ${JSON.stringify(a)}, want ${JSON.stringify(b)}`); pass++; console.log('  ok  ' + n); };
+let bad = 0;
+const ok = (c, n) => {
+  if (c) { pass += 1; console.log('  ok  ' + n); }
+  else { bad += 1; console.error('  FAIL ' + n); }
+};
+const eq = (a, b, n) => {
+  let same = true;
+  try { assert.deepStrictEqual(a, b); } catch (_) { same = false; }
+  ok(same, same ? n : `${n} — got ${JSON.stringify(a)}, want ${JSON.stringify(b)}`);
+};
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 /* Every "must not appear" check reads the COMMENT-STRIPPED source: the code that explains why a
    rule exists necessarily names the thing it forbids, and a guard that read comments would fail on
@@ -184,19 +199,47 @@ console.log('\nB2 · which buttons are locked out — the rule itself, not a cop
   ok(all.get('inv1').lockedOut.indexOf('loannex') === -1,
     'B11b …including the rule that the source a row is SET to is never locked out');
 
-  /* A REGRESSION GUARD, NOT A TARGET. Measured: 411 ms per-row against 0.68 ms here
-     at 500 investors on this machine. The ceiling is ~150× the measured figure, so a
-     slow or loaded box cannot fail it — only a return to asking per row can. */
-  const CAP_MS = 100;
+  /* ⛔ A REGRESSION GUARD, NOT A TARGET — AND IT IS A RATIO, NOT A CLOCK.
+     What this is about is that `availabilityAll` is a FAST PATH and not a per-row loop
+     wearing a different name. It was written as a wall-clock ceiling (100 ms against a
+     measured 0.68 ms), and a wall clock measures the MACHINE as much as the code: the
+     re-audit of 2026-09-03 caught it failing at 151.66 ms and again at 125.37 ms on a
+     loaded box, with nothing wrong — a guard that goes red when the build server is
+     busy teaches its reader to ignore it, which is worse than no guard.
+
+     So both paths are measured IN THE SAME RUN, over the same data, and the FAST one
+     has to be a multiple faster. Load lifts both halves together, so the ratio is
+     invariant to it; a return to asking per row collapses the ratio to about 1 and
+     fails whatever the machine is doing. The floor is deliberately far below the
+     measured ~600× — this must only ever catch a structural regression, never a slow
+     afternoon. The absolute figures are REPORTED in the message, as measurements
+     rather than as assertions. */
+  const SPEEDUP_MIN = 20;
   const big = { boards: { lenderprice: T1, loannex: T1 }, searches: { lenderprice: 50, loannex: 50 }, investors: {} };
   const bigKeys = [];
   for (let i = 0; i < sightings.MAX_INVESTORS; i += 1) { const k = `big${i}`; bigKeys.push(k); big.investors[k] = { lenderprice: T1 }; }
+  const srcAll = () => 'lenderprice';
   const t0 = process.hrtime.bigint();
-  const bigOut = sightings.availabilityAll(big, bigKeys, () => 'lenderprice');
-  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-  ok(bigOut.size === sightings.MAX_INVESTORS, `B11c CONTROL: the whole cap really was answered (${bigOut.size} rows)`);
-  ok(ms < CAP_MS,
-    `⛔ B11d …in ${ms.toFixed(2)} ms at the register's own cap of ${sightings.MAX_INVESTORS} — asking per row took 411 ms`);
+  const bigOut = sightings.availabilityAll(big, bigKeys, srcAll);
+  const msAll = Number(process.hrtime.bigint() - t0) / 1e6;
+  /* THE COMPARISON IS THE REAL PER-ROW PATH, not a model of it: the same two doors the
+     fast path exists to replace, asked once per investor, over the same register. */
+  const t1 = process.hrtime.bigint();
+  let rowChecksum = 0;
+  for (const k of bigKeys) {
+    const a = sightings.availabilityFor(k, big);
+    const l = sightings.lockedOutFor(k, big, srcAll(k));
+    rowChecksum += (a ? 1 : 0) + (l ? l.length : 0);
+  }
+  const msRows = Number(process.hrtime.bigint() - t1) / 1e6;
+  ok(bigOut.size === sightings.MAX_INVESTORS && rowChecksum > 0,
+    `B11c CONTROL: the whole cap really was answered by BOTH paths (${bigOut.size} rows fast, ${bigKeys.length} asked per row)`);
+  /* `Math.max(msAll, 0.001)` only stops a divide-by-zero on a clock too coarse to see
+     the fast path at all — which is itself evidence it is fast, so the ratio it yields
+     is enormous and the assertion passes for the right reason. */
+  const speedup = msRows / Math.max(msAll, 0.001);
+  ok(speedup >= SPEEDUP_MIN,
+    `⛔ B11d …and it is ${speedup.toFixed(0)}× faster than asking per row IN THE SAME RUN (${msAll.toFixed(2)} ms against ${msRows.toFixed(2)} ms at the register's own cap of ${sightings.MAX_INVESTORS}) — a ratio, so a loaded machine cannot fail it and a return to a per-row loop cannot pass it`);
 }
 
 console.log('\nC · the register reads what it wrote, and refuses what it cannot');
@@ -455,8 +498,24 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
   ok(/setData\(out\);/.test(src) || /setEdits\(\{\}\);\s*load\(\);/.test(src),
     'J2 after saving, the screen takes the SERVER’s answer — either the write’s own payload or a re-read');
   ok(/setEdits\(\{\}\);/.test(src), 'J2a …and the form’s pending edits are cleared either way');
+  /* ⛔ J2b · COUNTED, NOT SPELLED. This listed two shapes (`setData({ ...data` and
+     `setData((d)`) and the re-audit of 2026-09-03 used a third — `setData(out);` KEPT,
+     then `setData(Object.assign({}, out, { investors: ownRows }))` overlaid on top — so
+     every one of these stayed green while the screen believed its own patch again. A
+     list of forbidden spellings is a list somebody has to keep guessing at; what the
+     rule actually says is that the save installs the SERVER's answer and nothing else,
+     which is a COUNT: exactly one `setData` in `save`, and it takes `out` whole. */
+  const saveBody = (() => {
+    const i = src.indexOf('async function save(');
+    if (i < 0) return '';
+    const j = src.indexOf('\n  }', i);
+    return j < 0 ? src.slice(i) : src.slice(i, j);
+  })();
+  const setDataCalls = (saveBody.match(/setData\(/g) || []).length;
+  ok(setDataCalls === 1 && /setData\(out\);/.test(saveBody),
+    `⛔ J2b …EXACTLY ONCE, taking the server's answer whole — never a second call overlaying a row set the screen computed for itself (${setDataCalls} call(s) in save)`);
   ok(!/setData\(\{\s*\.\.\.data/.test(src) && !/setData\(\(d\)/.test(src),
-    '⛔ J2b …and NEVER a row set the screen computed for itself — believing its own patch is the thing this forbids');
+    'J2c …and the two shapes that did it before are still absent anywhere in the file');
   /* Scoped to the FILTER, not the file: `sourceOrigin === 'setting'` is also read by
      `patchOf`, where it is CORRECT (the whole map is sent on every save, so a row carrying a
      stored setting must re-state it). A guard written over the whole file would forbid the
@@ -853,6 +912,36 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
   ok(sightings.validate(CORRUPT).ok === true,
     'M8b …and the settings door would have STORED that register, so M8 is not hypothetical either');
 
+  /* ⛔ M8c · AND NOT ONLY ON THE SHAPE THIS FIXTURE HAPPENS TO CARRY. The re-audit of
+     2026-09-03 restored the shortcut GATED on a key the fixture above does not have —
+
+         if (stored && typeof stored === 'object' && !Array.isArray(stored)
+             && Array.isArray(stored.problems)) return stored;
+
+     — and all 204 LT suites stayed green while `availabilityFor` THREW on that register
+     and a garbage stamp read as `seen`, lighting a source button on no evidence. One
+     shape proves the rule for that shape; the register is stored as free-form JSON by a
+     door that will accept any of these, so the rule is asked about all of them. */
+  const SHAPES = [
+    ['carrying a problems array', { ...CORRUPT, problems: [] }],
+    ['carrying a populated problems array', { ...CORRUPT, problems: ['acra'] }],
+    ['carrying an unknown key', { ...CORRUPT, somethingElse: { a: 1 } }],
+    ['already normalised-looking', { ...CORRUPT, investors: { ...CORRUPT.investors }, boards: { ...CORRUPT.boards } }],
+    ['with a null stamp', { ...CORRUPT, investors: { nqm: { lenderprice: null } } }],
+    ['with a numeric stamp', { ...CORRUPT, investors: { nqm: { lenderprice: 0 } } }],
+    ['with an object stamp', { ...CORRUPT, investors: { nqm: { lenderprice: {} } } }],
+  ];
+  let m8cBad = 0; let m8cFirst = null;
+  for (const [what, reg] of SHAPES) {
+    const r = tot(() => sightings.availabilityFor('nqm', reg));
+    const good = !r.threw && r.v && r.v.lenderprice && r.v.lenderprice.state === 'never';
+    if (!good) { m8cBad += 1; if (!m8cFirst) m8cFirst = `${what}: ${r.threw || JSON.stringify(r.v && r.v.lenderprice)}`; }
+  }
+  ok(m8cBad === 0,
+    `⛔ M8c an unusable stamp is dropped WHATEVER ELSE the stored register carries — ${SHAPES.length} shapes, none throwing and none reading as seen${m8cFirst ? ` — first ${m8cFirst}` : ''}`);
+  ok(SHAPES.every(([, reg]) => sightings.validate(reg).ok === true),
+    'M8d …and the settings door would have stored every one of them, so none of these shapes is hypothetical');
+
   /* The three wirings no run of the rule can see: the list must ASK the shared function
      rather than keep a fourth copy of the four-clause test, the route must put its answer
      ON the row (or the browser silently falls back to deriving it for ever), and the
@@ -869,5 +958,6 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
     && /onClick=\{\(\) => undoReset\(r\.key\)\}/.test(screen),
     'L24 …with a one-click undo beside it, so a mis-press never costs a setting');
 
-  console.log('\n' + pass + ' checks passed\n');
+  console.log(`\n${bad ? 'FAILED' : 'ALL PASSED'} (${pass} passed, ${bad} failed)\n`);
+  process.exit(bad ? 1 : 0);
 })();

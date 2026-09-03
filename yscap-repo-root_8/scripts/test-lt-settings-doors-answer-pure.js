@@ -228,13 +228,119 @@ async function main() {
        DELEGATES rather than having grown its own copy again. */
     const built = await i.investorsBody();
     const door = await call('GET /investors');
-    eq(comparable(built, door.body, ['ok']).missing, [], 'G2 the read door answers exactly what the builder builds');
+    /* ⛔ `.differ` AS WELL AS `.missing`. Checking only that the KEY NAMES line up was
+       the weakest assertion in this file: the re-audit zeroed every figure in the
+       write's `summary` block — "0 investors, 0 on" printed above 26 rows — and this
+       stayed green, because the keys were all still there. A payload that answers the
+       right key names with the wrong values is worse than one that answers neither. */
+    const g2 = comparable(built, door.body, ['ok']);
+    eq(g2.missing, [], 'G2 the read door answers exactly what the builder builds');
+    eq(g2.differ, [], 'G2a …to the VALUE, not merely the key names — a zeroed summary over a full list is a lie the screen prints');
     const hb = i.holdbackBody(undefined);
     ok(hb.origin === 'default' && hb.problem === null,
       'G3 the holdback builder resolves an unset value to the standing pre-fill');
     const hbZero = i.holdbackBody(0);
     ok(hbZero.points === 0 && hbZero.origin === 'setting',
       'G4 ⛔ …and a deliberate ZERO stays somebody’s own setting — never read as "nothing is saved"');
+  }
+
+  console.log('\nI · what "locked out" means is the register\'s to say, not the door\'s');
+  {
+    /* ⛔ ONLY `never` LOCKS A BUTTON. The register has FOUR states and three of them are
+       "we do not know yet": `unknown` (that sheet has produced no board at all),
+       `not_yet` (it has answered, but too few times to mean anything) and `seen`. The
+       re-audit of 2026-09-03 had the door grow its own reading —
+
+           const LOCKS = (st) => st !== 'seen' && st !== 'not_yet';
+
+       — which locks a source on `unknown`, and all 204 LT suites stayed green because the
+       guards on this were a regex for the SPELLING `state === 'never'`. On a fresh
+       install every investor is `unknown`, so that is every source button dead on day
+       one — the catastrophe the register's own header names.
+
+       So it is asked BEHAVIOURALLY here, through the door, over a register carrying every
+       state at once. A re-spelled rule cannot survive it. */
+    const REG = require(path.join(ROOT, 'src/longterm/pricing/investor-sightings.js'));
+    const T = '2026-09-03T10:00:00.000Z';
+    const keep = store[REG.SETTING_KEY];
+    try {
+      store[REG.SETTING_KEY] = {
+        boards: { lenderprice: T },                       // lenderprice has answered; loannex never has
+        searches: { lenderprice: REG.NEVER_AFTER_SEARCHES },
+        investors: { nqm: { lenderprice: T } },           // …and it carried nqm
+      };
+      const door = await call('GET /investors');
+      const row = (k) => (door.body.investors || []).find((r) => r.key === k);
+      const nqm = row('nqm');
+      const acra = row('acra');
+      ok(nqm && nqm.availability && nqm.availability.lenderprice.state === 'seen'
+        && nqm.availability.loannex.state === 'unknown',
+        `I1 CONTROL: the fixture really does carry a SEEN state and an UNKNOWN one (${nqm ? `${nqm.availability.lenderprice.state} / ${nqm.availability.loannex.state}` : 'no nqm row'})`);
+      ok(nqm && Array.isArray(nqm.lockedOut) && nqm.lockedOut.indexOf('loannex') === -1,
+        `⛔ I2 an UNKNOWN sheet does NOT lock its button — on a fresh install every investor is unknown, and locking there is every button dead on day one (${nqm ? JSON.stringify(nqm.lockedOut) : 'no row'})`);
+      ok(acra && Array.isArray(acra.lockedOut) && acra.lockedOut.indexOf('lenderprice') !== -1,
+        `⛔ I3 …while a sheet that HAS answered enough times and never carried the investor does lock — otherwise this would pass on a door that locks nothing at all (${acra ? JSON.stringify(acra.lockedOut) : 'no acra row'})`);
+    } finally { store[REG.SETTING_KEY] = keep; }
+  }
+
+  console.log('\nH · a door that stopped delegating, and a write that answers the wrong MOMENT');
+  {
+    /* A VALID body for each write door — the same shapes sections B/D/E/F already use,
+       so these calls take the ordinary success path rather than a refusal (a refused
+       door returns before it reaches a builder at all, which would make H1 vacuous). */
+    const VALID_WRITE = {
+      'PUT /investors': { investors: store['pricing.combinedInvestors'] },
+      'PUT /investor-links': { links: { acra: 'nqm' } },
+      'PUT /custom-investors': { investors: {} },
+      'PUT /margin-holdback': { points: 0.3 },
+    };
+    /* ⛔ H1 · DELEGATION, PROVEN BY REPLACING A BUILDER. G1/G2 assert the builders EXIST
+       and that ONE door's answer matches ONE builder's — which the re-audit walked
+       straight past: it made all six doors build byte-identical inline copies, left the
+       builders as dead code, and every check stayed green. Two copies of one payload is
+       precisely what this arrangement exists to prevent.
+
+       The doors reach the builders through one replaceable object now, so a marker handed
+       to a builder must come out of its doors. An inlined copy cannot produce it. */
+    const bodies = routes._internals.bodies;
+    const keep = { ...bodies };
+    const MARK = '__delegation_marker__';
+    try {
+      for (const [name, doors] of [
+        ['investorsBody', ['GET /investors', 'PUT /investors']],
+        ['linksBody', ['GET /investor-links', 'PUT /investor-links']],
+        ['customInvestorsBody', ['GET /custom-investors', 'PUT /custom-investors']],
+        ['holdbackBody', ['GET /margin-holdback', 'PUT /margin-holdback']],
+      ]) {
+        const wasAsync = name !== 'holdbackBody';
+        bodies[name] = wasAsync ? (async () => ({ [MARK]: name })) : (() => ({ [MARK]: name }));
+        for (const d of doors) {
+          const body = d.startsWith('PUT') ? VALID_WRITE[d] : undefined;
+          const r = await call(d, body);
+          ok(r.body && r.body[MARK] === name,
+            `⛔ H1 \`${d}\` answers through \`${name}\` — a door with its own inline copy could not carry the marker (${r.code})`);
+        }
+        bodies[name] = keep[name];
+      }
+    } finally { Object.assign(bodies, keep); }
+
+    /* ⛔ H2 · A WRITE MUST ANSWER THE MOMENT AFTER ITS OWN SAVE. Every comparison above
+       runs the write and the read while NOTHING HAS CHANGED, so a door that answers the
+       payload it built BEFORE saving is invisible to all of them — the re-audit proved
+       it on the links door and stayed green. That is the same user-visible defect #100
+       fixed: the screen installs the write's answer, so a pre-save reply shows the OLD
+       link map straight after somebody saved a new one. */
+    /* A KNOWN STATE FIRST. An earlier section has already linked acra→nqm, so writing it
+       again changes nothing and the control below would (correctly) refuse to vouch for
+       anything — which is exactly what it caught the first time this was written. */
+    await call('PUT /investor-links', { links: {} });
+    const before = await call('GET /investor-links');
+    const wrote = await call('PUT /investor-links', VALID_WRITE['PUT /investor-links']);
+    const after = await call('GET /investor-links');
+    ok(JSON.stringify(before.body.links) !== JSON.stringify(after.body.links),
+      'H2 CONTROL: the write really did change something — otherwise the next assertion could not tell a stale answer from a fresh one');
+    eq(comparable(after.body, wrote.body, ['ok', 'saved']).differ, [],
+      '⛔ H2a …and the write answered the state AFTER its own save, not the one it read on the way in');
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

@@ -732,6 +732,69 @@ const byInvestor = (programs) => {
     await col2.flush({ scenario: SC, searchKey: 'k-down', door: 'immediate' });
     ok(!sightedDown || !sightedDown.lenderprice || sightedDown.lenderprice.keys.length === 0,
       'SEAM-4 CONTROL: a sheet that refused records no sighting at all, which is what the flag is for');
+
+    /* ⛔ SEAM-5 · THE FRESH INSTALL, which is the state every one of the assertions above
+       leaves untested. The re-audit of 2026-09-03 gated the whole sightings block on a
+       config key —
+
+           const noRegister = opts.wantLoanNex !== true;
+           const sightings = noRegister ? {} : { … }
+
+       — and all 204 LT suites stayed green, because `loadConfig` on THIS fixture supplies
+       `wantLoanNex: true` and every board built here goes down the passing side. SEAM-0's
+       own comment says it exists to stop exactly that shape, and it could not: the gate
+       reads a key that IS in `readKeys` and IS handed over, so SEAM-0a, SEAM-0b and
+       SEAM-0b1 are all satisfied.
+
+       In production the gate fires whenever no investor is routed to LoanNEX — the state
+       of the whole system before the owner switched the five over, and the state of any
+       deployment whose admin turns them off again. So the board is built again with nobody
+       routed to LoanNEX, and the register must still be fed what Lender Price carried.
+
+       ⛔ AND THE FIXTURE HAS TO EARN THAT STATE, WHICH THE FIRST CUT DID NOT. It passed
+       `wantLoanNex: false` to `loadConfig` — and `loadConfig` DERIVES that key from the
+       routes rather than taking it, so the flag was ignored, the config still came back
+       `wantLoanNex: true`, and the main assertion below proved nothing. The CONTROL is
+       what caught it: it read the config back and failed while SEAM-5 itself passed —
+       the exact tautology class this whole round is about. A fixture that STATES a
+       derived value is stating a wish; it has to supply the INPUT the value is derived
+       from.
+
+       So the state is reached the way an admin reaches it: by ROUTES. The keys are read
+       out of the shipped configuration through the board's OWN `expectedFromLoanNex`,
+       never hand-typed, so an investor moved to LoanNEX tomorrow is switched off here
+       for free and this can never go stale. OFF (rather than re-pointing them at Lender
+       Price) because Off is the one setting available for EVERY investor — two of the
+       five are LoanNEX-only, so the settings screen locks their Lender Price button out
+       and a fixture that set it would be describing a state nobody can reach.
+
+       The Lender Price half is untouched by it: `sightings` is read off the MERGE, which
+       happens BEFORE the routing, so turning investors off cannot shrink what Lender
+       Price is recorded as having carried — which is precisely what makes this fixture
+       able to tell a silenced register from a shorter board. */
+    const settingsOf = require(path.join(ROOT, 'src/longterm/pricing/investor-settings.js'));
+    const routedToNex = gb._internals.expectedFromLoanNex(settingsOf.roster(cfg.settings, cfg.custom));
+    ok(routedToNex.length > 0,
+      `SEAM-5 CONTROL A: the shipped configuration really does route somebody to LoanNEX (${routedToNex.join(', ') || 'nobody'}), so switching them off is a real change`);
+    const nobodyOnNex = {};
+    for (const k of routedToNex) nobodyOnNex[k] = { enabled: false };
+    const freshCfg = await gb.loadConfig({ routes: nobodyOnNex, links: {}, marginHoldback: 0.25 });
+    ok(freshCfg.wantLoanNex !== true,
+      `SEAM-5 CONTROL B: with those investors switched off the config really does say nobody is routed to LoanNEX (wantLoanNex ${JSON.stringify(freshCfg.wantLoanNex)})`);
+    const freshBoard = await run(lpOk, nexOk, freshCfg);
+    let sightedFresh = null;
+    const col3 = searchRecord.collector({
+      recordSightings: async (x) => { sightedFresh = x; return { ok: true }; },
+      recordMisses: async () => ({ ok: true }),
+    });
+    col3.observe(freshBoard);
+    await col3.flush({ scenario: SC, searchKey: 'k-fresh', door: 'immediate' });
+    ok(sightedFresh && sightedFresh.lenderprice && sightedFresh.lenderprice.answered === true
+      && sightedFresh.lenderprice.keys.length > 0,
+      `⛔ SEAM-5 …and with nobody routed to LoanNEX the register is STILL fed what Lender Price carried (${sightedFresh && sightedFresh.lenderprice ? sightedFresh.lenderprice.keys.length : 'nothing'}) — a gate on the routing silences the register on a fresh install`);
+    ok(REG.SOURCES.every((sname) => freshBoard.sightings && freshBoard.sightings[sname]
+      && typeof freshBoard.sightings[sname].answered === 'boolean'),
+      'SEAM-5a …and the board still describes every sheet the register knows, so nothing became unrecordable');
   }
 
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);

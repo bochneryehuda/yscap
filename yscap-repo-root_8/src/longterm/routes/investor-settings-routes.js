@@ -315,6 +315,23 @@ function holdbackBody(saved) {
 }
 
 /**
+ * THE FOUR BUILDERS, REACHED THROUGH ONE OBJECT — and that indirection is the guard.
+ *
+ * ⛔ WHY IT IS NOT JUST A DIRECT CALL. The whole point of these builders is that a write
+ * door answers EXACTLY what the read door answers, so the screen can install the write's
+ * reply instead of re-reading (which is what #100 fixed and what makes the holdback's
+ * explanatory sentence survive a save). But "the doors delegate" was guarded only by
+ * asserting the builders EXIST and that one door's key names match one builder's: the
+ * re-audit of 2026-09-03 made all six doors build byte-identical inline copies, left the
+ * builders as dead code, and every check stayed green. Two copies of one payload is
+ * exactly what this arrangement exists to prevent, and nothing could see it.
+ *
+ * Calling through a replaceable reference is what lets a test hand ONE builder a marker
+ * and watch it come out of the door. A door that inlined a copy cannot produce it.
+ */
+const bodies = { investorsBody, linksBody, customInvestorsBody, holdbackBody };
+
+/**
  * Mount the four settings doors onto a router.
  *
  * @param {import('express').Router} router  the router to attach them to
@@ -332,7 +349,7 @@ function attach(router) {
    * remember it — the same rule the investor rows follow.
    */
   router.get('/margin-holdback', async (req, res) => {
-    res.json({ ok: true, ...holdbackBody(await holdbackRaw()) });
+    res.json({ ok: true, ...bodies.holdbackBody(await holdbackRaw()) });
   });
 
   /**
@@ -356,7 +373,7 @@ function attach(router) {
       } catch (e) {
         return res.status(500).json({ ok: false, error: 'save_failed', message: reasonOf(e) });
       }
-      return res.json({ ok: true, ...holdbackBody(undefined) });
+      return res.json({ ok: true, ...bodies.holdbackBody(undefined) });
     }
     const check = vendorMargin.resolveHoldback('loannex', raw);
     if (check.problem) {
@@ -367,11 +384,11 @@ function attach(router) {
     } catch (e) {
       return res.status(500).json({ ok: false, error: 'save_failed', message: reasonOf(e) });
     }
-    res.json({ ok: true, ...holdbackBody(check.points) });
+    res.json({ ok: true, ...bodies.holdbackBody(check.points) });
   });
 
   router.get('/investors', async (req, res) => {
-    res.json({ ok: true, ...(await investorsBody()) });
+    res.json({ ok: true, ...(await bodies.investorsBody()) });
   });
 
   /**
@@ -413,7 +430,7 @@ function attach(router) {
     /* ⛔ THE SAME PAYLOAD THE READ ANSWERS, so a screen can install this and be
        showing exactly what it would have re-read. `saved` is the only thing this
        door adds, and it is the one fact a read cannot carry. */
-    res.json({ ok: true, saved: Object.keys(check.settings).length, ...(await investorsBody()) });
+    res.json({ ok: true, saved: Object.keys(check.settings).length, ...(await bodies.investorsBody()) });
   });
 
   /**
@@ -430,7 +447,7 @@ function attach(router) {
    * screen.
    */
   router.get('/investor-links', async (req, res) => {
-    res.json({ ok: true, ...(await linksBody()) });
+    res.json({ ok: true, ...(await bodies.linksBody()) });
   });
 
   /**
@@ -453,7 +470,7 @@ function attach(router) {
     } catch (e) {
       return res.status(500).json({ ok: false, error: 'save_failed', message: reasonOf(e) });
     }
-    res.json({ ok: true, saved: Object.keys(check.links).length, ...(await linksBody()) });
+    res.json({ ok: true, saved: Object.keys(check.links).length, ...(await bodies.linksBody()) });
   });
 
 
@@ -467,7 +484,7 @@ function attach(router) {
    * question is answerable on the screen rather than only at the door.
    */
   router.get('/custom-investors', async (req, res) => {
-    res.json({ ok: true, ...(await customInvestorsBody()) });
+    res.json({ ok: true, ...(await bodies.customInvestorsBody()) });
   });
 
   /**
@@ -560,7 +577,7 @@ function attach(router) {
        second copy — byte-identical on the day it was written, which is exactly
        how two copies of one answer start. `saved` and `removed` are the only
        things this door adds. */
-    res.json({ ok: true, saved: Object.keys(clean).length, removed: gone.length, ...(await customInvestorsBody()) });
+    res.json({ ok: true, saved: Object.keys(clean).length, removed: gone.length, ...(await bodies.customInvestorsBody()) });
   });
 
   /**
@@ -623,4 +640,4 @@ function makeRouter() {
 module.exports = { attach, makeRouter,
   /* Exported so the doors' answers can be compared key for key by RUNNING them —
      a regex over a route body can only ever pin how an answer is spelled. */
-  _internals: { settingsRaw, holdbackRaw, linksRaw, customRaw, reasonOf, investorsBody, linksBody, customInvestorsBody, holdbackBody } };
+  _internals: { settingsRaw, holdbackRaw, linksRaw, customRaw, reasonOf, bodies, investorsBody, linksBody, customInvestorsBody, holdbackBody } };
