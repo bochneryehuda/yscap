@@ -127,19 +127,21 @@ try {
   ok(s.length === 1, `A2 …and it stops there — it does not write on every render (${s.length} writes)`);
 
   // THE EXPECTED FIGURES ARE DERIVED, NOT COPIED FROM A RUN. Each was computed by hand from the
-  // owner-confirmed formula and re-checked against `dscrCalc.js`, whose agreement with the SERVER's
-  // computeDscr is proven over 56 ratios by test-lt-dscr-calc.mjs. On $375,000 with $4,000 rent,
-  // $500 tax and $1,800 a year insurance ($150 a month):
-  //   30-year amortising @7%  P&I 2,494.88  ->  4000 / 3144.88 = 1.27
-  //   30-year interest-only   P&I 2,187.50  ->  4000 / 2837.50 = 1.41
-  //   40-year amortising @7%  P&I 2,330.37  ->  4000 / 2980.37 = 1.34
+  // owner-confirmed formula and then CUT DOWN — the owner's rule of 2026-08-30, "the DSCR should
+  // always be rounded down… so we should never see better" — which is what `dscrCalc` applies and
+  // what `test-lt-dscr-calc.mjs` proves over 56 ratios against the tenant's own figure.
+  // On $375,000 with $4,000 rent, $500 tax and $1,800 a year insurance ($150 a month):
+  //   30-year amortising @7%  P&I 2,494.88  ->  4000 / 3144.88 = 1.2719…  -> 1.27
+  //   30-year interest-only   P&I 2,187.50  ->  4000 / 2837.50 = 1.4096…  -> 1.40  (rounding
+  //     to nearest would say 1.41 — a cent the property does not earn, which is the rule biting)
+  //   40-year amortising @7%  P&I 2,330.37  ->  4000 / 2980.37 = 1.3421…  -> 1.34
   // Reading them off a failing run instead would make this test agree with whatever the code did.
 
   // A3 — the owner's own case: tick interest-only and the ratio follows, unasked.
   await page.evaluate(() => window.__setP({ interestOnly: true }));
   await settle();
   s = await seen();
-  ok(s.length === 2 && s[1] === '1.41',
+  ok(s.length === 2 && s[1] === '1.40',
     `A3 ticking interest-only re-writes it on its own (got ${JSON.stringify(s)})`);
 
   // A4 — and so does the term, on a fully amortising scenario.

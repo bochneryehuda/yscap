@@ -108,6 +108,35 @@ export function feeRowsOf(fees) {
 
    Returns [{ key, lender, best, bestPrice, quotes, programCount }], best-priced lender first.
    Pure; never throws; a non-array yields []. */
+/**
+ * WHAT A LENDER ROW IS CALLED ON SCREEN — OUR NAME FIRST (owner-directed 2026-09-03).
+ *
+ * The owner: *"You need to display the names of the investors according to the name that I gave
+ * you on my list, not the name that is displayed on LoanX"*, and *"The main name of the
+ * investor."* The board led with the VENDOR'S own spelling and wore our name as a 10px tag
+ * beside it — so on a board now quoted by two rate sheets, the headline changed depending on
+ * which sheet answered, and the name the company actually uses was the small print.
+ *
+ * ONE definition, so the priced board and the ineligible list can never call one investor two
+ * things. Falls back to the vendor's spelling for a row the registry could not place — which is
+ * what those rows have always shown, and is why they are also reported as still needing a name.
+ */
+export function lenderHeading(g) {
+  if (!g) return '—';
+  return g.whiteLabel || g.lender || '—';
+}
+
+/**
+ * THE VENDOR'S OWN SPELLING, for the second line — and only when it says something the heading
+ * does not. STAFF-ONLY BY SITUATION, NEVER BY THIS FUNCTION: it returns a real investor name,
+ * and the one rule that governs it is `src/longterm/audience.js`. Every caller here draws on a
+ * staff board; no client surface may call it.
+ */
+export function lenderVendorName(g) {
+  if (!g || !g.whiteLabel || !g.lender) return null;
+  return g.lender === g.whiteLabel ? null : g.lender;
+}
+
 export function groupByLender(quotes) {
   if (!Array.isArray(quotes)) return [];
   // A price that is not a finite number is NOT a price. Sorting on it would let an undefined or a
@@ -125,11 +154,34 @@ export function groupByLender(quotes) {
 
   const groups = new Map();
   for (const q of quotes) {
-    // The KEY is the lender's name exactly as the vendor wrote it, deliberately NOT normalized:
-    // two spellings we cannot PROVE are one company must stay two rows.
+    /**
+     * ⛔ THE KEY IS THE INVESTOR WE RESOLVED, AND ONLY THEN THE VENDOR'S SPELLING.
+     *
+     * The rule this replaces — "the lender's name exactly as the vendor wrote it, deliberately
+     * NOT normalized: two spellings we cannot PROVE are one company must stay two rows" — is
+     * KEPT, in its second half. `investorKey` IS that proof: the server resolved it through the
+     * registry's recorded spellings and the human-recorded links, which is the only place in
+     * this system entitled to say two names are one company. A browser re-deriving it would be
+     * a second copy of that registry.
+     *
+     * It matters now because the board is quoted by TWO rate sheets, which spell an investor
+     * differently ("NQM Funding" against "NQM Funding, Inc."). Keyed on the raw name, one
+     * investor drew two rows on one board. A row we could not resolve still falls back to its
+     * own spelling, so nothing is merged on a guess.
+     */
     const name = q && typeof q.lender === 'string' ? q.lender : '';
-    const key = name || ' no-lender';
-    if (!groups.has(key)) groups.set(key, { key, lender: name || null, quotes: [] });
+    const key = (q && q.investorKey) ? `k:${q.investorKey}` : (name || ' no-lender');
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        lender: name || null,
+        // OUR name for this investor — the one the owner's own list carries. Null on a row the
+        // registry could not place, which is exactly when the vendor's spelling is all there is.
+        whiteLabel: (q && q.whiteLabel) || null,
+        investorKey: (q && q.investorKey) || null,
+        quotes: [],
+      });
+    }
     groups.get(key).quotes.push(q);
   }
 
@@ -138,6 +190,9 @@ export function groupByLender(quotes) {
     g.quotes.sort(byBestPrice);
     g.best = g.quotes[0] || null;
     g.bestPrice = priceOf(g.best);
+    // A white label recorded on ANY of this investor's quotes is this investor's name; the first
+    // quote in is not always the one carrying it.
+    if (!g.whiteLabel) g.whiteLabel = (g.quotes.find((q) => q && q.whiteLabel) || {}).whiteLabel || null;
     // How many QUOTES this lender has at this rate -- which is what the dropdown reveals. It is NOT
     // a count of distinct programme names: the same programme can appear on two different lock or
     // price rungs, and both are real quotes somebody may want to see.
@@ -421,10 +476,14 @@ export function buildIneligibleStack(lenders) {
     byRate.get(k).entries.push(e);
   }
 
-  // By NAME, not by price — see the note above. `localeCompare` on the vendor's own spelling, with
-  // an unnamed lender last rather than sorting as an empty string at the top.
+  // By NAME, not by price — see the note above. It sorts on the name the READER SEES
+  // (`lenderHeading`, so our own name where we have one), not on the vendor's spelling: the
+  // heading led with the vendor until 2026-09-03, and sorting on a name that is no longer on
+  // screen reads as no order at all. An unnamed lender sorts last rather than as an empty
+  // string at the top.
   const byLenderName = (a, b) => {
-    const x = a.lender || ''; const y = b.lender || '';
+    const nm = (g) => { const h = lenderHeading(g); return h === '—' ? '' : h; };
+    const x = nm(a); const y = nm(b);
     if (!x && !y) return 0;
     if (!x) return 1;
     if (!y) return -1;

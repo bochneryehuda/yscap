@@ -25,6 +25,9 @@ const { inboundDrawCopy, draftStartedCopy } = require('./draw-inbound-copy');
 // module the TrustPoint import task and the Trinity inspection order read, so the
 // desk can never be told a draw was submitted while those doors stand down.
 const lifecycle = require('./draw-lifecycle');
+// THE ONE COMPOSER for every draw email's money band (pure). Needed here for the
+// submission notice's own headline — see `moneyOpts` below.
+const drawEmail = require('../lib/email/draw-email');
 
 /**
  * Auto-adopt Sitewire-seeded MANDATORY MEDIA items that PILOT never pushed.
@@ -202,7 +205,13 @@ const REACT_STATUS = {
 function reactFor(status, n, addr, ctx) {
   const r = REACT_STATUS[status];
   if (!r) return null;
-  return { title: r.title(ctx), tone: r.tone, body: r.body(n, addr, ctx) };
+  // `submitted`: this rung's OWN wording says "submitted for review" — the `pending` landing on a
+  // TrustPoint or physical file, which skips `inspecting`, so nobody has inspected anything. Its
+  // money band must lead with the request like the crossing notice does (see `moneyOpts`), not
+  // with the "$0 approved" the un-inspected mirror reads as. A virtual file's `pending` is the
+  // opposite case — the inspection is DONE — and keeps the staged band.
+  const submitted = status === 'pending' && !!ctx && (ctx.platform === 'trustpoint' || ctx.method === 'traditional');
+  return { title: r.title(ctx), tone: r.tone, body: r.body(n, addr, ctx), submitted };
 }
 
 // Given the prior mirror row and the freshly-pulled draw, notify the team of a genuine inbound
@@ -239,8 +248,18 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
   // there — the budget facts still go if present. Presence check only, on the SAME three fields
   // drawFigures reads to pick its headline; no arithmetic, no second money query.
   const hasFigure = (m) => !!m && (Number(m.requested_cents) > 0 || Number(m.approved_cents) > 0 || Number(m.net_release_cents) > 0);
-  const moneyOpts = (b) => ({
-    figures: (b && hasFigure(b.money) && b.figures) || undefined,
+  // `submitted: true` is the SUBMISSION notice (owner-reported 2026-09-03: the "submitted for
+  // review" email led "Approved on this draw $0 — nothing approved this time" on a draw nobody
+  // had looked at yet, because Sitewire sends `approved_cents: 0` — not null — on every line of a
+  // freshly submitted draw, and the money ladder reads a non-null 0 as the inspector's explicit
+  // answer). At the moment a draw is submitted nothing has been reviewed BY DEFINITION, so that
+  // notice never prints an approved figure: its band is the REQUEST, big, and the words "in
+  // review by the inspector" (`draw-email.submittedFigures`). The facts box is unchanged — it
+  // carries no approved amount. Every other reaction keeps the staged band: once a draw is past
+  // the submission, an inspector's $0 IS an answer (the 2026-08-10 doctrine).
+  const moneyOpts = (b, { submitted = false } = {}) => ({
+    figures: (b && hasFigure(b.money)
+      && (submitted ? drawEmail.submittedFigures(b.money) : b.figures)) || undefined,
     facts: (b && b.facts) || undefined,
   });
   // TrustPoint import-task hook (phase 1, 2026-07-24): a LIVE inbound submission on a
@@ -310,7 +329,8 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
         + `${unknown ? ` (Sitewire reports it as "${String(status)}")` : ''}`
         + `${crossedFromDraft ? ' — it is no longer a draft' : ''}. `
         + `${copy.methodLabel} — ${copy.actionLabel}. ${copy.nextStep}`,
-      ...moneyOpts(b),
+      // The request is the headline here, never "$0 approved" — see `moneyOpts`.
+      ...moneyOpts(b, { submitted: true }),
       applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
   };
 
@@ -406,7 +426,7 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
         const b = await drawBlocks();
         await notify.notifyAppStaffThread(appId, {
           type: 'draw_inbound', title: r.title, drawTag: drawLabel.drawLabel(draw.number), badge: { text: 'Sitewire update', tone: r.tone },
-          body: r.body, ...moneyOpts(b),
+          body: r.body, ...moneyOpts(b, { submitted: r.submitted }),
           applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
       }
       maybeImportTask();
@@ -441,7 +461,7 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
           const b = await drawBlocks();
           await notify.notifyAppStaffThread(appId, {
             type: 'draw_inbound', title: r.title, drawTag: drawLabel.drawLabel(draw.number), badge: { text: 'Sitewire update', tone: r.tone },
-            body: r.body, ...moneyOpts(b),
+            body: r.body, ...moneyOpts(b, { submitted: r.submitted }),
             applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
         }
       }
