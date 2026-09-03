@@ -496,6 +496,50 @@ const byInvestor = (programs) => {
       'FIL-12 the board mirrors the body Lender Price was ACTUALLY sent, not the static build');
   }
 
+  /* ═════════════════════════════════════════════════════════════════════════
+     PAIR · WHAT THE TWO SHEETS CALLED EACH INVESTOR — the linking screen's input.
+
+     Owner-reported 2026-09-03: *"linking doesn't work"*. It did not, and the panel
+     was never the problem: it was mounted and pointed at this engine's own doors the
+     whole time. What was missing was the DATA. The COMBINED board has always returned
+     `investorPairing`; the GENERAL board returned nothing of the kind, so the panel
+     had no board to work from and only ever showed anything if the same person had
+     visited the combined pricer (super-admin only) in the same browser session.
+     ═════════════════════════════════════════════════════════════════════════ */
+  {
+    const out = await run(lpOk, nexOk, {});
+    const pr = out.investorPairing;
+    ok(pr && Array.isArray(pr.rows), 'PAIR-1 the general board returns a pairing the linking screen can read');
+    ok(pr && pr.rows.length > 0, `PAIR-2 …with real rows off the boards the sheets returned (${pr ? pr.rows.length : 0})`);
+    /* THE CASE THE PANEL EXISTS FOR: one investor spelled two ways that no human has
+       confirmed — "Acra Lending" against "Acra Lending - Corr". */
+    const guessed = (pr ? pr.rows : []).filter((r) => (r.names.loannex || []).some((n) => n.guessed)
+      || (r.names.lenderprice || []).some((n) => n.guessed));
+    ok(guessed.length > 0,
+      `PAIR-3 …including the ones still only GUESSED, which are the rows a person is asked to confirm (${guessed.length})`);
+    ok((pr ? pr.rows : []).every((r) => r.key && typeof r.investor === 'string'),
+      'PAIR-4 every row names the investor it is about — a row nobody can identify is a row nobody can link');
+
+    /* ONE DEFINITION, BOTH ENGINES. `namesFromBoard` was private to the combined pricer;
+       two engines each deriving "which names did this sheet return" their own way is how
+       one screen comes to offer a link the other cannot see. */
+    const links = require(path.join(ROOT, 'src/longterm/pricing/investor-links.js'));
+    ok(typeof links.namesFromBoard === 'function',
+      'PAIR-5 the "which names did this board carry" rule is shared, not copied per engine');
+    const read = (f) => require('fs').readFileSync(path.join(ROOT, f), 'utf8');
+    ok(/namesOf = investorLinks\.namesFromBoard/.test(read('src/longterm/routes/combined-pricer.js')),
+      'PAIR-6 …and the combined pricer asks the shared one rather than keeping its own copy');
+
+    /* THE SCREEN MUST ACTUALLY RECEIVE AND REMEMBER IT — a board field nothing reads is
+       a field nobody benefits from, which is this whole section's subject. */
+    ok(/investorPairing: board\.investorPairing/.test(read('src/longterm/routes/dscr-pricer.js')),
+      'PAIR-7 the price door sends it on to the browser');
+    const screen = read('app-v2/src/longterm/LtPricer.jsx')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    ok(/rememberPairing\(r\.investorPairing\)/.test(screen),
+      'PAIR-8 …and the pricer remembers it, which is how the SETTINGS screen gets a board to link from');
+  }
+
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('THREW', (e && e.stack) || e); process.exit(1); });

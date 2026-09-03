@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { rememberPairing } from './LtInvestorLinks.jsx';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
 import { money, money2, noteRate as rate, price, points as pts } from './format.js';
@@ -2487,6 +2488,15 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
     try {
       const r = await engine.price(toScenario(f), { reveal });
       setRes(r);
+      /* ⛔ REMEMBER WHAT THE TWO SHEETS CALLED EACH INVESTOR, so the SETTINGS screen's linking
+         panel has a board to work from (owner-reported 2026-09-03: *"linking doesn't work"*).
+
+         The panel is a different page from this one, so it cannot be handed the answer directly
+         — the combined engine solved that by caching the pairing, and this reuses that exact
+         mechanism rather than inventing a second one. Best-effort: a board with no pairing (an
+         older server during a deploy) simply leaves the last one in place, and this may never
+         cost anybody a board. */
+      try { if (r && r.investorPairing) rememberPairing(r.investorPairing); } catch (_) { /* never at the board's cost */ }
       // THE ANSWER IS HERE — the form folds away and the sticky strip takes over, holding the
       // search's facts and the Edit search button. Only a SUCCESS collapses it: a refusal leaves
       // the form open with the problem in front of the person who has to fix it.

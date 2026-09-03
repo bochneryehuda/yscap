@@ -510,6 +510,12 @@ async function price(req, res) {
       programs: board.programs,
       investorRoster: board.roster,          // the lens roster, for the routed board
       investorsUnmapped: board.unmapped,     // a lender quoting with no white-label name yet
+      /* WHAT THE TWO SHEETS CALLED EACH INVESTOR ON THIS BOARD — the linking screen's input.
+         STAFF-ONLY, like the whole of /api/lt (mounted requireAuth + requireStaff in server.js;
+         the borrower's own router is a different mount), and the same field the COMBINED board
+         has always returned. Without it the general engine's linking panel had no board to work
+         from at all — see `general-board.js`. */
+      investorPairing: board.investorPairing || null,
       missing: board.missing,                // investors LoanNEX was asked for and did not carry
       sources: board.sources,                // which sheet answered (truthful data; the general-engine
                                              // screen does not render a no-login banner from it yet)

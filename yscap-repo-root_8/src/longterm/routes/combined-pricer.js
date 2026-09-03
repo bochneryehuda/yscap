@@ -177,14 +177,10 @@ function cellsOnBoard(board) {
 }
 
 /** Every investor name a board actually returned, in the order it returned them. */
-function namesOf(board) {
-  const out = [];
-  for (const p of (board && board.programs) || []) {
-    const n = p.investor || p.lender;
-    if (n && !out.includes(n)) out.push(n);
-  }
-  return out;
-}
+/* `namesOf` moved to `pricing/investor-links.js` as `namesFromBoard` so the GENERAL engine
+   asks the same question the same way — two engines each deriving "which names did this sheet
+   return" their own way is how one screen offers a link the other cannot see. */
+const namesOf = investorLinks.namesFromBoard;
 
 /**
  * The human's "these two names are the same investor" map.

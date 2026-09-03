@@ -378,9 +378,29 @@ async function boardForScenario(sc, deps, opts = {}) {
      `parsed.programs`, so overriding these counts never reaches the bands. */
   const routedLenderCount = new Set(programs.map((p) => p && p.lender).filter(Boolean)).size;
 
+  /* ⛔ WHAT THE TWO SHEETS ACTUALLY CALLED EACH INVESTOR — the input the linking screen
+     works from (owner-reported 2026-09-03: *"linking doesn't work"*).
+
+     It did not, and this is why: the COMBINED board has always returned `investorPairing`,
+     and its pricer hands it to `LtInvestorLinks`, which caches it so the settings screen can
+     read it back. The GENERAL board returned NOTHING of the kind — so on the general settings
+     screen the linking panel had no board to work from, and the only way it ever showed
+     anything was if the same person had visited the COMBINED pricer (super-admin only) in the
+     same browser session. The panel was mounted and wired to real doors the whole time; what
+     was missing was the DATA.
+
+     Built by the SAME `investorLinks.pairing` from the SAME `namesFromBoard`, off the boards
+     as the sheets returned them (never the registry's idea of them), so a link offered on one
+     engine's screen is the link the other engine's screen offers too. */
+  const investorPairing = investorLinks.pairing({
+    lenderprice: investorLinks.namesFromBoard(lpBoard),
+    loannex: investorLinks.namesFromBoard(nxBoard),
+  }, links, custom);   // in THIS scope `links` is already the raw value (see line ~169), not a { raw } wrapper
+
   return {
     ok: true,
     sightings,
+    investorPairing,
     parsed: Object.assign({}, lpParsed, { programs, programCount: programs.length, lenderCount: routedLenderCount }),
     programs,
     missing,
