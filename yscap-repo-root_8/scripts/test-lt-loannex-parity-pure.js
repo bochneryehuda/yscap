@@ -873,11 +873,19 @@ console.log('Two programs, one loan — parity');
    * the sheet finds the quote by matching this price EXACTLY. Our `price` above is rounded to three
    * decimals for the screen and then has the holdback taken out of it, so it addresses nothing —
    * measured live, 269 of 4,396 rungs on one board need a fourth decimal, and every one of them
-   * came back `{"status":"Success"}` with no body. It carries no vendor tell: it is a number, and
-   * a Lender Price row has no explain handle at all. `test-lt-explain-exact-price-pure` holds the
+   * came back `{"status":"Success"}` with no body. `test-lt-explain-exact-price-pure` holds the
    * measurement and pins what goes on the wire.
+   *
+   * ⛔ AND IT WAS REPLACED BY `priceSeal` THE SAME DAY, WHICH IS WHY THIS GUARD IS AN ALLOWLIST.
+   * It carried no VENDOR tell — it is a number, and a Lender Price row has no handle at all — but
+   * this list is not the only rule a key has to satisfy: beside the held-back `price` on the same
+   * object it was our MARGIN, one subtraction apart (measured: 101.0355 − 100.786 = 0.2495, on all
+   * 2,133 handles of a live board). So the figure now travels SEALED and only the server can read
+   * it; the key changes name so nothing can mistake a blob for a number. `test-lt-price-seal-pure`
+   * holds that half, and sweeps every READABLE number on the handle against the holdback rather
+   * than naming one field — an allowlist proves what may be there, never what the values mean.
    */
-  const ADDRESS_KEYS = ['vendor', 'priceHashKey', 'rate', 'price', 'priceExact', 'lockDays', 'productId', 'lenderId', 'transactionId', 'portal'];
+  const ADDRESS_KEYS = ['vendor', 'priceHashKey', 'rate', 'price', 'priceSeal', 'lockDays', 'productId', 'lenderId', 'transactionId', 'portal'];
   ok(handles.length > 0 && handles.every((h) => Object.keys(h).every((k) => ADDRESS_KEYS.includes(k))),
     `BOARD-8b …and the explain ADDRESS carries only the keys that address a quote, nothing more (${handles.length} handles, offending keys: ${JSON.stringify([...new Set(handles.flatMap((h) => Object.keys(h)).filter((k) => !ADDRESS_KEYS.includes(k)))])})`);
   ok(handles.every((h) => h.lenderId != null),

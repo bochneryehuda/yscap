@@ -482,6 +482,7 @@ function filterInterestOnly(options, want) {
  * board's transaction — the commonest way a per-row fetch silently explains the wrong quote.
  */
 const { EXPLAIN_LENDER_ID } = require('./investor-routing');
+const sealedPrice = require('./sealed-price');
 
 function explainHandle(r, p, price, opts = {}) {
   if (!r || !r.priceHashKey) return null;
@@ -500,20 +501,35 @@ function explainHandle(r, p, price, opts = {}) {
     rate: round3(r.rate),
     price,
     /**
-     * ⛔ AND THE VENDOR'S OWN PRICE, UNROUNDED, BESIDE THE ONE THE SCREEN SHOWS.
+     * ⛔ AND THE VENDOR'S OWN PRICE, UNROUNDED — SEALED, BECAUSE IN THE CLEAR IT IS THE HOLDBACK.
      *
      * The sheet matches a quote on the price we hand back, to the decimal. `price` above has been
      * rounded to three for display and then had our holdback taken out of it, so it is OUR number,
      * not the sheet's — handed back, the sheet finds nothing and answers with an empty body, and
      * the panel says the rate sheet returned no breakdown. `loannex/parse` carries the measurement
-     * that proved it. This is the number the explain door actually sends; `price` stays because
-     * the panel prints it and because it is what somebody quotes.
+     * that proved it. So the vendor's own figure has to travel; `price` stays because the panel
+     * prints it and because it is what somebody quotes.
+     *
+     * ⛔ THE TWO OF THEM SIDE BY SIDE ARE THE HOLDBACK, ONE SUBTRACTION OFF THE WIRE — measured on
+     * a live board: `priceExact 101.0355 − price 100.786 = 0.2495`, on all 2,133 handles. That is
+     * the exact class `investor-routing.stripHoldbackTrail` exists to close for `vendorPrice`,
+     * `vendorPriceFloor` and `vendorPriceCeiling` (audit F5); this field was added afterwards and
+     * walked through the same door. It cannot simply be dropped (that re-opens the empty-breakdown
+     * bug) and it cannot be rebuilt from the rounded price (`sealed-price` carries that
+     * measurement) — so it travels SEALED, under a key only this server holds.
+     *
+     * ⛔ THE KEY IS `priceSeal`, NOT `priceExact`, AND THAT IS DELIBERATE: the sealed value is a
+     * STRING, and a reader expecting the number would otherwise be handed a blob that is truthy,
+     * not finite, and silently wrong. Nothing may read a price off this handle except the explain
+     * door, which opens it (`combined-pricer.quoteFromBody`).
      *
      * Absent on a Lender Price row — that vendor publishes its itemisation with the quote and is
-     * never asked a second question — so the key is omitted rather than set to null.
+     * never asked a second question — and absent when the seal cannot be made, which degrades to
+     * the holdback add-back path rather than sending the number in the clear.
      */
-    priceExact: r.priceExact != null ? Number(r.priceExact)
-      : (r.vendorPrice != null ? Number(r.vendorPrice) : undefined),
+    priceSeal: sealedPrice.seal(
+      r.priceExact != null ? r.priceExact : (r.vendorPrice != null ? r.vendorPrice : null),
+    ) || undefined,
     lockDays: r.lockDays,
     productId: p.productId,
     // BOTH ids, on the ordinary board too. The vendor addresses a quote by product AND investor
@@ -524,7 +540,7 @@ function explainHandle(r, p, price, opts = {}) {
     lenderId: p.lenderId != null ? p.lenderId : (p[EXPLAIN_LENDER_ID] != null ? p[EXPLAIN_LENDER_ID] : undefined),
   };
   if (h.lenderId === undefined) delete h.lenderId;
-  if (h.priceExact === undefined) delete h.priceExact;
+  if (h.priceSeal === undefined) delete h.priceSeal;
   // Omitted rather than sent as null: a null would read as "asked and there was none",
   // and the route falls back to the request body only when the key is genuinely absent.
   if (opts.transactionId != null) h.transactionId = opts.transactionId;

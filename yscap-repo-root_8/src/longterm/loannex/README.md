@@ -751,14 +751,13 @@ rounded `price` a screen shows.
 - `parse.js` keeps it (`priceExact: price`, no rounding).
 - `../pricing/vendor-margin.js` spreads it through **unshifted**: our margin is not on their sheet,
   so a held-back `priceExact` would be a price the sheet has never quoted.
-- `../pricing/quote-shape.js` puts it on the explain handle, and it is on the ADDRESS allowlist in
-  `test-lt-loannex-parity-pure` (BOARD-8b) as an address key, because it is one.
+- `../pricing/quote-shape.js` puts it on the explain handle **sealed** (see below).
 - `client.js` `evidence()` sends it, falling back to `price` for a row shaped before this existed.
 
 Nothing on a screen reads `priceExact`. The board, the comparison, the holdback and the panel all
 keep working on the rounded `price`, and price + points on a row still sum to 100.
 
-**Guard:** `scripts/test-lt-explain-exact-price-pure.js` — 30 checks across the parser, the holdback,
+**Guard:** `scripts/test-lt-explain-exact-price-pure.js` — 34 checks across the parser, the holdback,
 the handle and, in section D, the **outgoing request body itself**. That last part matters: the
 defect was invisible from outside `evidence()`, which returned a well-formed "the sheet had nothing"
 answer that every layer above it handled correctly. The only place the mistake existed was the
@@ -766,6 +765,58 @@ number in the request, so the test replaces `global.fetch` and reads it.
 
 **What this does not change.** `vendor_returned_no_evidence` stays a real answer with a real message
 — a sheet genuinely can have nothing for a quote. It should now be rare rather than routine.
+
+### …and the same day, `priceExact` had to be SEALED — it was the holdback by subtraction
+
+The fix above put the vendor's own price on the explain handle, and the handle goes to the browser.
+Beside the held-back price on the same object, the pair **is** our margin. Measured on a live
+general-engine board:
+
+```
+price       100.786    ← held back, what the screen shows
+priceExact  101.0355   ← the vendor's own, on the same handle
+                0.2495 ← the 0.25 holdback, one subtraction off the wire
+```
+
+on **all 2,133 explain handles** of that board. Exactly the class audit F5 closed for `vendorPrice`,
+`vendorPriceFloor` and `vendorPriceCeiling` (`pricing/investor-routing.stripHoldbackTrail`); this
+field was added afterwards and walked through the same door.
+
+**It could not simply be dropped** — that re-opens the empty-breakdown bug above — and it cannot be
+rebuilt from the rounded price (`104.1762 → 104.176 → +0.25 → 104.176`). So it travels **sealed**:
+
+- `pricing/sealed-price.js` — AES-256-GCM, node `crypto` only, no database, no RTL import. The key
+  is `LT_PRICE_SEAL_KEY`, else derived one-way from `JWT_SECRET` under its own domain label, else
+  random per process. The middle source is an **availability** decision, not a security one: a
+  random key does not survive a restart, and an unopenable seal degrades to the add-back path,
+  which reproduces only the rounded price — i.e. the bug this field exists to fix, coming back on
+  its own after every deploy.
+- the handle carries **`priceSeal`** (a string blob), never `priceExact` — a different key on
+  purpose, so a reader expecting a number is never handed a blob that is truthy and not finite.
+- `routes/combined-pricer.js` `quoteFromBody(b)` is the **one** reader. Both explain doors go
+  through it; a third door that forgot would not error, it would quietly ask the sheet a rounded
+  price and get nothing back. The seal is stripped before the quote travels any further, a seal
+  **wins** over any `priceExact` a caller posts beside it, and one this process cannot open leaves
+  **no** exact price rather than a forged one.
+- `client.js` `exactPrice(quote)` decides what actually goes on the wire: a real number wins, a
+  blob or a blank falls back to `price` — `Number(null)` and `Number('')` are both `0`, which the
+  sheet cannot match.
+
+**Guards:** `scripts/test-lt-price-seal-pure.js` (110 checks, in `npm test`) plus the re-pointed
+sections C and D of `test-lt-explain-exact-price-pure`. **Ten mutations of the production code were
+each proven to fail them**, and one of those is worth recording: with the GCM authentication tag
+check removed from `open()`, a hand-flipped blob opened to **104.1763** — a different valid price
+the vendor would then have been asked to itemise. A random corruption cannot prove that (it merely
+decodes to text `Number()` reads as `NaN`), so the suite forges a bit-flip that would decode to a
+real price instead.
+
+`BOARD-8b` in `test-lt-loannex-parity-pure` now allows `priceSeal` and **no longer allows**
+`priceExact`, so the field cannot come back onto a handle in the clear. That allowlist proves what
+keys may be present; the seal suite sweeps every *readable number* on a handle against the holdback,
+because an allowlist can never say what a value MEANS.
+
+**Open, and stated rather than closed quietly:** the handle's existence still tells a reader which
+rows are LoanNEX (a Lender Price row has none), which is the item already recorded above BOARD-8b.
 
 ---
 

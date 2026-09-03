@@ -31,7 +31,14 @@
  * ── THE FIX THIS PINS ──────────────────────────────────────────────────────
  * Every LoanNEX rung now carries `priceExact` — the vendor's own number, untouched — beside the
  * rounded `price` a screen shows. It survives the holdback unshifted (our margin is not on their
- * sheet), rides out on the explain handle, and `evidence()` sends it. Nothing else reads it.
+ * sheet), and `evidence()` sends it. Nothing else reads it.
+ *
+ * ⛔ IT DOES NOT RIDE OUT ON THE HANDLE IN THE CLEAR ANY MORE, and that is not a loosening of this
+ * suite's subject — it is the second half of it. Beside the held-back price on the same object the
+ * pair IS our margin, one subtraction apart, so the handle carries the figure SEALED and the
+ * explain door opens it (`combined-pricer.quoteFromBody`). Section C therefore proves the browser
+ * cannot read it and section D runs the quote through the REAL door before asking, so the wire
+ * assertion below is now a proof of the whole chain rather than of one field.
  *
  * PURE: no network, no database. `global.fetch` is replaced so the OUTGOING BODY can be read —
  * which is the only place this defect was ever visible.
@@ -47,6 +54,9 @@ const parse = require(path.join(ROOT, 'src/longterm/loannex/parse'));
 const vendorMargin = require(path.join(ROOT, 'src/longterm/pricing/vendor-margin'));
 const quoteShape = require(path.join(ROOT, 'src/longterm/pricing/quote-shape'));
 const nex = require(path.join(ROOT, 'src/longterm/loannex/client'));
+const sealedPrice = require(path.join(ROOT, 'src/longterm/pricing/sealed-price'));
+const combined = require(path.join(ROOT, 'src/longterm/routes/combined-pricer'));
+const { quoteFromBody } = combined._internals;
 
 let pass = 0;
 const ok = (cond, name) => { assert.ok(cond, name); pass++; console.log('  ok  ' + name); };
@@ -100,7 +110,22 @@ const rows = quoteShape.programsFromLoanNex(held, { transactionId: 'txn-1' });
 const opt = (rows[0].options || []).find((o) => o.explain && o.explain.rate === 6.875);
 ok(opt && opt.explain, 'C1 the option row has an explain handle');
 eq(opt.explain.price, 103.926, 'C2 the handle still states the price the screen shows');
-eq(opt.explain.priceExact, 104.1762, 'C3 and the sheet\'s own price beside it');
+ok(!('priceExact' in opt.explain),
+  'C3 the sheet\'s own price is NOT readable on the handle — beside the held-back price it IS our margin');
+ok(sealedPrice.isSealed(opt.explain.priceSeal), 'C3b it travels sealed instead');
+eq(sealedPrice.open(opt.explain.priceSeal), 104.1762, 'C3c and the seal opens, server-side, to the sheet\'s own number');
+/**
+ * ⛔ THE ASSERTION THAT IS ACTUALLY ABOUT THE OWNER'S RULE. Every value the browser can read off
+ * this handle is swept, and none of them may be 0.25 away from the price on the row. Naming only
+ * the field we happen to have sealed would pass again the day a fourth one is added.
+ */
+{
+  const readable = Object.entries(opt.explain)
+    .filter(([, v]) => typeof v === 'number' && Number.isFinite(v));
+  const gap = readable.filter(([, v]) => Math.abs(Math.abs(v - opt.explain.price) - 0.25) < 0.01);
+  eq(gap.length, 0,
+    `C3d no readable figure on the handle is the holdback away from its price — ${JSON.stringify(gap)}`);
+}
 eq(opt.explain.priceHashKey, '38068-1382-33114-5316', 'C4 the hash is unchanged');
 eq(opt.explain.productId, 38068, 'C5 the product id is unchanged');
 eq(opt.explain.lenderId, 7233, 'C6 the investor id is unchanged');
@@ -137,8 +162,15 @@ global.fetch = async (url, init = {}) => {
 const SC = { purpose: 'Purchase', value: 500000, loan: 375000, zip: '06001', state: 'CT',
   county: 'Hartford', fico: 760, dscr: 1.3, propertyType: 'SingleFamily', prepayMonths: 60 };
 
+/**
+ * ⛔ THE QUOTE IS OPENED THE WAY THE ROUTE OPENS IT, using the route's OWN function rather than a
+ * hand-written unseal here — a copy would keep passing after the door stopped calling it, which is
+ * the one failure that puts the rounded price back on the wire.
+ */
+const asDoorSees = (handle) => quoteFromBody({ quote: handle });
+
 (async () => {
-  await nex.evidence(SC, opt.explain, { transactionId: 'txn-1' });
+  await nex.evidence(SC, asDoorSees(opt.explain), { transactionId: 'txn-1' });
   const asked = sent[sent.length - 1];
   ok(asked && asked.data && asked.data.selectedPriceData, 'D1 a breakdown request was actually sent');
   eq(asked.data.selectedPriceData.price, 104.1762, 'D2 the price on the wire is the SHEET\'S, to the fourth decimal');
@@ -150,14 +182,25 @@ const SC = { purpose: 'Purchase', value: 500000, loan: 375000, zip: '06001', sta
 
   // A row shaped before `priceExact` existed still asks the question it asked yesterday.
   const older = { ...opt.explain };
-  delete older.priceExact;
-  await nex.evidence(SC, older, { transactionId: 'txn-1' });
+  delete older.priceSeal;
+  await nex.evidence(SC, asDoorSees(older), { transactionId: 'txn-1' });
   eq(sent[sent.length - 1].data.selectedPriceData.price, 103.926,
     'D8 with no exact price the rounded one is still sent — an older row is not broken by this');
 
+  /**
+   * A SEAL THIS PROCESS CANNOT OPEN — a restart, a rotated key, a forged blob — degrades to exactly
+   * that same older-row path. It must never travel as the blob itself: the sheet cannot match a
+   * base64 string, so the panel would report an empty breakdown and blame the vendor for our
+   * plumbing, which is the bug `priceExact` exists to close wearing a different face.
+   */
+  const forged = { ...opt.explain, priceSeal: `${sealedPrice.V}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA` };
+  await nex.evidence(SC, asDoorSees(forged), { transactionId: 'txn-1' });
+  eq(sent[sent.length - 1].data.selectedPriceData.price, 103.926,
+    'D8b an unopenable seal falls back to the rounded price — never to the blob');
+
   // And a quote that cannot identify itself is still refused before the call, as before.
   const before = sent.length;
-  const r = await nex.evidence(SC, { ...opt.explain, priceHashKey: null }, {});
+  const r = await nex.evidence(SC, { ...asDoorSees(opt.explain), priceHashKey: null }, {});
   eq(sent.length, before, 'D9 an unidentifiable quote still spends no vendor call');
   eq(r.absence.reason, 'quote_incomplete', 'D10 and still says so by name');
 

@@ -90,6 +90,7 @@ const vendorMargin = require('../pricing/vendor-margin');
 const settingsStore = require('../settings/store');
 const rosterContext = require('../pricing/roster-context');
 const roster = require('../pricing/investor-roster');
+const sealedPrice = require('../pricing/sealed-price');
 
 /**
  * An investor with nothing shapeable — never a guess, always an honest empty.
@@ -171,6 +172,44 @@ function searchIdentity(quote, body) {
 }
 
 /**
+ * THE QUOTE THE CALLER SENT, WITH THE VENDOR'S OWN PRICE UNSEALED — the ONE door on the way in.
+ *
+ * ⛔ WHY THERE IS A FUNCTION HERE AT ALL, rather than two `b.quote || b` reads. The browser holds
+ * the row's `explain` handle and posts it straight back, and that handle carries the vendor's exact
+ * price SEALED (`quote-shape.explainHandle` — in the clear the pair `priceExact − price` IS our
+ * margin holdback, which the owner has directed must never be visible). Opening it is therefore a
+ * step every explain door has to take, and a third door added later that forgets would not error —
+ * it would quietly ask the sheet about a rounded price and get an empty breakdown back, which is
+ * exactly the bug `priceExact` was added to fix, wearing a different face. One reader, no third way.
+ *
+ * ⛔ AN UNOPENABLE SEAL IS NOT AN ERROR. A restart mints a new key when `LT_PRICE_SEAL_KEY` is
+ * unset, and a stale board in an open tab still posts yesterday's blob; a forged one fails its
+ * authentication tag by construction. In every one of those the exact price is simply ABSENT, and
+ * the door falls back to `vendorQuote`'s add-back — the path that was there before this field
+ * existed and still answers correctly for every rung whose price needs no fourth decimal.
+ *
+ * ⛔ AND THE SEAL NEVER RIDES ON. It is deleted from the quote handed downstream, so nothing can
+ * pass a blob to the vendor, print it, or log it.
+ */
+function quoteFromBody(b) {
+  const raw = (b && b.quote) || b;
+  if (!raw || typeof raw !== 'object') return raw;
+  // Nothing to open and nothing to strip: the Lender Price rows and every internal caller.
+  if (!('priceSeal' in raw)) return raw;
+  // The key is present, so it goes — whatever it holds. A `priceSeal: undefined` is not a blob,
+  // but leaving the key on the quote would make "the seal never rides on" a claim with an
+  // exception in it, and an exception is what the next reader copies.
+  const { priceSeal, ...rest } = raw;
+  const exact = sealedPrice.isSealed(priceSeal) ? sealedPrice.open(priceSeal) : null;
+  // ⛔ THE SEAL WINS. A caller may post a `priceExact` of its own beside it; the only price this
+  // door believes is one it minted, so a forged figure is overwritten rather than trusted.
+  if (exact != null) return { ...rest, priceExact: exact };
+  // An unopenable seal leaves no exact price at all — never a forged one somebody sent with it.
+  if ('priceExact' in rest) delete rest.priceExact;
+  return rest;
+}
+
+/**
  * THE QUOTE AS THE RATE SHEET ITSELF WROTE IT — our margin added back on, for the QUESTION only.
  *
  * A LoanNEX rung reaches the browser with the holdback already in its price (`applyToBoard` runs
@@ -182,12 +221,16 @@ function searchIdentity(quote, body) {
  * A holdback of zero, an unreadable one, or a quote with no price returns the quote itself, so a
  * Lender Price row and an ordinary board are byte-identical to what they were.
  *
- * ⛔ THIS IS THE FALLBACK NOW, NOT THE MAIN ROUTE. A LoanNEX handle also carries `priceExact` —
- * the sheet's own price to the last decimal — and `loannex/client.evidence` prefers it, because
- * adding 0.25 back onto a figure already rounded to three decimals does NOT reproduce a price with
- * a fourth (104.1762 → 104.176 → 103.926 → 104.176), and the sheet matches exactly. Adding it back
- * here still matters for a row shaped before that field existed, and `priceExact` rides through
- * this function untouched — it is the vendor's number and our margin is not on their sheet.
+ * ⛔ THIS IS THE FALLBACK NOW, NOT THE MAIN ROUTE. A LoanNEX handle carries the sheet's own price
+ * to the last decimal — sealed, opened by `quoteFromBody` above — and `loannex/client.evidence`
+ * prefers it, because adding 0.25 back onto a figure already rounded to three decimals does NOT
+ * reproduce a price with a fourth (104.1762 → 104.176 → 103.926 → 104.176), and the sheet matches
+ * exactly.
+ *
+ * It still matters, and in three real cases rather than as decoration: a row shaped before that
+ * field existed, a seal this process cannot open (a restart on an ephemeral key, a stale tab), and
+ * every rung whose price needs no fourth decimal at all. `priceExact` rides through this function
+ * untouched — it is the vendor's number and our margin is not on their sheet.
  */
 function vendorQuote(quote, points) {
   const pts = Number(points);
@@ -1111,7 +1154,7 @@ function makeRouter(opts = {}) {
    */
   router.post('/explain', (req, res) => {
     const b = req.body || {};
-    const quote = b.quote || b;
+    const quote = quoteFromBody(b);
     const reveal = b.revealSource === true;
     if (!quote || typeof quote !== 'object') {
       return res.status(400).json({ ok: false, error: 'missing_quote', message: 'Send the quote to explain — the `explain` block from the option row.' });
@@ -1283,7 +1326,7 @@ function makeRouter(opts = {}) {
 
   router.post('/loannex/explain', (req, res) => {
     const b = req.body || {};
-    const quote = b.quote || b;
+    const quote = quoteFromBody(b);
     if (!quote || !quote.priceHashKey) {
       return res.status(400).json({ ok: false, error: 'missing_quote', message: 'Send the quote to explain, including its priceHashKey (the `explain` block on any LoanNEX option row).' });
     }
@@ -1299,4 +1342,4 @@ function makeRouter(opts = {}) {
   return router;
 }
 
-module.exports = { makeRouter, _internals: { enabled, isSuperAdmin, priceBoth, scenarioOf, explainScenario, scenarioRefused, askedOf, reasonOf, vendorQuote, searchIdentity, routing, quoteShape, breakdown, customRaw } };
+module.exports = { makeRouter, _internals: { enabled, isSuperAdmin, priceBoth, scenarioOf, explainScenario, scenarioRefused, askedOf, reasonOf, vendorQuote, quoteFromBody, searchIdentity, routing, quoteShape, breakdown, customRaw } };

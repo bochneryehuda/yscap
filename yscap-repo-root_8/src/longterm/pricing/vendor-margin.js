@@ -332,6 +332,11 @@ function applyToBoard(board, source, opts) {
        * quote it can still recognise (`loannex/parse` has the measurement). Our holdback is not
        * on its sheet, so a held-back `priceExact` would be a price the sheet has never quoted —
        * which is the exact failure the field was added to end. Spread through, never touched.
+       *
+       * ⛔ IT STAYS ON THE SERVER. Beside the held-back `price` on the same object it IS our margin,
+       * one subtraction apart, so `quote-shape.explainHandle` SEALS it on the way to the browser
+       * (`pricing/sealed-price`) and only the explain door opens it. Never put it on a row a screen
+       * reads, and never widen what carries it out.
        */
       return { ...r, vendorPrice: r3(vendorPrice), price, points, marginHoldback: pts };
     }),
