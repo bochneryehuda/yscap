@@ -27,7 +27,19 @@ const ROOT = path.join(__dirname, '..');
 const lp = require(path.join(ROOT, 'src/longterm/lenderprice/client'));
 const nex = require(path.join(ROOT, 'src/longterm/loannex/client'));
 const nexParse = require(path.join(ROOT, 'src/longterm/loannex/parse'));
-const NX_BOARD = nexParse.parse(require(path.join(ROOT, 'src/longterm/loannex/capture/quick-prices.json')).response);
+const RECORDED = nexParse.parse(require(path.join(ROOT, 'src/longterm/loannex/capture/quick-prices.json')).response);
+/* The fifth investor the 2026-08-30 recording does not carry — ClearEdge was added to the
+   roster on 2026-09-02. Synthetic on purpose, and it claims nothing about whether ClearEdge
+   is live on the LoanNEX account: only that this engine routes it like the other four. */
+const CLEAREDGE_SYNTHETIC = {
+  source: 'loannex', lender: 'ClearEdge Lending', investor: 'ClearEdge Lending', lenderId: 9901,
+  program: 'DSCR Select', programId: 991, product: '30 Yr. Fixed', productId: 99001,
+  amortizationType: 'Fixed', termInMonths: 360, isInterestOnly: false, lockDaysOffered: [30],
+  minRate: 6.5, minPoints: -1, maxPrice: 101, rungCount: 1,
+  rungs: [{ rate: 6.5, price: 101, points: -1, lockDays: 30, payment: 2371, dscr: 1.3,
+    priceHashKey: '99001-101-9901-3001', isException: false, hasSoftStopViolation: false }],
+};
+const NX_BOARD = { ...RECORDED, programs: RECORDED.programs.concat([CLEAREDGE_SYNTHETIC]) };
 
 const leaf = (co, rate) => ({
   companyId: co, companyName: co, programName: 'DSCR 30 Yr Fixed', productName: '30 Yr Fixed',
@@ -88,8 +100,8 @@ const investorsOf = (j) => {
       `BR-3 BOTH sheets are asked, once per band, in step (Lender Price ${lpCalls}, LoanNEX ${nexCalls})`);
 
     const inv = investorsOf(r.json);
-    ok(['nqm', 'acra', 'eresi', 'button_finance'].every((k) => inv.has(k)),
-      `BR-4 the investors the owner moved to LoanNEX are ON the bracketed board (${[...inv.keys()].sort().join(', ')})`);
+    ok(['nqm', 'acra', 'eresi', 'button_finance', 'clearedge'].every((k) => inv.has(k)),
+      `BR-4 ALL FIVE investors the owner put on LoanNEX are on the bracketed board (${[...inv.keys()].sort().join(', ')})`);
     ok(inv.has('deephaven'),
       'BR-5 …and a Lender Price investor is still there, untouched');
 
@@ -113,7 +125,7 @@ const investorsOf = (j) => {
       'BR-8 LoanNEX refusing does not cost the board — the officer still gets Lender Price');
     const downInv = investorsOf(down.json);
     ok(downInv.has('deephaven'), 'BR-9 …the Lender Price investors are all there');
-    ok(!downInv.has('eresi') && !downInv.has('button_finance'),
+    ok(!downInv.has('eresi') && !downInv.has('button_finance') && !downInv.has('clearedge'),
       'BR-10 …the LoanNEX-only ones are simply absent');
     ok(!downInv.has('nqm'),
       'BR-11 …and a switched investor is NOT quietly served from Lender Price instead');

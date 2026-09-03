@@ -1541,6 +1541,74 @@ function makeRouter(opts = {}) {
    * the new `/explain` above is the one the screen reads. Never remove a door
    * until nothing depends on it.
    */
+  /**
+   * WHAT WE ACTUALLY SEND THE RATE SHEET, AND WHAT IT SENDS BACK — for one row.
+   *
+   * ── WHY THIS EXISTS ────────────────────────────────────────────────────────
+   * Owner-reported: rows showing *"The rate sheet accepted the question and returned no
+   * breakdown for this quote."* The recorded live capture holds that failure with the
+   * request kept beside it, and the request is EMPTY — we had asked with no product, no
+   * investor and no price hash, and the sheet answered about no quote. The screen then
+   * blamed the sheet.
+   *
+   * A quote that cannot identify itself is refused before the call now, so the two cases
+   * carry different words. This door is how the remaining case is settled WITHOUT a
+   * credential leaving the environment it belongs in: it runs where the password already
+   * lives, reports the identity of the question we would send, and — when asked to — makes
+   * the real call and reports whether a breakdown came back.
+   *
+   * ⛔ IT NEVER RETURNS A CREDENTIAL, and it never returns the vendor's raw answer. It
+   * reports the SHAPE of what was sent (which identity fields were present) and whether an
+   * answer arrived, which is the whole of the question being asked and none of the secret.
+   * Super-admin only, like every door on this router.
+   */
+  router.post('/loannex/diagnose', (req, res) => {
+    const b = req.body || {};
+    const quote = b.quote || {};
+    const identity = nex._internals && nex._internals.missingIdentity
+      ? nex._internals.missingIdentity(quote) : null;
+    const present = (k) => quote[k] !== undefined && quote[k] !== null && quote[k] !== '';
+    const shape = {
+      priceHashKey: present('priceHashKey'),
+      productId: present('productId'),
+      lenderId: present('lenderId'),
+      rate: present('rate'),
+      lockDays: present('lockDays'),
+      transactionId: present('transactionId'),
+    };
+    const answer = {
+      ok: true,
+      configured: nex.configured(),
+      // The question we would ask, by shape only — never the values of anything secret.
+      wouldSend: shape,
+      missing: identity,
+      wouldBeRefused: Array.isArray(identity) && identity.length > 0,
+      verdict: Array.isArray(identity) && identity.length
+        ? `This row could not identify itself: ${identity.join(', ')} missing. The rate sheet would not be asked — this one is ours.`
+        : 'This row carries everything the rate sheet needs to find the quote.',
+    };
+    if (b.live !== true) return res.json(answer);
+
+    // LIVE: make the real call and report only whether a breakdown came back.
+    let sc;
+    try { sc = explainScenario(req); }
+    catch (e) { return scenarioRefused(res, e); }
+    return nex.evidence(sc, quote, searchIdentity(quote, b))
+      .then((r) => res.json({
+        ...answer,
+        live: {
+          asked: true,
+          gotBreakdown: !!r.evidence,
+          adjustments: r.evidence && Array.isArray(r.evidence.adjustments) ? r.evidence.adjustments.length : 0,
+          basePrice: r.evidence ? r.evidence.basePrice : null,
+          absence: r.absence || null,
+          transactionId: r.transactionId || null,
+        },
+      }))
+      .catch((e) => res.status(isNotConfigured(e) ? 503 : 502)
+        .json({ ...answer, live: { asked: false, error: e.code || 'loannex_evidence_error', message: reasonOf(e) } }));
+  });
+
   router.post('/loannex/explain', (req, res) => {
     const b = req.body || {};
     const quote = b.quote || b;

@@ -26,7 +26,40 @@ const investorPrograms = require(path.join(ROOT, 'src/longterm/lenderprice/inves
 let pass = 0; let fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log(`  ok   ${m}`); } else { fail++; console.log(`  FAIL ${m}`); } };
 
-const NX_BOARD = nexParse.parse(require(path.join(ROOT, 'src/longterm/loannex/capture/quick-prices.json')).response);
+const RECORDED = nexParse.parse(require(path.join(ROOT, 'src/longterm/loannex/capture/quick-prices.json')).response);
+
+/**
+ * ⛔ THE FIFTH INVESTOR THE RECORDING DOES NOT HAVE.
+ *
+ * The owner turned FIVE investors onto LoanNEX — NQM, Acra, eResi, Button Finance and
+ * ClearEdge Lending. The recorded board is from 2026-08-30 and carries nine investors,
+ * none of them ClearEdge, because ClearEdge was added to the roster on 2026-09-02. So a
+ * suite built on the recording alone can only ever demonstrate FOUR of the five, and
+ * reads as though the fifth is not handled.
+ *
+ * It is handled — `investor-settings` routes all five — and this is what proves it: one
+ * SYNTHETIC programme, in the vendor's own shape, standing in for the recording we do not
+ * have. It is marked synthetic on purpose. It says nothing about whether ClearEdge is live
+ * on the LoanNEX account, which is an account question and not a code one; it says only
+ * that if that sheet returns ClearEdge, this engine routes it like the other four.
+ */
+const CLEAREDGE_SYNTHETIC = {
+  source: 'loannex', lender: 'ClearEdge Lending', investor: 'ClearEdge Lending',
+  lenderId: 9901, investorOrganizationGuid: null,
+  program: 'DSCR Select', programId: 991, programCode: 'CE-DSCR',
+  product: '30 Yr. Fixed', productId: 99001, rateSheetName: 'ClearEdge DSCR',
+  amortizationType: 'Fixed', termInMonths: 360, isInterestOnly: false, interestOnlyTerm: null,
+  hasQuestions: false, questionsAnswered: true, lockDaysOffered: [30],
+  minRate: 6.5, minPoints: -1, maxPrice: 101,
+  rungs: [
+    { rate: 6.5, price: 101, points: -1, pointsDerived: true, lockDays: 30, cushionedLockDays: null,
+      payment: 2371, dscr: 1.3, priceHashKey: '99001-101-9901-3001', isException: false, hasSoftStopViolation: false },
+    { rate: 6.75, price: 100.5, points: -0.5, pointsDerived: true, lockDays: 30, cushionedLockDays: null,
+      payment: 2432, dscr: 1.3, priceHashKey: '99001-102-9901-3002', isException: false, hasSoftStopViolation: false },
+  ],
+  rungCount: 2,
+};
+const NX_BOARD = { ...RECORDED, programs: RECORDED.programs.concat([CLEAREDGE_SYNTHETIC]) };
 
 const leaf = (co, rate) => ({
   companyId: co, companyName: co, programName: 'DSCR 30 Yr Fixed', productName: '30 Yr Fixed',
@@ -49,6 +82,7 @@ const lpOk = { price: async () => ({ ok: true, raw: LP_RAW, searchKey: 'k1', req
 const nexOk = { price: async () => ({ board: NX_BOARD, transactionId: 't1', portal: null }) };
 const SC = { purpose: 'Purchase', value: 500000, loan: 375000, zip: '08201', fico: 760, dscr: 1.3, ltv: 75 };
 const run = (lp, nex, opts = {}) => gb.boardForScenario(SC, { lp, nex, investorPrograms }, opts);
+const investorsOfBoard = (out) => byInvestor(out.programs);
 const byInvestor = (programs) => {
   const m = new Map();
   for (const p of programs) m.set(p.investorKey || '(unresolved)', (m.get(p.investorKey || '(unresolved)') || 0) + 1);
@@ -100,10 +134,19 @@ const byInvestor = (programs) => {
   ok(out.searchKey === 'k1', 'GEN-10 …and the search key the disqualify poll needs still rides out');
 
   console.log('\n── AN INVESTOR LOANNEX DID NOT PRICE ──');
-  ok(Array.isArray(out.missing) && out.missing.includes('clearedge'),
-    `GEN-11 an investor routed to LoanNEX that LoanNEX did not carry is REPORTED (${JSON.stringify(out.missing)})`);
-  ok(!by.has('clearedge'),
-    'GEN-12 …and is absent from the board rather than quietly served from the other sheet');
+  /* ALL FIVE the owner switched on, not four. The recording carries no ClearEdge, so the
+     fifth rides on a synthetic programme (see the top of this file) — without it this suite
+     could only ever show four and would read as though the fifth were unhandled. */
+  ok(['nqm', 'acra', 'eresi', 'button_finance', 'clearedge'].every((k) => by.has(k)),
+    `GEN-11 ALL FIVE investors routed to LoanNEX reach the board (${['nqm', 'acra', 'eresi', 'button_finance', 'clearedge'].filter((k) => by.has(k)).join(', ')})`);
+  ok(Array.isArray(out.missing) && out.missing.length === 0,
+    `GEN-12 …so none of the five is reported missing (${JSON.stringify(out.missing)})`);
+
+  /* AND THE MISSING REPORT STILL BITES when a sheet really does drop one. */
+  const nexNoClearEdge = { price: async () => ({ board: RECORDED, transactionId: 't1', portal: null }) };
+  const without = await run(lpOk, nexNoClearEdge);
+  ok(without.missing.includes('clearedge') && !investorsOfBoard(without).has('clearedge'),
+    `GEN-12b an investor the sheet does NOT carry is reported and left off, never substituted (${JSON.stringify(without.missing)})`);
 
   console.log('\n── ONE SHEET DOWN ──');
   const nexDown = { price: async () => { throw new Error('loannex refused'); } };
