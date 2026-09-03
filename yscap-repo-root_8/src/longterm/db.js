@@ -28,42 +28,36 @@ const pool = new Pool({
   idleTimeoutMillis: 30000,
   // A side build with no live traffic needs only a small pool.
   max: parseInt(process.env.LT_DB_POOL_MAX || '5', 10),
-  /* ⛔ AN IDLE CONNECTION MUST NOT, BY ITSELF, HOLD THIS PROCESS OPEN.
-   *
-   * An open TCP socket is a live libuv handle, so ONE connection resting in this
-   * pool is enough to stop Node ever exiting — silently, with nothing failing.
-   * That is not hypothetical: it is what stopped the test run three times.
-   *
-   * WHAT HAPPENED, measured. `index.js` warms the company settings at require
-   * time and re-reads them every 15s (`settings/store.js keepWarm`), so every
-   * process that so much as requires the Long-Term module now opens a connection
-   * HERE. `idleTimeoutMillis` is 30s and would have closed it — but the 15s
-   * re-read touches the connection first, so it is never idle long enough to time
-   * out. A suite ends, closes its server, ends RTL's pool (`src/db`, which is not
-   * this pool) and then waits on this socket until the runner's clock kills the
-   * step. On CI the chain stalled inside `scripts/test-draw-findings-public.js`
-   * SEVEN MINUTES IN, with its 14 of 14 assertions PASSED, and the ~1,300 suites
-   * behind it never ran. Reproduced locally against a real database; proved by
-   * removing the warm loop and watching the same suite exit.
-   *
-   * THE SAME LESSON THE SYNC WORKER ALREADY LEARNED, one layer down.
-   * `sync/worker.js` unrefs its timers on the argument that a real server is held
-   * open by its HTTP listener, so nothing that merely LOADS this module should be
-   * held open by our background work. A timer was never the only handle that
-   * background work creates; it also creates this socket. Applying the rule at the
-   * pool makes it hold for every reader, present and future, rather than for one
-   * caller who remembered.
-   *
-   * `allowExitOnIdle` is pg-pool's own switch for exactly this and does the whole
-   * job: it unrefs a client when it is RELEASED back to the pool and unrefs the
-   * idle-timeout timer with it, and pg-pool re-refs the client when it is next
-   * acquired (`pg-pool/index.js:161`). So an in-flight query always holds the
-   * process open — a script that awaits a query can never exit before its answer
-   * arrives — and only a connection nobody is using stops voting on whether this
-   * process lives. A live server is unaffected: its listener is what keeps it up.
-   *
-   * Guarded by `scripts/test-lt-process-exits-db.js`, which requires this module
-   * in a child process and fails if that child cannot exit by itself. */
+
+  // AN IDLE POOL MUST NOT BE THE ONLY THING KEEPING A PROCESS ALIVE. This one
+  // line is what stops `npm test` hanging, and it cost main a red build and a
+  // skipped deploy on 2026-09-02 (run 4343: `test-db` ran 60 minutes and was
+  // killed by the step timeout, so `deploy` and `schema-push` skipped and
+  // nothing published).
+  //
+  // WHAT ACTUALLY HAPPENS, measured rather than guessed. Requiring the
+  // long-term module calls `settings/store.keepWarm()`, which re-reads the
+  // company settings every LT_SETTINGS_REFRESH_MS (15s) on a timer that is
+  // CAREFULLY `unref`'d — its own comment says it "must never hold a process
+  // open, least of all a test runner's". The timer indeed does not. The QUERY
+  // it makes does: every tick borrows a client from this pool, and each borrow
+  // restarts that client's 30-second idle countdown, so the pooled socket is
+  // never reaped. A live TCP handle keeps Node's event loop alive whether or
+  // not any timer is `unref`'d. Every database suite that boots the app
+  // therefore finished its assertions, closed its server, ended RTL's pool —
+  // and then sat there forever. The probe found exactly one surviving handle: a
+  // socket to Postgres opened by this pool.
+  //
+  // That is the general lesson worth keeping: `unref`'ing a timer is not enough
+  // when the work inside it takes a ref'd handle.
+  //
+  // `allowExitOnIdle` says "when every client is idle, do not hold the process
+  // open". It changes NOTHING on a server — an HTTP listener holds the loop
+  // open, so the warm-up keeps ticking exactly as before — and it changes
+  // nothing for a script that still has work in flight, because a client
+  // running a query is not idle. It only lets a process that is genuinely
+  // finished finish. `scripts/test-lt-pool-exit-db.js` proves it by starting
+  // this module the way the app does and requiring the process to EXIT.
   allowExitOnIdle: true,
 });
 

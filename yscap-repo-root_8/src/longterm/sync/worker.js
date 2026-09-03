@@ -421,6 +421,14 @@ function start() {
   // `unref` says "do not stay alive for me". A real server is held open by its HTTP
   // listener, so the passes still fire exactly as before; a test or a CLI that loads
   // the module and finishes can now finish.
+  // ⛔ IF LONG-TERM EVER BECOMES ITS OWN RENDER SERVICE, IT NEEDS A REF'D
+  // KEEPALIVE OF ITS OWN — the way `src/worker.js` has one. Both timers here are
+  // deliberately `unref`'d, and since 2026-09-02 the long-term pool sets
+  // `allowExitOnIdle` (see `src/longterm/db.js`), so a process whose ONLY
+  // reason to stay alive was this worker would now exit within a second and
+  // stop syncing silently. Today nothing is in that position: this runs inside
+  // the API service, held open by its HTTP listener. Splitting it out is what
+  // would change that.
   const first = setTimeout(safeTick, FIRST_RUN_MS);
   const every = setInterval(safeTick, POLL_MIN * 60 * 1000);
   if (typeof first.unref === 'function') first.unref();
