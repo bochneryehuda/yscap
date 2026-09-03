@@ -145,39 +145,59 @@ ok(/r\.control = String\(row\.control_status/.test(hubSrc), 'a room re-created a
   // So: every function the batch passes through on its way out, scanned with trailing
   // comments removed, and each deliberate exit anchored to the start of its statement
   // rather than matched anywhere in the line.
+  // ⛔ A WORD-BOUNDARY LOOKUP, AND A NAME MUST BE UNIQUE. `indexOf('function send')` is a
+  // PREFIX match: adding an ordinary helper called `sendAll` ABOVE `send` made this scan
+  // read the wrong function body and silently gave up a third of its coverage — not an
+  // adversarial mutation, just a refactor (pre-merge audit, 2026-09-03).
   const fn = (name) => {
-    const at = hubSrc.indexOf(`function ${name}`);
-    ok(at > 0, `hub.js still has ${name}(), where this suite expects it`);
-    if (at < 0) return '';
-    // To the next top-level `function ` declaration, or the end.
+    const re = new RegExp(`\\bfunction ${name}\\s*\\(`, 'g');
+    const hits = [...hubSrc.matchAll(re)];
+    ok(hits.length === 1, `hub.js declares exactly one ${name}(), so this scan reads the right body (found ${hits.length})`);
+    if (hits.length !== 1) return '';
+    const at = hits[0].index;
     const next = hubSrc.indexOf('\nfunction ', at + 1);
     return hubSrc.slice(at, next > 0 ? next : hubSrc.length);
   };
   const RELAY_CHAIN = ['send', 'broadcastViewers', 'onGuestMessage'];
-  // Each entry is the START of a whole statement, named specifically enough that a NEW
-  // refusal cannot wear one as a disguise. `if (len > MAX_MESSAGE_BYTES)` is on the list;
-  // `if (len > 1024 * 1024)` is not, and that is the point.
-  const ALLOWED = [
-    'if (len > MAX_MESSAGE_BYTES)',                    // one message over the hard cap: a connection-level refusal
-    'if (r.bytesWindow > BUDGET_BYTES)',               // the per-window byte budget: also connection-level
-    'if (isBinary) return;',                           // Phase A speaks JSON text only
-    'try { const m = JSON.parse(text);',               // unparseable JSON is dropped, never relayed
-    "if (t === 'ping')",                               // answered, not relayed
-    "if (t !== 'rrweb'",                               // an unknown kind is dropped, never relayed
-    'if (!ws || ws.readyState !== 1) return false;',   // send(): a socket that is not open
-    'try { ws.send(',                                  // send(): its own success / failure return
-  ];
+  // ⛔ EXACT STATEMENTS, NOT PREFIXES. A `startsWith` allow-list excuses everything else on
+  // the line, and the audit walked it by appending a cap to a permitted statement. Each
+  // entry below is a WHOLE statement; a new refusal cannot wear one as a disguise, and a
+  // deliberate one is added here by hand, which is the point.
+  const ALLOWED = new Set([
+    "if (len > MAX_MESSAGE_BYTES) { closeWs(ws, 1009, 'message too large'); return; }",
+    "if (r.bytesWindow > BUDGET_BYTES) { closeWs(ws, 1008, 'too much data'); return; }",
+    'if (isBinary) return;',
+    'try { const m = JSON.parse(text); t = m && m.t; } catch (_) { return; }',
+    "if (t === 'ping') { send(ws, { t: 'pong' }); return; }",
+    "if (t !== 'rrweb' && t !== 'route' && t !== 'notice') return;",
+    'if (!ws || ws.readyState !== 1) return false;',
+    "try { ws.send(typeof obj === 'string' ? obj : JSON.stringify(obj)); return true; } catch (_) { return false; }",
+  ]);
   const strays = [];
   for (const name of RELAY_CHAIN) {
     for (const raw of fn(name).split('\n')) {
-      const line = raw.replace(/\/\/.*$/, '').trim();          // trailing comments cannot excuse a return
-      if (!/\breturn\b/.test(line)) continue;
-      if (ALLOWED.some((a) => line.startsWith(a))) continue;   // anchored, not `includes`
+      const line = raw.replace(/\/\/.*$/, '').trim();        // a trailing comment cannot excuse anything
+      // A THROW REFUSES A BATCH JUST AS WELL AS A RETURN, and the first version of this
+      // only looked for `return`.
+      if (!/\breturn\b|\bthrow\b/.test(line)) continue;
+      if (ALLOWED.has(line)) continue;
       strays.push(`${name}: ${line}`);
     }
   }
   ok(strays.length === 0,
     `nothing refuses a batch anywhere on its way out — not in onGuestMessage, not in broadcastViewers, not in send (found: ${JSON.stringify(strays)})`);
+  // ⛔ AND THE RELAY IS AN UNCONDITIONAL STATEMENT. A refusal need not `return` or `throw`:
+  // wrapping the call (`if (text.length <= 200000) broadcastViewers(r, text);`) drops the
+  // batch just as dead. The call must stand alone on its line.
+  const relayLines = fn('onGuestMessage').split('\n').map((l) => l.replace(/\/\/.*$/, '').trim())
+    .filter((l) => l.includes('broadcastViewers('));
+  ok(JSON.stringify(relayLines) === JSON.stringify(['broadcastViewers(r, text);']),
+    `the relay is one unconditional statement, never wrapped in a condition (found ${JSON.stringify(relayLines)})`);
+  // ⛔ AND NOTHING SITS BETWEEN THE SOCKET AND THAT FUNCTION. A cap inside the message
+  // handler in `onConnection` is outside every body scanned above; pinning the handler to
+  // its bare delegation closes that without allow-listing all of onConnection's own doors.
+  ok(/ws\.on\('message', \(data, isBinary\) => onGuestMessage\(r, ws, data, isBinary\)\);/.test(hubSrc),
+    'the guest message handler is a bare delegation — no room for a refusal before onGuestMessage');
 }
 ok(/router\.use\(notAProxy\)/.test(routes), 'every co-browse door refuses a helper / guest-link token');
 ok(/router\.get\('\/mine', notInsideAView/.test(routes) && /router\.get\('\/:id', notInsideAView/.test(routes), '/mine and /:id refuse a view-as token too (no prompt, no banner inside a view)');
@@ -282,7 +302,11 @@ ok(/mirror\.getId\(node\)/.test(viewerNow) && /t: 'input'/.test(viewerNow), 'the
 // Typing travels as KEYS and the guest's own browser edits the real value: the mirror is
 // masked, so a whole-value echo from the viewer sent `'' + key` on every press and nothing
 // ever accumulated (the e2e drive caught it — 6 input events, the box still empty).
-ok(!/k: 'input', id, value: next/.test(viewerNow) && /sendInput\(\{ k: 'key', id, fp: fpOf\(e\.target\), key: e\.key/.test(viewerNow), 'the viewer relays a keystroke as a key, never a value derived from the masked mirror');
+// RE-POINTED, NOT LOOSENED: the subject is that a keystroke travels as a KEY. The node the
+// fingerprint is taken from moved from `e.target` to `el` (they diverge when nothing is
+// focused, which refused every keystroke — see the id/fp guard below); the "never a value"
+// half is what this asserts and it is unchanged.
+ok(!/k: 'input', id, value: next/.test(viewerNow) && /sendInput\(\{ k: 'key', id, fp: fpOf\([\w.]+\), key: e\.key/.test(viewerNow), 'the viewer relays a keystroke as a key, never a value derived from the masked mirror');
 ok(/k: 'paste', id, fp: fpOf\(node\), value: text/.test(viewerNow), 'a paste travels as its own text, never appended to a mirror value');
 ok(/if \(notCancelled\) applyTextKey\(el, key, init\)/.test(libNow) && /function insertText\(el, text\)/.test(libNow) && /el\.setSelectionRange\(caret, caret\)/.test(libNow), "the guest inserts each relayed character at its REAL selection through the native setter");
 ok(/m\.k === 'paste'/.test(libNow) && /insertText\(el, String\(m\.value/.test(libNow), 'the guest inserts pasted text at the real selection');
@@ -409,6 +433,26 @@ ok(/drivable\(m\.id, m\.fp\)/.test(libNow) && !/drivable\(m\.id\)[^,]/.test(libN
   'every addressed input is resolved WITH that check — no call site skips it');
 ok(/const fpOf = fingerprintOf;/.test(viewerNow) && (viewerNow.match(/fp: fpOf\(/g) || []).length >= 5,
   'the viewer fingerprints every addressed input it sends (click, key, change, scroll, paste), through the shared definition');
+// ⛔ AND THE ID AND THE FINGERPRINT NAME THE SAME NODE. Counting `fp: fpOf(` call sites
+// cannot see the defect this replaces: the key sender took `id` from `el` and `fp` from
+// `e.target`, and those diverge whenever nothing is focused — so `id` named the intended
+// box, `fp` named BODY, and the guest refused EVERY keystroke (pre-merge audit,
+// 2026-09-03). A description of a different element than the one you addressed is not a
+// safety check, it is a refusal generator.
+{
+  // Resolve one level of `const x = y;` aliasing, so `const t = e.target` counts as the
+  // same node as `e.target` — an alias is not a divergence.
+  const alias = {};
+  for (const m of viewerNow.matchAll(/const (\w+) = ([\w.]+);/g)) alias[m[1]] = m[2];
+  const norm = (v) => alias[v] || v;
+  // Never span past another `idOf(`, or one sender's id pairs with the next one's fp.
+  const pairs = [...viewerNow.matchAll(/idOf\(([\w.]+)\)(?:(?!idOf\()[\s\S]){0,400}?fp: fpOf\(([\w.]+)\)/g)]
+    .map((m) => [m[1], m[2]]);
+  ok(pairs.length >= 4, `the id/fp pairing is where this suite expects it (found ${pairs.length} senders)`);
+  const mismatched = pairs.filter(([a, b]) => norm(a) !== norm(b));
+  ok(mismatched.length === 0,
+    `every addressed input describes the node it addresses — id and fp from one node (mismatched: ${JSON.stringify(mismatched)})`);
+}
 ok(/if \(typeof m\.fp === 'string'\) out\.fp = m\.fp\.slice\(0, 120\);/.test(hubSrc),
   'the hub relays the fingerprint as an opaque capped string and never interprets it');
 // The fingerprint is content-free by construction: a tag, an input type and the first class.

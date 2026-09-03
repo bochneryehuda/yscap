@@ -85,18 +85,28 @@ if (!fs.existsSync(manifestPath)) {
     // index.html IS COMPARED, not merely stamped. It was written into the manifest
     // and never checked, so a hand-injected <script> passed (pre-merge audit).
     const indexHash = crypto.createHash('sha256').update(html).digest('hex').slice(0, 16);
-    if (man.indexHash && man.indexHash !== indexHash) {
+    if (!man.indexHash) {
+      bad('the manifest carries no `indexHash` — deleting that one key used to turn this comparison off SILENTLY; re-run the build');
+    } else if (man.indexHash !== indexHash) {
       bad(`web/v2/portal/index.html has been edited since the build (stamped ${man.indexHash}, now ${indexHash})`);
-    } else if (man.indexHash) {
-      ok('index.html is byte-for-byte the one that build produced');
     } else {
-      // NEVER SILENTLY. Deleting one key from the manifest used to turn this check off
-      // with an exit 0 and no line saying anything had been skipped — which is not the
-      // "a stamp is a record of intent" caveat in the header, it is a check that
-      // evaporates on request (pre-merge audit, 2026-09-02).
-      bad(`${MANIFEST} carries no indexHash — re-run \`cd app-v2 && npm run build\` so index.html can be checked`);
+      ok('index.html is byte-for-byte the one that build produced');
     }
     const referenced = [...html.matchAll(/assets\/([A-Za-z0-9._-]+)/g)].map((m) => m[1]);
+    // EVERY SERVED FILE, not just index.html. See write-bundle-manifest.js for why.
+    if (!man.served) {
+      bad('the manifest carries no `served` map — re-run `cd app-v2 && npm run build` and commit web/v2/portal/');
+    } else {
+      const changed = [];
+      for (const [rel, want] of Object.entries(man.served)) {
+        const f = path.join(root, PORTAL, rel);
+        if (!fs.existsSync(f)) { changed.push(`${rel} (missing)`); continue; }
+        const got = crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex').slice(0, 16);
+        if (got !== want) changed.push(rel);
+      }
+      if (changed.length) bad(`served file(s) edited since the build: ${JSON.stringify(changed)} — re-run the build and commit web/v2/portal/`);
+      else ok(`the ${Object.keys(man.served).length} served file(s) outside assets/ are byte-for-byte the ones that build produced`);
+    }
     const missing = referenced.filter((f) => !onDisk.includes(f));
     if (missing.length) bad(`index.html asks for assets that are not committed: ${JSON.stringify(missing)}`);
     else ok(`index.html references ${referenced.length} asset(s), all present`);

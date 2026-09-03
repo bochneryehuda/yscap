@@ -450,11 +450,34 @@ function close(sessionId, reason) {
  * party re-check (see above) and it collapses the case that would actually hurt,
  * one person holding many viewer tabs.
  */
-// A BEAT THAT NEVER SETTLES LEAVES THIS TRUE FOR THE LIFE OF THE PROCESS, silently
-// disabling the pings, the reaping and the re-check. Every await below is bounded by
-// the pool's own `connectionTimeoutMillis`, so it is a hang in `pg` rather than a
-// plausible failure here — but it is the cost of the flag and it should be written
-// down rather than discovered.
+/**
+ * A BEAT THAT NEVER SETTLES WOULD LEAVE `beating` TRUE FOR THE LIFE OF THE PROCESS,
+ * silently disabling the pings, the reaping AND the revocation re-check — so a
+ * revoked staffer would keep receiving the guest's screen indefinitely. That is the
+ * price of any "only one at a time" flag and it has to be paid deliberately.
+ *
+ * ⛔ AN EARLIER VERSION OF THIS NOTE WAVED IT AWAY as "bounded by the pool's own
+ * `connectionTimeoutMillis`, so it is a hang in `pg` rather than a plausible failure
+ * here". That is false: `connectionTimeoutMillis` bounds ACQUIRING a client, not
+ * running a query, and `src/db.js` sets neither `statement_timeout` nor
+ * `query_timeout` — the pre-merge audit measured a `pg_sleep(8)` returning after 8
+ * seconds with a 1-second connection timeout. A lock wait behind a migration, or a
+ * half-open socket, hangs the beat forever.
+ *
+ * So the bound is made real here rather than assumed: every await in the beat runs
+ * against a deadline, and a query that misses it is treated exactly like a query
+ * that threw — UNKNOWN, which leaves the socket alone and asks again next beat.
+ */
+const BEAT_DEADLINE_MS = Number(process.env.COBROWSE_BEAT_DEADLINE_MS || 5000);
+
+/** `p`, or a rejection once the deadline passes. The timer never holds the process open. */
+function withDeadline(p, ms = BEAT_DEADLINE_MS) {
+  return Promise.race([p, new Promise((_, reject) => {
+    const t = setTimeout(() => reject(new Error('cobrowse beat deadline')), ms);
+    if (t.unref) t.unref();
+  })]);
+}
+
 let beating = false;
 async function heartbeat() {
   if (!wss) return;
@@ -472,7 +495,10 @@ async function heartbeat() {
       if (!ws.cbClaims) continue;
       const c = ws.cbClaims;
       const key = `${c.kind}:${c.sub}:${c.tv || 0}:${c.sid || ''}`;
-      if (!answers.has(key)) answers.set(key, await stillAllowed(c));
+      if (!answers.has(key)) {
+        // A missed deadline is "cannot tell", never "not allowed" — same as a throw.
+        answers.set(key, await withDeadline(stillAllowed(c)).catch(() => AUTH_UNKNOWN));
+      }
       const still = answers.get(key);
       // "Cannot tell" leaves the socket alone: a degraded pool is not a
       // revocation, and the next beat asks again.
@@ -494,7 +520,7 @@ async function heartbeat() {
       // must not keep a socket fed.
       if (!ws.cbSession) continue;
       if (!rowsById.has(ws.cbSession)) {
-        try { rowsById.set(ws.cbSession, await sessions().loadRaw(ws.cbSession)); } catch (_) { rowsById.set(ws.cbSession, AUTH_UNKNOWN); }
+        try { rowsById.set(ws.cbSession, await withDeadline(sessions().loadRaw(ws.cbSession))); } catch (_) { rowsById.set(ws.cbSession, AUTH_UNKNOWN); }
       }
       const row = rowsById.get(ws.cbSession);
       if (row === AUTH_UNKNOWN || !row) continue;   // cannot tell, or the sweep will take it

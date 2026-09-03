@@ -534,6 +534,32 @@ async function main() {
       release(); await first;
       live.forEach((w, i) => { w.ping = realPings[i]; });
       db.query = realQuery;
+
+      // AND A BEAT THAT WOULD NEVER SETTLE STILL SETTLES. `beating` is a one-at-a-time
+      // flag, so a beat that hangs leaves it true for the life of the process and
+      // silently disables the pings, the reaping AND the revocation re-check — a revoked
+      // staffer would keep receiving the screen for ever. An earlier note waved this away
+      // as "bounded by the pool's connectionTimeoutMillis", which bounds acquiring a
+      // client, not running a query (pre-merge audit measured pg_sleep(8) returning after
+      // 8s with a 1s connection timeout). Every await in the beat now runs to a deadline.
+      const realQuery2 = db.query.bind(db);
+      db.query = async (text, params) => {
+        if (/FROM staff_users/.test(String(text))) return new Promise(() => {});   // never settles
+        return realQuery2(text, params);
+      };
+      const t0 = Date.now();
+      const settled = await Promise.race([
+        hub._internals.heartbeat().then(() => 'settled'),
+        new Promise((rr) => setTimeout(() => rr('hung'), 20000)),
+      ]);
+      db.query = realQuery2;
+      assert(settled === 'settled', `a beat whose query never returns still settles (${settled} after ${Date.now() - t0}ms)`);
+      // And the flag is released, so the NEXT beat runs rather than being locked out.
+      const after = await Promise.race([
+        hub._internals.heartbeat().then(() => 'ran'),
+        new Promise((rr) => setTimeout(() => rr('locked-out'), 8000)),
+      ]);
+      assert(after === 'ran', `and the next beat runs — the one-at-a-time flag was released (${after})`);
       await call('POST', `/api/cobrowse/${sB}/end`, null, d4Tok).catch(() => {});
     }
   }

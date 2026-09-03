@@ -329,7 +329,13 @@ export default function StaffCobrowse() {
       // value or the caret — the guest's own browser inserts the character into
       // its real box (applyInput → applyTextKey). Deriving a whole value from the
       // mirror here sent `'' + key` on every press and nothing ever accumulated.
-      sendInput({ k: 'key', id, fp: fpOf(e.target), key: e.key, code: e.code, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
+      // ⛔ THE SAME NODE FOR BOTH. `id` comes from `el`; this used to take `fp` from
+      // `e.target`, and the two diverge whenever `live` is null — a click on a
+      // non-focusable element, a focus the mirror refused, a full snapshot resetting
+      // `activeElement` to `<body>`. Then `id` named the intended box while `fp` named
+      // BODY, so the guest refused EVERY keystroke. Every other sender here already
+      // passes one node to both (pre-merge audit, 2026-09-03).
+      sendInput({ k: 'key', id, fp: fpOf(el), key: e.key, code: e.code, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
     };
     const onChange = (e) => { if (!mine(e)) return; const id = idOf(e.target); if (id == null || id < 0) return; const t = e.target; if (t.type === 'checkbox' || t.type === 'radio') sendInput({ k: 'change', id, fp: fpOf(t), checked: !!t.checked }); else sendInput({ k: 'change', id, fp: fpOf(t), value: String(t.value || ''), idx: t.tagName === 'SELECT' ? t.selectedIndex : undefined }); };
     const onScroll = (e) => { if (!mine(e) || Date.now() - gestureAt > GESTURE_MS) return; const t = e.target; if (t === doc || t === doc.documentElement || t === doc.body) { const w = doc.defaultView; sendInput({ k: 'scroll', id: 1, sx: w ? w.scrollX : 0, sy: w ? w.scrollY : 0 }); return; } const id = idOf(t); if (id == null || id < 0) return; sendInput({ k: 'scroll', id, fp: fpOf(t), sx: t.scrollLeft, sy: t.scrollTop }); };
