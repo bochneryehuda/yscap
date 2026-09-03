@@ -6,7 +6,7 @@
  * 2026-09-01, on a combined board answering with 209 programmes and 12,299 quotes:
  * *"find a way to filter by term: if we need interest-only / if we need fixed / if we need ARM.
  * According to the search, you need to find a way to filter this in a legit way, not by looking at
- * the words, but in a real legit way, out of Lender, out of LoanX."*
+ * the words, but in a real legit way, out of Lender, out of LoanNEX."*
  *
  * ── WHY ONE VENDOR IS FILTERED HERE AND THE OTHER IS NOT ───────────────────
  * Lender Price takes all three as SEARCH CRITERIA and answers with the product asked for:

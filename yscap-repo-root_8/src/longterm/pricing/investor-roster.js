@@ -5,7 +5,7 @@
  *
  * ── THE OWNER'S ASK (2026-09-02) ──────────────────────────────────────────
  * *"for certain new investors, I don't have a way to add it and add a white-label
- * name for it. I have a new investor, ClearEdge Lending, from LoanX, and I don't
+ * name for it. I have a new investor, ClearEdge Lending, from LoanNEX, and I don't
  * know how to add it. That's why it doesn't populate."*
  *
  * ── WHAT WAS BROKEN, MEASURED ─────────────────────────────────────────────
