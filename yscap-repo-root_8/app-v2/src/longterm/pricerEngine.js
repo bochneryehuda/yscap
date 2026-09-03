@@ -45,7 +45,14 @@ export const GENERAL_ENGINE = {
   /* THE DOOR. The general engine asks Lender Price and nothing else, and it asks EXACTLY what it
      has always asked: `revealSource` is a combined-engine idea and is deliberately not forwarded,
      so the request on the wire is unchanged to the byte. */
-  price: (scenario) => ltApi.dscrPrice(scenario, { full: true }),
+  /* `bandsFollow` is BOOKKEEPING ABOUT THE PRESS, not a pricing input: it changes nothing
+     about the vendor request and only tells the server that the band door is about to ask
+     the same scenario, so one press is recorded as one search rather than two. See
+     `search-record`'s PART_OF_A_LARGER_SEARCH note. Absent, the server records in full. */
+  price: (scenario, opts) => ltApi.dscrPrice(scenario, {
+    full: true,
+    bandsFollow: !!(opts && opts.bandsFollow),
+  }),
   /**
    * WHY EACH INVESTOR SAID NO — the door, and the handle it needs.
    *

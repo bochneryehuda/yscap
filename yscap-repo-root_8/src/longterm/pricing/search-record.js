@@ -50,6 +50,39 @@
  * between. A third sheet needs this half generalised deliberately; it will not
  * follow on its own, and saying otherwise would be the confident wrong answer.
  *
+ * ── PART_OF_A_LARGER_SEARCH: ONE PRESS IS ONE SEARCH, ACROSS THE TWO DOORS ──
+ * ⛔ THE RULE ABOVE SPANS THE BANDS OF ONE DOOR. IT DID NOT SPAN THE TWO DOORS OF ONE
+ * PRESS (post-merge audit 2026-09-03), and on the General Pricing Engine one press is
+ * always both: `LtPricer` calls the immediate board and then the band board on the same
+ * press, and since #1436 both record. Three consequences, all of them real:
+ *
+ *   · A FALSE MISS, AND A FALSE EMAIL. The immediate door files its misses at once, off
+ *     ONE unbanded board, before the bands door has asked anything. A narrower band can
+ *     legitimately return nothing for an investor a wider one saw — this module's own
+ *     rule, and the reason the band union exists — so the same press can file a miss for
+ *     an investor it is about to prove the sheet carries. `source-misses.record` is one
+ *     row per investor per day with an IS NULL-guarded alert, so the row and the email
+ *     land and NOTHING retracts them.
+ *   · THE REVIEWER'S COUNT IS DOUBLED. `lt_pricing_source_misses.hits` advances twice
+ *     per press, so "is this every search or one odd scenario?" reads 2x.
+ *   · A SOURCE BUTTON LOCKS OUT ON HALF THE EVIDENCE. `searches[source]` advances twice
+ *     per press, so `NEVER_AFTER_SEARCHES = 20` — twenty VARIED searches — arrives after
+ *     about ten presses.
+ *
+ * So a door that KNOWS another is following on the same press says so, and then:
+ * it records its SIGHTINGS (what a sheet carried is a fact, and the register would lose
+ * the immediate board's investors otherwise — the very thing #1436 fixed), without
+ * counting the press as a second search, and it files NO misses. The door that finishes
+ * the press files them, on the better evidence.
+ *
+ * ⛔ THE CALLER MUST BE HONEST, AND SILENCE MEANS "I AM THE WHOLE SEARCH". The bands door
+ * does not always run — `LtPricer.runBrackets` returns early when the deal's figures
+ * cannot be banded, which is an ordinary state for a quick price — so the flag is passed
+ * only when the bands genuinely follow, and any door that does not set it records in
+ * full, exactly as before. That default is the fail-safe direction: the worst a wrong
+ * "false" can do is the double-count that already happens today, where a wrong "true"
+ * would lose a real alert.
+ *
  * PURE OF ROUTES: no Express, no request. Its two writers are injectable so the
  * whole thing runs in a test with no database.
  */
@@ -67,9 +100,14 @@ const sightingsRegister = require('./investor-sightings');
  * immediate board) and unions what it saw. `flush(opts)` writes both registers
  * once. Calling `flush` with nothing observed writes nothing at all.
  */
-function collector(deps = {}) {
+function collector(deps = {}, opts = {}) {
   const recordSightings = deps.recordSightings || investorConfig.recordSightings;
   const recordMisses = deps.recordMisses || sourceMisses.record;
+  /* ⛔ IS THIS DOOR THE WHOLE SEARCH, OR PART OF ONE? See `PART_OF_A_LARGER_SEARCH`
+     below. Default TRUE — a caller that says nothing is treated as the whole search
+     and records everything, which is the behaviour every door had before and the
+     safe direction: the failure it can produce is a duplicate, never a silence. */
+  const whole = opts.partOfLargerSearch !== true;
 
   const sighted = {};
   for (const s of sightingsRegister.SOURCES) sighted[s] = { answered: false, keys: new Set() };
@@ -108,7 +146,11 @@ function collector(deps = {}) {
     }
     let sightingsResult = null;
     try {
-      sightingsResult = await recordSightings(observedOut, { staffId: opts.staffId || null });
+      sightingsResult = await recordSightings(observedOut, {
+        staffId: opts.staffId || null,
+        // What was SEEN is recorded either way; what is not counted twice is the SEARCH.
+        counts: whole,
+      });
     } catch (e) {
       sightingsResult = { ok: false, problem: String((e && e.message) || e).slice(0, 200) };
     }
@@ -128,7 +170,12 @@ function collector(deps = {}) {
     for (const k of sighted.loannex.keys) missedKeys.delete(k);
 
     let missesResult = null;
-    if (missedKeys.size) {
+    /* ⛔ AND A PART-DOOR FILES NO MISS AT ALL. A miss is a claim that a sheet answered
+       a search and did not carry an investor — and on this press the search is not
+       finished. The door that finishes it asks the same scenario across every band, so
+       its answer is strictly better informed; filing here would email the super admin
+       about an investor the same press is about to prove the sheet carries. */
+    if (missedKeys.size && whole) {
       try {
         missesResult = await recordMisses(
           [...missedKeys].map((key) => ({
@@ -161,7 +208,7 @@ function collector(deps = {}) {
 
 /** The one-board shorthand: observe it and flush, in one call. */
 async function recordOne(board, opts = {}, deps = {}) {
-  const c = collector(deps);
+  const c = collector(deps, { partOfLargerSearch: opts.partOfLargerSearch === true });
   c.observe(board);
   return c.flush(opts);
 }

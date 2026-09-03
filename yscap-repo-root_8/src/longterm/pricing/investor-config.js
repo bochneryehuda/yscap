@@ -94,16 +94,53 @@ async function sightingsRaw() {
  * nothing else, so every failure is swallowed and reported in the return value. It also
  * refuses a source that did not ANSWER — a vendor outage is no evidence about any
  * investor, and recording one would lock out every investor that sheet normally carries.
+ *
+ * ⛔ IT IS A READ-MODIFY-WRITE OF ONE SHARED KEY, SO IT TAKES A LOCK (post-merge audit
+ * 2026-09-03, REPRODUCED before it was changed).
+ *
+ * `store.save` is a per-key `ON CONFLICT … DO UPDATE SET value = EXCLUDED.value` —
+ * last-writer-wins, no compare-and-set — so two passes that read the same `stored` and
+ * then both write produce ONE of the two answers and silently drop the other. While the
+ * bands door was the only writer that could not happen. It can now: `LtPricer` fires the
+ * immediate board AND the band board on ONE press, and both record.
+ *
+ * MEASURED against this function with a 15 ms read and a 15 ms write: overlapping, one
+ * press recorded `acra, phh` and lost NQM's sighting entirely; sequential, the same two
+ * calls recorded `acra, nqm, phh`. A lost sighting is exactly the defect this register
+ * was built to fix — the settings screen goes on saying a sheet has never produced an
+ * investor it produced today.
+ *
+ * A PER-KEY ADVISORY LOCK, not a JS mutex: it holds across the web process, the worker
+ * and every Render instance, which is what a two-officer shop or a scaled-out service
+ * actually needs. Same shape as `conditions/engine.evaluateApplication` and
+ * `sitewire/orchestrator`. It FAILS OPEN — a lock that cannot be taken (pool exhausted,
+ * a hiccup) lets the write proceed, because a missed lock costs at worst the sighting
+ * this already loses today, while refusing to record would cost the column outright. It
+ * is always released in the `finally`, including on a throw.
  */
 async function recordSightings(observed, opts = {}) {
   const at = opts.at || new Date().toISOString();
+  let lockConn = null;
+  const lockKey = 'lt-sightings:company';
+  try {
+    lockConn = await require('../db').getClient();
+    await lockConn.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockKey]);
+  } catch (_) {
+    if (lockConn) { try { lockConn.release(); } catch (_e) { /* releasing is best-effort */ } }
+    lockConn = null;                       // fail open — never stop the register recording
+  }
   try {
     const stored = await settingsStore.get(KEYS.sightings, 'company');
     let next = stored;
     for (const source of sightings.SOURCES) {
       const o = observed && observed[source];
       if (!o || o.answered === false) continue;
-      next = sightings.record(next, { source, keys: o.keys || [], at, answered: true });
+      /* `counts` decides whether this board COUNTS AS A SEARCH — see the note on
+         `sightings.record`. A door that knows another is following on the same press
+         records what it saw without counting the press twice. */
+      next = sightings.record(next, {
+        source, keys: o.keys || [], at, answered: true, counts: opts.counts !== false,
+      });
     }
     if (next === stored) return { ok: true, wrote: false };
     await settingsStore.save({ [KEYS.sightings]: next }, {
@@ -112,6 +149,11 @@ async function recordSightings(observed, opts = {}) {
     return { ok: true, wrote: true };
   } catch (e) {
     return { ok: false, wrote: false, problem: reasonOf(e) };
+  } finally {
+    if (lockConn) {
+      try { await lockConn.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]); } catch (_) { /* the lock dies with the session anyway */ }
+      try { lockConn.release(); } catch (_) { /* releasing is best-effort */ }
+    }
   }
 }
 

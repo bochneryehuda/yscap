@@ -208,6 +208,29 @@ export function bracketMissing(fig) {
 }
 
 /**
+ * WILL THE BAND DOOR RUN ON THIS PRESS? — asked BEFORE the immediate call, and
+ * deliberately conservative.
+ *
+ * ⛔ ONE PRESS IS ONE SEARCH, AND THE SERVER CANNOT KNOW THAT ON ITS OWN. `run()` fires
+ * the immediate board and then the band board, and since #1436 both record what the
+ * sheets said. Recorded as two searches, one press files a miss the band door is about to
+ * disprove, doubles the reviewer's hit count, and locks a source button out on half the
+ * evidence `NEVER_AFTER_SEARCHES` was set to demand. So this screen — the only thing that
+ * knows both calls belong to one press — tells the server, and `search-record` records the
+ * first door as part of a larger search.
+ *
+ * ⛔ IT IS ASKED WITHOUT `effectiveScenario`, WHICH IS WHY IT IS SAFE. That value arrives
+ * only WITH the answer, and all it can do is supply a loan amount the form left blank —
+ * so a `true` here is never wrong (complete before can only stay complete after), while a
+ * `false` on a deal whose loan the vendor filled in simply records both doors in full,
+ * which is the behaviour today. `runBrackets` refuses the same way on the same rule, so
+ * this and the early return there cannot disagree.
+ */
+export function bandsWillFollow({ f, calc }) {
+  return bracketMissing(bracketFigures({ f, calc, effectiveScenario: null })).length === 0;
+}
+
+/**
  * THE BOARD, WITH A BRACKET DIVIDER WHERE THE BAND CHANGES.
  *
  * Owner-directed 2026-09-01, correcting the first cut: *"It should not be a separate
@@ -2486,7 +2509,7 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
     const t0 = Date.now();
     timer.current = setInterval(() => setElapsed(Math.round((Date.now() - t0) / 100) / 10), 200);
     try {
-      const r = await engine.price(toScenario(f), { reveal });
+      const r = await engine.price(toScenario(f), { reveal, bandsFollow: bandsWillFollow({ f, calc }) });
       setRes(r);
       /* ⛔ REMEMBER WHAT THE TWO SHEETS CALLED EACH INVESTOR, so the SETTINGS screen's linking
          panel has a board to work from (owner-reported 2026-09-03: *"linking doesn't work"*).

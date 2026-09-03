@@ -159,7 +159,7 @@ function newestOf(row) {
  * not evidence about any investor; passing `answered: false` records nothing, so
  * an hour of LoanNEX being down can never lock out five investors.
  */
-function record(stored, { source, keys, at, answered = true } = {}) {
+function record(stored, { source, keys, at, answered = true, counts = true } = {}) {
   const cur = read(stored);
   const base = { boards: { ...cur.boards }, searches: { ...cur.searches }, investors: {} };
   for (const [k, v] of Object.entries(cur.investors)) base.investors[k] = { ...v };
@@ -169,10 +169,28 @@ function record(stored, { source, keys, at, answered = true } = {}) {
   const when = isIso(at) ? at : new Date(at || Date.now()).toISOString();
   if (!isIso(when)) return base;
 
-  base.boards[source] = when;
-  // Counted per ANSWERED board, which is the same event `boards` timestamps — so the
-  // two can never disagree about how much this sheet has actually told us.
-  base.searches[source] = (Number(base.searches[source]) || 0) + 1;
+  /* ⛔ `counts: false` RECORDS WHAT WAS SEEN WITHOUT COUNTING A SEARCH — and the two
+     lines below move TOGETHER, deliberately, so the stated lock-step holds either way.
+
+     ONE PRESS ON THE GENERAL ENGINE IS TWO DOORS (post-merge audit 2026-09-03).
+     `LtPricer` fires the immediate board and then the band board on the same press, and
+     both now record. Counting that as two searches makes `NEVER_AFTER_SEARCHES` — twenty
+     VARIED searches — arrive after about ten presses, so a source button is locked out on
+     half the evidence the three-state rule was designed to demand. Locking a button early
+     is the one harm that design exists to avoid.
+
+     So the door that knows another is following records its sightings as part of the SAME
+     search: the investor keys land (they are a fact about what the sheet carried), and the
+     evidence COUNTER is left to the door that finishes the press. The board stamp goes with
+     the counter rather than being set alone, or `boards` and `searches` would start
+     disagreeing about how much this sheet has actually told us — which is what the comment
+     below has always promised they cannot do. */
+  if (counts) {
+    base.boards[source] = when;
+    // Counted per ANSWERED board, which is the same event `boards` timestamps — so the
+    // two can never disagree about how much this sheet has actually told us.
+    base.searches[source] = (Number(base.searches[source]) || 0) + 1;
+  }
   for (const raw of keys || []) {
     const key = asKey(raw);
     if (!key) continue;

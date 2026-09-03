@@ -494,9 +494,17 @@ async function price(req, res) {
        differently. Best-effort by construction: it swallows its own failures, and the board has
        already been built by the time it runs — and it runs OFF THE RESPONSE PATH, because on the
        first miss of a day the recording sends an email and this is the door an officer waits on. */
+    /* ⛔ AND IT SAYS WHETHER IT IS THE WHOLE SEARCH. On the General Pricing Engine this
+       press also fires the band door, which asks the SAME scenario across every band —
+       so filing this board's misses here would email the super admin about an investor
+       the same press is about to prove the sheet carries, and would count one press as
+       two searches. `bandsFollow` is the screen's own honest answer to "am I about to
+       run the bands?"; anything else (a saved-scenario re-run, an older bundle, another
+       caller) leaves it unset and this door records in full, exactly as before. */
     searchRecord.later(() => searchRecord.recordOne(board, {
       staffId: (req.actor && req.actor.id) || null,
       scenario: sc,
+      partOfLargerSearch: body.bandsFollow === true,
     }));
 
     const effectiveFull = effectiveOf(board.request); // requested-vs-effective transparency
