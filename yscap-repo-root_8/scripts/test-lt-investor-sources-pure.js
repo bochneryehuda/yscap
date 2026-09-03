@@ -512,6 +512,45 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
     && settings.belongsOnSettingsList({ whiteLabel: null }, { loannex: { state: 'seen' } }) === true,
     'L12 …while a named investor, and one a rate sheet has produced, are kept whatever their settings say');
 
+  /* ═════════════════════════════════════════════════════════════════════════
+     M · A REGISTER WRITTEN BEFORE A KEY EXISTED IS STILL READABLE.
+
+     The pre-merge audit of 2026-09-03: `availabilityFor` and `lockedOutFor` THREW on a
+     register carrying `boards` and `investors` but no `searches` — the "already read?"
+     shortcut asked about two keys and `searches` was added later, so a legacy blob was
+     taken as read and the next line dereferenced a key that was not there. Latent, because
+     the one production caller passes a normalized object — and INVISIBLE to that module's
+     own suite, because every fixture in it is a `record()` output, which by construction
+     carries every key. The shortcut derives its key list from `EMPTY` now, so the next key
+     added cannot re-open it; that is what section M asserts, on the shapes a stored blob
+     can genuinely have rather than on the one the writer happens to produce.
+     ═════════════════════════════════════════════════════════════════════════ */
+  console.log('\nM · an old register still reads');
+  const sightings = require('../src/longterm/pricing/investor-sightings');
+  const LEGACY = {
+    boards: { lenderprice: '2026-09-01T00:00:00.000Z' },
+    investors: { nqm: { lenderprice: '2026-09-01T00:00:00.000Z' } },
+  };
+  const tot = (fn) => { try { return { v: fn() }; } catch (e) { return { threw: String((e && e.message) || e) }; } };
+  const a = tot(() => sightings.availabilityFor('nqm', LEGACY));
+  ok(!a.threw && a.v && a.v.lenderprice && a.v.lenderprice.state === 'seen',
+    `M1 a register with no \`searches\` still reads — and still says what it saw (${a.threw || a.v.lenderprice.state})`);
+  const l = tot(() => sightings.lockedOutFor('nqm', LEGACY, 'lenderprice'));
+  ok(!l.threw && Array.isArray(l.v) && l.v.length === 0,
+    `M2 …and locks NOTHING, because a register with no counter has answered no searches — the safe direction (${l.threw || JSON.stringify(l.v)})`);
+  const k = tot(() => sightings.keysSeen(LEGACY));
+  ok(!k.threw && Array.isArray(k.v) && k.v.length === 1,
+    `M3 …and every reader takes the same road, so none of them can be the one that throws (${k.threw || JSON.stringify(k.v)})`);
+  /* Nothing about the ordinary path moved: a fully-shaped register is still taken as read
+     rather than re-read, and a blank one still answers rather than throwing. */
+  const full = sightings.read(LEGACY);
+  ok(sightings.availabilityFor('nqm', full).lenderprice.state === 'seen',
+    'M4 CONTROL: an already-read register is unaffected');
+  ok(!tot(() => sightings.availabilityFor('nqm', null)).threw
+    && !tot(() => sightings.availabilityFor('nqm', 'nonsense')).threw
+    && !tot(() => sightings.availabilityFor('nqm', [])).threw,
+    'M5 …and nothing at all, a string or an array still answers rather than throwing');
+
   /* The three wirings no run of the rule can see: the list must ASK the shared function
      rather than keep a fourth copy of the four-clause test, the route must put its answer
      ON the row (or the browser silently falls back to deriving it for ever), and the

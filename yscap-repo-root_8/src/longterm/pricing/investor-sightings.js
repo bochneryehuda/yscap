@@ -191,9 +191,28 @@ function record(stored, { source, keys, at, answered = true } = {}) {
  * What we know about one investor on each source: `seen`, `never` or `unknown`.
  * See the three-state note at the top — `never` is the only one that locks a button.
  */
+/**
+ * THE READ, SKIPPED WHEN THE CALLER ALREADY HANDS US A READ ONE.
+ *
+ * ⛔ THE TEST ASKS ABOUT EVERY KEY THE SHAPE HAS, DERIVED FROM `EMPTY` — never a
+ * hand-typed pair. It used to test `boards` and `investors` only, and when
+ * `searches` was added the shortcut went stale in the one direction nobody would
+ * notice: a register written BEFORE that counter existed carries both of the old
+ * keys, so it was taken as already-read and the very next line threw on
+ * `cur.searches[s]`. The one production caller passes a normalized object, so it
+ * was latent — but this module is exported precisely so the rule can be asked
+ * without an HTTP door, and every fixture in its own suite is a `record()` output,
+ * which is exactly the shape that CANNOT catch it. Deriving the key list means the
+ * next key added to `EMPTY` cannot re-open it.
+ */
+function normalized(stored) {
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return read(stored);
+  for (const k of Object.keys(EMPTY)) if (stored[k] === undefined) return read(stored);
+  return stored;
+}
+
 function availabilityFor(key, stored) {
-  const cur = stored && stored.boards !== undefined && stored.investors !== undefined
-    ? stored : read(stored);
+  const cur = normalized(stored);
   const row = cur.investors[asKey(key)] || {};
   const out = {};
   for (const s of SOURCES) {
@@ -241,7 +260,7 @@ function lockedOutFor(key, stored, currentSource) {
 
 /** Every investor key the register has ever seen, on either source. */
 function keysSeen(stored) {
-  const cur = stored && stored.investors !== undefined ? stored : read(stored);
+  const cur = normalized(stored);
   return Object.keys(cur.investors).sort();
 }
 
