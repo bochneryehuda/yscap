@@ -174,6 +174,26 @@ console.log('\n== E. THE RATIO ==');
   });
   ok(edgeMoves.length === 0,
     `RATIO-3 …and every standing tier is a REAL edge in Lender Price's own band rule (${edgeMoves.length} that are not)`);
+
+  /* ⛔ AND THE OTHER DIRECTION, WHICH IS THE ONE THAT GOES STALE (audit F9).
+     RATIO-3 proves every STATED tier is real. It cannot notice a real edge nobody stated: add a
+     band to `dscrBand` and this list simply never learns about it, so the flag stops offering the
+     one tier a borrower is closest to and no test says a word. A mirror asserted in one direction
+     is half a mirror.
+
+     The edges are DISCOVERED by walking the band function rather than retyped here — a list typed
+     twice is the drift this is about. The non-positive boundary (NoDSCR -> 0.75) is deliberately
+     not a tier: "almost at a better tier" is meaningless for a loan with no ratio at all. */
+  const realEdges = [];
+  let prev = band(0.0001);
+  for (let x = 0.0002; x <= 3; x = Math.round((x + 0.0001) * 10000) / 10000) {
+    const b = band(x);
+    if (!b || !prev || b.ratio !== prev.ratio) realEdges.push(x);
+    prev = b;
+  }
+  const unstated = realEdges.filter((e) => !nt.STATED_DSCR_TIERS.some((t) => Math.abs(t - e) < 0.005));
+  ok(realEdges.length > 0 && unstated.length === 0,
+    `RATIO-3b …and every REAL edge is a standing tier — walked from the band function itself, ${realEdges.length} found (${realEdges.join(', ')}), ${unstated.length} that nobody stated`);
 }
 
 // ---- F. IT NAMES NO VENDOR --------------------------------------------------

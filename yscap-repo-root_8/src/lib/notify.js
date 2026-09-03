@@ -106,6 +106,9 @@ const KICKER_OF = {
   // personal work queue, or a file you submitted was finished + sent back.
   workflow_submitted: 'Workflow', workflow_returned: 'Workflow', workflow_ready: 'Workflow', workflow_picked_up: 'Workflow',
   order_docs_in: 'Order documents',
+  // Class Valuation's payment page for the appraisal, forwarded to the borrower with
+  // the officer and processor copied (src/class/payment-link-inbox.js).
+  class_payment_link: 'Appraisal payment',
   // An order is past the date we expected an answer (owner-directed 2026-08-03).
   order_overdue: 'Order overdue',
   // The closing email chain (owner-directed 2026-07-28): documents arrived on the
@@ -454,7 +457,7 @@ async function _mark(id, status) {
 // on their own screen. Emailing a confirmation of your own click is the
 // bombardment the 2026-07-20 rule exists to stop. The IMPORTED backfill is
 // silent for a stronger reason — see elementix/crm.js.
-const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_added', 'draw_docs_pulled',
+const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_added', 'draw_docs_pulled', 'class_payment_link',
   // A borrower pressing Start on a draw. It is a DRAFT — often days from being
   // submitted — so it asks nothing of the desk, and an email at that moment is
   // read as a real request (owner-reported 2026-08-20: "it sounds for our team
@@ -690,6 +693,7 @@ const CATEGORY_OF = {
   workflow_submitted: 'status_updates', workflow_returned: 'status_updates', workflow_ready: 'status_updates', workflow_picked_up: 'status_updates',
   // Orders desk — a staff-facing "documents came back" nudge.
   order_docs_in: 'documents',
+  class_payment_link: 'documents',
   // An order past the date we expected an answer. Deliberately NOT in
   // STAFF_INAPP_TYPES: somebody has to pick up the phone to a title company, which
   // is an ACTION, and the whole point of the aging sweep is that an in-app badge

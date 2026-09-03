@@ -935,6 +935,12 @@ export const api = {
   classRevision:    (appId, o, body) => req('POST', `/api/class/files/${appId}/orders/${o}/revision`, body),
   classCancelOrder: (appId, o, body) => req('POST', `/api/class/files/${appId}/orders/${o}/cancel`, body),
   classReasons:     (kind) => req('GET', `/api/class/revision-reasons?kind=${encodeURIComponent(kind || 'revision')}`),
+  // Documents UP to Class (the mirror of amcDocuments / amcUploadDocs), and the money
+  // picture on an order — see src/class/payment.js for what Class's API can do with it.
+  classDocuments:   (appId, orderRowId) => req('GET', `/api/class/files/${appId}/documents${orderRowId ? '?orderRowId=' + orderRowId : ''}`),
+  classUploadDocs:  (appId, o, documentIds, category) => req('POST', `/api/class/files/${appId}/orders/${o}/documents`, category ? { documentIds, category } : { documentIds }),
+  classPayment:     (appId, o) => req('GET', `/api/class/files/${appId}/orders/${o}/payment`),
+  classRecordPayment: (appId, o, body) => req('POST', `/api/class/files/${appId}/orders/${o}/payment/record`, body || {}),
 
   // ---- Richer Values — the THIRD vendor, and the "Hybrid Appraisal" ----
   // Deliberately its own set of calls, never shared with the other two: this is a

@@ -80,9 +80,17 @@ const made = { staff: [] };
       .every((c) => colSet.has(c)), 'db/634 built the table with every declared column');
 
     // ── the roster ───────────────────────────────────────────────────────────
+    /* DERIVED, NOT TYPED. This read a hand-written 24 and went red the day the owner's own
+       white-label list added two investors — a number in a test that has to be edited every time
+       somebody adds an investor is a number that will be edited without being thought about. The
+       expectation is now the roster the route itself serves from, so the check still says "the
+       whole sheet, nothing dropped" and stops being a second copy of the sheet's length. */
+    const expectedRoster = require('../src/longterm/lenderprice/investor-programs').fullRoster();
     const roster = await call('GET', '/api/lt/dscr/investors', tokOne);
-    check(roster.status === 200 && Array.isArray(roster.json.investors) && roster.json.investors.length === 24,
-      `the roster serves the whole white-label sheet (${roster.json.investors ? roster.json.investors.length : 0} of 24)`);
+    const served = Array.isArray(roster.json.investors) ? roster.json.investors.length : 0;
+    check(expectedRoster.length > 0, `the roster the route serves from is not empty (${expectedRoster.length} investors)`);
+    check(roster.status === 200 && served === expectedRoster.length,
+      `the roster serves the whole white-label sheet (${served} of ${expectedRoster.length})`);
     check(roster.json.investors.some((r) => r.key === 'corrfirst' && r.whiteLabel === 'Prime'),
       '…including an investor not yet live in Lender Price — "when they come up, they should be there"');
     const noAuth = await call('GET', '/api/lt/dscr/investors', null);

@@ -114,6 +114,19 @@ const INVESTORS = [
     aliases: ['Button Finance, Inc.', 'Button Finance Inc', 'Button Finance', 'ButtonFinance'],
     note: 'From the LoanNEX aggregator board (2026-08-30). Owner-directed: not displayed for now.' },
 
+  // Owner-directed 2026-09-02, arriving on the white-label sheet with the name
+  // Crystal. Until now ClearEdge existed only as a HAND-ADDED investor, which is
+  // why it had to be re-typed by every deployment that wanted it: a hand-added
+  // key lives in the settings store, so it is per-tenant, while a real investor
+  // on a real board belongs in the one registry every reader already consults.
+  // Registering it here gives it a canonical key, so it can be routed, given a
+  // settings row, linked to a vendor's own spelling, and — the reason that
+  // matters most — have its name scrubbed out of anything a client can read.
+  { key: 'clearedge', label: 'ClearEdge Lending', seen: 0,
+    aliases: ['ClearEdge Lending LLC', 'CLEAREDGE LENDING LLC', 'ClearEdge Lending, LLC',
+      'ClearEdge Lending', 'ClearEdge', 'Clear Edge Lending', 'Clear Edge', 'ClearEdge Lending - Corr'],
+    note: 'From the LoanNEX board. Added to the sheet 2026-09-02 as Crystal.' },
+
   { key: 'constructive_capital', label: 'Constructive Capital', seen: 9,
     aliases: ['Constructive Capital BPL (Constructive Capital BPL)',
       'Constructive Capital BPL (Constructive Capital BPL', 'BPL', 'Bpl'],

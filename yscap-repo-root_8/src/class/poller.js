@@ -97,14 +97,35 @@ async function pollOpenOrdersOnce() {
     return { polled: 0 };
   }
 
-  let replies = 0, reports = 0, statusChanges = 0;
+  let replies = 0, reports = 0, statusChanges = 0, uploads = 0;
   for (const order of orders) {
+    // 0. OUR documents up to THEM — the scope of work and the purchase contract, the
+    //    moment they exist on the file and are not on the order yet (the AMC desk has
+    //    done this on every poll since it was built; Class had no upload at all until
+    //    2026-09-02). Best-effort, and silent when writes are gated off: the write
+    //    gate answers `outbound_disabled` rather than throwing, and a poll is not the
+    //    place to nag about a switch.
+    try {
+      const up = await documents.autoUploadForOrder(db, order);
+      if (up && up.uploaded) uploads += up.uploaded;
+      if (up && up.ok === false && up.error && up.error !== 'outbound_disabled' && up.error !== 'nothing_to_upload') {
+        console.warn('[class] auto-upload for order', order.id, 'did not complete:', up.error, up.message || '');
+      }
+    } catch (e) { console.warn('[class] auto-upload failed for order', order.id, (e && e.message) || e); }
+
     // 1. Their side of the thread — replies without waiting on a webhook. syncNotes
     //    dedupes on the Class note id, so a note we already have is left untouched.
     try {
       const n = await messages.syncNotes(order.id);
       if (n && n.added) replies += n.added;
     } catch (e) { console.warn('[class] note poll failed for order', order.id, (e && e.message) || e); }
+
+    // 1b. The money picture — fee / paid / outstanding off their payment-details, at
+    //     most once an hour per order (src/class/payment.js throttles), so the desk's
+    //     balance is never more than an hour stale even if their OrderPaid callback
+    //     never arrives.
+    try { await require('./payment').refreshOrder(db, order); }
+    catch (e) { console.warn('[class] payment poll failed for order', order.id, (e && e.message) || e); }
 
     // 2. The finished report — list + download + parse (idempotent under a per-order
     //    lock). If a NEW MISMO XML came in and parsed, mark the order completed and read
@@ -149,7 +170,7 @@ async function pollOpenOrdersOnce() {
       } catch (e) { /* best-effort — a status we cannot read is left as-is */ }
     }
   }
-  return { polled: orders.length, replies, reports, statusChanges };
+  return { polled: orders.length, replies, reports, statusChanges, uploads };
 }
 
 function start() {

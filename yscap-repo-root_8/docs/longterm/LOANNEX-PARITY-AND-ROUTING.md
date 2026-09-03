@@ -208,6 +208,24 @@ one vendor states the base as a price and the other as points, and without it th
 missing data on one source and filled on the other. `baseDerived` stamps which way round it was
 worked out.
 
+**Which half the sheet published is said out loud, not inferred from a gap.** The rule used to read
+absence: whichever half is missing was ours. That is exact for Lender Price, which sends points and
+no price, and blind on the case that reaches a reader — a LoanNEX option that has been *explained*
+carries the vendor's own base **price** and the base **points** this engine worked out from it, so
+absence could no longer tell them apart. The panel therefore captioned our own arithmetic as *"the
+base points the rate sheet quotes"* on every explained LoanNEX row, while the Lender Price row beside
+it said *"Derived"* about its price, honestly. The LoanNEX mapper now stamps `baseStated: 'price'` and
+both copies of the resolver — `breakdown.priceOf` on the server, `priceBuild.baseOf` in the browser —
+prefer that answer over the guess, so a LoanNEX row and a Lender Price row describe their own base the
+same way round. Lender Price needs no stamp: sending points and no price already says which is which.
+
+The compensation overlay moves **both** halves with it for the same reason. It shifted the base points
+and left a stated base price behind, so with the switch on a LoanNEX row's two base rows stopped
+satisfying `price = 100 − points` and disagreed by exactly the comp shift — on LoanNEX only, because
+Lender Price has no stated base price to leave behind. Pinned by BASE-21…BASE-33 in
+`scripts/test-lt-base-price-parity-pure.mjs`, which runs the recorded LoanNEX answers through the real
+parser and mapper rather than a shape hand-built to agree with itself.
+
 Proven by `scripts/test-lt-breakdown-parity-pure.js`: 55 assertions over one real Lender Price option
 and three **live** LoanNEX answers, asserting identical top-level keys, identical row keys, identical
 sub-block shapes, one sign convention, and no vendor named anywhere unless an admin asks. Fifteen

@@ -240,6 +240,103 @@ export function programLine(q) {
    for that figure and NO colour — a coloured em dash would be a verdict on a number nobody has. */
 
 /** At or above par is a credit; below par is a cost; unknown is neither. */
+/**
+ * THE BASE OF THE PRICE BUILD, AND WHICH HALF THE RATE SHEET ACTUALLY QUOTED.
+ *
+ * ⛔ THE PANEL WAS TELLING THE READER THE WRONG STORY (owner: *"I understand the base price, the
+ * adjusted total and the final price, but I don't understand the base points and the adjusted
+ * points. Where are you taking this information?"*). It drew "Base price" as `100 − basePoints`
+ * under a tooltip reading "100 minus the base points the rate sheet quotes" — true of Lender
+ * Price, which quotes POINTS, and backwards on LoanNEX, which quotes a PRICE and whose points we
+ * derive. So on half the board the panel presented our own arithmetic as the vendor's figure and
+ * the vendor's own figure as arithmetic.
+ *
+ * HONEST NOTE, MEASURED rather than assumed: on every base price this integration has captured
+ * (101.5, 104.5) the two routes give the SAME number, and they diverge only at the fourth decimal
+ * (worst 0.0005 across a spread of synthetic values). This is not a wrong price on anybody's
+ * screen — it is a wrong ACCOUNT of where the price came from, plus a second copy of a rule the
+ * server already owns.
+ *
+ * ONE RULE: prefer what the vendor STATED, derive the other half, and say which. It mirrors
+ * `src/longterm/pricing/breakdown.js priceOf` — a browser cannot require server code — so
+ * `test-lt-base-price-parity-pure.js` runs BOTH over one battery and fails the moment they
+ * disagree.
+ */
+export function baseOf(priceBuild) {
+  const pb = priceBuild || {};
+  // BYTE-FOR-BYTE the server's `numOrNull` (breakdown.js): a vendor that states "101.5" as a
+  // string must read the same on the panel as it does on the server, or the mirror is the thing
+  // that decides what a price is.
+  const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+  const r3 = (n) => Math.round(n * 1000) / 1000;
+  const statedPrice = num(pb.basePrice);
+  const statedPoints = num(pb.basePoints);
+  /* WHICH HALF THE RATE SHEET ACTUALLY STATED. Absence answers it most of the time and needs no
+     help: Lender Price sends points and no price, so the price is ours; a LoanNEX board rung sends
+     neither. But a LoanNEX option that has been EXPLAINED carries BOTH halves — the vendor's own
+     price and the points this engine derived from it — and absence can no longer tell them apart.
+     So the mapper says which one the sheet published, and this prefers that answer over the guess.
+     Without it the panel called our own arithmetic "the base points the rate sheet quotes" on every
+     explained LoanNEX row, which is the exact defect this function was written to end. */
+  const stated = pb.baseStated === 'price' || pb.baseStated === 'points' ? pb.baseStated : null;
+  const known = statedPrice != null || statedPoints != null;
+  return {
+    basePrice: statedPrice != null ? statedPrice : (statedPoints == null ? null : r3(100 - statedPoints)),
+    basePoints: statedPoints != null ? statedPoints : (statedPrice == null ? null : r3(100 - statedPrice)),
+    baseDerived: !known ? null
+      : (stated === 'points' ? 'price_from_points'
+        : (stated === 'price' ? 'points_from_price'
+          : (statedPrice == null && statedPoints != null ? 'price_from_points'
+            : (statedPoints == null && statedPrice != null ? 'points_from_price' : null)))),
+  };
+}
+
+/**
+ * THE TERM, IN ONE UNIT, WHATEVER UNIT THE SHEET STATED IT IN.
+ *
+ * ⛔ THE SAME LOAN WAS READING TWO WAYS SIDE BY SIDE. Lender Price states a term in YEARS and the
+ * panel drew "30 years"; LoanNEX states it in MONTHS and the panel drew "360 months" — the same
+ * thirty-year loan, on two rows of one board, in numbers an officer has to convert in their head
+ * before they can compare them. Measured on the recorded answers of both vendors, not assumed.
+ *
+ * The parser already carries both halves for a sheet that states months (`termYears` beside
+ * `termMonths`), so nothing here is derived that the server did not already work out; this only
+ * decides which of them to SAY. Years win when the term is a whole number of them, because that is
+ * how these loans are spoken about — "a thirty-year fixed" — and it is what Lender Price rows have
+ * always shown. A term that is not a whole number of years keeps its months, because rounding
+ * "342 months" to "29 years" would be an invented fact rather than a tidier one.
+ */
+export function termText(terms) {
+  const t = terms || {};
+  const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+  const years = num(t.termYears);
+  if (years != null && years > 0 && Number.isInteger(years)) return `${years} years`;
+  const stated = num(t.term);
+  if (stated == null) return null;
+  // The sheet stated years already — say them, exactly as this row has always said them.
+  if (!t.termInMonths) return `${stated} years`;
+  return `${stated} months`;
+}
+
+/** What the two base rows should say about themselves, in the reader's own words. */
+export const BASE_NOTE = {
+  price_from_points: {
+    price: 'Derived: the rate sheet quotes the base in POINTS, and price is 100 minus points.',
+    points: 'The base points the rate sheet quotes, before any adjustment.',
+  },
+  points_from_price: {
+    price: 'The base price the rate sheet quotes, before any adjustment.',
+    points: 'Derived: the rate sheet quotes the base as a PRICE, and points is 100 minus price.',
+  },
+  both: {
+    price: 'The base price the rate sheet quotes, before any adjustment.',
+    points: 'The base points the rate sheet quotes, before any adjustment.',
+  },
+};
+export function baseNote(baseDerived, which) {
+  return (BASE_NOTE[baseDerived || 'both'] || BASE_NOTE.both)[which];
+}
+
 export const PRICE_TONE = { credit: 'credit', cost: 'cost' };
 
 export function priceMoney(priceValue, loanAmount) {
