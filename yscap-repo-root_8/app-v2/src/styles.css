@@ -6864,3 +6864,53 @@ tr.tape-row-on{background:rgba(47,127,134,.07)}
   .cb-wait{width:100%;justify-content:space-between;border-radius:12px}
   .cb-wait .cb-wait-text{white-space:normal}
 }
+
+/* ---------------------------------------------------------------------------
+   THE INVESTOR SOURCE LIST (General Pricing Engine settings).
+
+   Owner-reported 2026-09-03: *"the settings you can't really change from
+   LenderPric, the loannex, maybe only not on mobile. Not clear enough. It's not
+   designed well enough."*
+
+   MEASURED: the row was a five-column grid whose own minimums came to
+   180 + 150 + 180 + ~280 (three no-wrap source buttons) + 90 = ABOUT 880px
+   before gaps. On a 390px phone that cannot fit — the row either spills
+   sideways or is crushed to unreadable slivers, and the three source buttons
+   are the widest cell, so the control the owner went looking for is the first
+   thing to go.
+
+   ⛔ IT KEYS ON THE CONTAINER, NOT THE VIEWPORT. This list sits inside a
+   settings panel, so a `@media` query asks about the WINDOW and gets an answer
+   about the wrong box — the panel is narrow on a wide screen too. That is the
+   same trap the Term Sheet Studio's results grid fell into (2026-08-26), where
+   a 520px media query never fired on a maximised 1920px browser while every
+   value wrapped under its own label. `container-type:inline-size` is already
+   this stylesheet's tool for it (`.stat-tile`, `.dd-kpi`).
+
+   The stacked form is not a shrunken table: the header row goes away and each
+   cell carries its own label, so a phone reads it as a list of labelled fields
+   rather than as a spreadsheet with no headings.
+--------------------------------------------------------------------------- */
+.lt-inv{container-type:inline-size}
+.lt-inv-row,.lt-inv-head{
+  display:grid;
+  grid-template-columns:minmax(180px,1.3fr) minmax(150px,1fr) minmax(180px,1fr) auto minmax(90px,auto);
+  gap:10px;align-items:center}
+.lt-inv-cell-label{display:none}
+
+/* 820px is MEASURED, not chosen: the five columns' own minimums plus the three
+   source buttons come to ~880px, so the table form is honest only above that. */
+@container (max-width: 820px){
+  .lt-inv-head{display:none}
+  .lt-inv-row{grid-template-columns:1fr;gap:8px;padding-top:14px;padding-bottom:14px}
+  .lt-inv-cell-label{
+    display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+    color:#4B585C;font-weight:700;margin-bottom:4px}
+  /* The source buttons stop being one no-wrap strip and become three real
+     targets that fit — this is the control the whole section exists for. */
+  .lt-inv-sources{display:grid !important;grid-template-columns:1fr 1fr 1fr;width:100%}
+  .lt-inv-sources > button{white-space:normal !important}
+  /* iOS Safari zooms the whole page on focus of any control under 16px, which
+     throws a settings form off screen mid-edit. */
+  .lt-inv-row input{font-size:16px !important}
+}

@@ -84,7 +84,7 @@ function AvailabilityCell({ availability }) {
 function SourceChoice({ value, lockedOut, onPick }) {
   const locked = new Set(lockedOut || []);
   return (
-    <div role="group" aria-label="Where this investor is priced from" style={{
+    <div role="group" aria-label="Where this investor is priced from" className="lt-inv-sources" style={{
       display: 'inline-flex', border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden', background: '#fff',
     }}>
       {CHOICES.map((c, i) => {
@@ -327,10 +327,9 @@ export default function LtInvestorSources() {
         >{busy ? 'Saving…' : 'Save the list'}</button>
       </div>
 
-      <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
-        <div style={{
-          display: 'grid', gridTemplateColumns: 'minmax(180px,1.3fr) minmax(150px,1fr) minmax(180px,1fr) auto minmax(90px,auto)',
-          gap: 10, padding: '9px 12px', background: WASH, borderBottom: `1px solid ${LINE}`,
+      <div className="lt-inv" style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
+        <div className="lt-inv-head" style={{
+          padding: '9px 12px', background: WASH, borderBottom: `1px solid ${LINE}`,
           fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase', color: MUTED, fontWeight: 700,
         }}>
           <div>Investor</div>
@@ -352,10 +351,9 @@ export default function LtInvestorSources() {
           return (
             <div
               key={r.key}
+              className="lt-inv-row"
               style={{
-                display: 'grid',
-                gridTemplateColumns: 'minmax(180px,1.3fr) minmax(150px,1fr) minmax(180px,1fr) auto minmax(90px,auto)',
-                gap: 10, padding: '10px 12px', alignItems: 'center',
+                padding: '10px 12px',
                 borderBottom: `1px solid ${LINE}`,
                 background: choice === 'off' ? '#FBFAF8' : '#fff',
               }}
@@ -367,6 +365,7 @@ export default function LtInvestorSources() {
                 </div>
               </div>
               <div>
+                <div className="lt-inv-cell-label">Name a client may see</div>
                 <input
                   style={{ ...input, fontSize: 14, padding: '7px 9px' }}
                   placeholder={r.prefill && r.prefill.whiteLabel ? r.prefill.whiteLabel : 'not named yet'}
@@ -379,13 +378,20 @@ export default function LtInvestorSources() {
                   </div>
                 )}
               </div>
-              <AvailabilityCell availability={r.availability} />
-              <SourceChoice
-                value={choice}
-                lockedOut={r.lockedOut}
-                onPick={(id) => edit(r.key, { choice: id })}
-              />
               <div>
+                <div className="lt-inv-cell-label">Available on</div>
+                <AvailabilityCell availability={r.availability} />
+              </div>
+              <div>
+                <div className="lt-inv-cell-label">Priced from</div>
+                <SourceChoice
+                  value={choice}
+                  lockedOut={r.lockedOut}
+                  onPick={(id) => edit(r.key, { choice: id })}
+                />
+              </div>
+              <div>
+                <div className="lt-inv-cell-label">Holdback (extra points)</div>
                 <input
                   style={{ ...input, fontSize: 14, padding: '7px 9px', textAlign: 'right' }}
                   placeholder="0"
