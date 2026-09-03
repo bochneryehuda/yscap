@@ -360,14 +360,31 @@ const byInvestor = (programs) => {
     const lpUnknown = { price: async () => ({ ok: true, raw: unknownLp, searchKey: 'k9', request: {}, provenance: null }), parseFull: lpModel.parseFull };
     const nexDown = { price: async () => { throw new Error('loannex is not answering'); } };
 
-    // THE CONTROL: what the merge alone does with exactly these programmes.
+    /* ⛔ THE CONTROL, READ OFF THE MERGE'S REAL ANSWER.
+       The first cut of this control read `mergedOnly.programs`. `merge()` returns
+       `{sources, summary, investors, unmapped}` and has NO `programs` key, so
+       `(mergedOnly.programs || [])` was always `[]` and both "does not contain"
+       assertions were true BY CONSTRUCTION — they would have passed just as happily
+       if the merge had kept every row. Found by the pre-merge audit of 2026-09-03.
+
+       The merge's real statement about these two lenders is that it RESOLVED NEITHER:
+       they appear in `unmapped` and not in `investors`. That is the regression — the
+       board was built from the merge's resolved investors, so a lender the registry
+       cannot name had nothing to appear as. */
     const lpParsed = lpModel.parseFull({ ...unknownLp });
     const lpBoard = { source: 'lenderprice', programs: investorPrograms.decorate(lpParsed.programs).programs };
     const mergedOnly = mergeMod.merge({ lenderprice: lpBoard, loannex: null }, { errors: { lenderprice: null, loannex: 'down' } });
-    const mergedLenders = new Set((mergedOnly.programs || []).map((p) => String(p.lender || '')));
     ok(lpBoard.programs.length === 3, `LPU-0 CONTROL: Lender Price returned 3 lenders (${lpBoard.programs.length})`);
-    ok(!mergedLenders.has('ResiCentral') && !mergedLenders.has('Harbourline Credit'),
-      'LPU-1 CONTROL: the merge alone drops BOTH unnamed lenders — the regression, reproduced');
+    // The shape itself is asserted, or this control could rot back into a tautology the
+    // day `merge()` grows a `programs` key and nobody re-reads this block.
+    ok(mergedOnly.programs === undefined && Array.isArray(mergedOnly.unmapped),
+      'LPU-1a CONTROL: merge() answers investors + unmapped, and carries no programme list of its own');
+    const mergedResolved = new Set((mergedOnly.investors || []).map((i) => String(i.key)));
+    const mergedUnmapped = new Set((mergedOnly.unmapped || []).map((u) => String(u.name || '')));
+    ok(mergedResolved.size === 1 && mergedResolved.has('deephaven'),
+      `LPU-1b CONTROL: the merge resolves ONLY the named lender (${[...mergedResolved].join(',') || 'none'})`);
+    ok(mergedUnmapped.has('ResiCentral') && mergedUnmapped.has('Harbourline Credit'),
+      'LPU-1 CONTROL: it names BOTH unnamed lenders as unmapped and resolves neither — the regression, reproduced');
 
     const out2 = await run(lpUnknown, nexDown, { wantLoanNex: true });
     const lenders = (out2.programs || []).map((p) => String(p.lender || ''));

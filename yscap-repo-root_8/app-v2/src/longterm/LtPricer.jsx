@@ -5,7 +5,7 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // The pure rules that decide what a fee/comp figure MEANS live in their own plain-JS module
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
-import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor, ambiguousProgramLabels, programLabelKey, programLine, baseOf, baseNote, termText } from './priceBuild.js';
+import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor, ambiguousProgramLabels, programLabelKey, programLine, baseOf, baseNote, termText, lenderHeading, lenderVendorName } from './priceBuild.js';
 // The compensation OVERLAY (owner-directed 2026-08-23) — display math on top of the numbers
 // Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
 // decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
@@ -329,18 +329,25 @@ function Row({ k, v, strong, indent, tone, title }) {
   );
 }
 
-/** The WHITE-LABEL tag beside an investor's real name (owner-directed 2026-08-27:
- *  "on our dropdown, it is going to have the investor's name - white-labeled name").
- *  This is a STAFF screen, so the real name leads and the white-label rides beside
- *  it; the consumer build, when it exists, shows ONLY the white-label. Nothing to
- *  show → nothing rendered, never a blank pill. */
-function WhiteLabelTag({ name }) {
+/** THE VENDOR'S OWN SPELLING, beside the name WE gave the investor (owner-directed
+ *  2026-09-03: *"display the names of the investors according to the name that I gave
+ *  you on my list, not the name that is displayed on LoanX"*).
+ *
+ *  THIS IS THE 2026-08-27 TAG INVERTED, and the inversion is the whole point. It used
+ *  to lead with the rate sheet's spelling and wear OUR name as a small gold pill — so
+ *  once a board could be quoted by two sheets, the headline changed with whichever
+ *  sheet answered and the name the company actually uses was the small print. Now our
+ *  name is the heading and the vendor's spelling rides quietly beneath it, which is
+ *  also why it is no longer a gold pill: gold is emphasis, and the emphasis moved.
+ *
+ *  STAFF-ONLY BY SITUATION, NEVER BY THIS COMPONENT — it renders a real investor name,
+ *  and the one rule that governs that is `src/longterm/audience.js`. Every mount here
+ *  is on the staff pricer. Nothing to show → nothing rendered, never a blank pill. */
+function VendorNameTag({ name }) {
   if (!name) return null;
   return (
-    <span style={{
-      marginLeft: 8, fontSize: 10, fontWeight: 800, letterSpacing: '.06em',
-      textTransform: 'uppercase', color: GOLD_TEXT, border: `1px solid ${GOLD}66`,
-      borderRadius: 999, padding: '1px 8px 2px', whiteSpace: 'nowrap',
+    <span title="the name this rate sheet uses" style={{
+      marginLeft: 8, fontSize: 11, fontWeight: 600, color: MUTED, whiteSpace: 'nowrap',
     }}>{name}</span>
   );
 }
@@ -1477,8 +1484,8 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                       <span aria-hidden="true" title="the best price at this rate"
                         style={{ color: GOLD_TEXT, marginRight: 6, fontSize: 11 }}>●</span>
                     )}
-                    <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{g.lender || '—'}</span>
-                    <WhiteLabelTag name={g.best && g.best.whiteLabel} />
+                    <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{lenderHeading(g)}</span>
+                    <VendorNameTag name={lenderVendorName(g)} />
                     {many && (
                       <button type="button" onClick={() => onToggleLender(gKey)} aria-expanded={gOpen}
                         style={{
@@ -1492,7 +1499,8 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                       }</button>
                     )}
                     <div style={{ fontSize: 12, color: SLATE }}>
-                      {g.best && g.best.investor && g.best.investor !== g.lender ? `${g.best.investor} · ` : ''}
+                      {g.best && g.best.investor && g.best.investor !== g.lender && g.best.investor !== lenderHeading(g)
+                        ? `${g.best.investor} · ` : ''}
                       {programLine(g.best)}
                       {/* The CONSUMER label for THIS programme ("Pearl-2") — the back-office
                           answer to "which real programme was priced under which client name"
@@ -1701,11 +1709,11 @@ function IneligibleBoard({ d, loanAmount, initialOpen, comp }) {
                               background: gOpen ? 'rgba(174,135,70,.05)' : 'transparent',
                             }}>
                               <span className="ltq-name" style={{ flex: '2 1 200px', minWidth: 180 }}>
-                                {first && <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{g.lender || '—'}</span>}
-                                {/* The white-label tag beside the real name, SAME as the eligible
-                                    board — internally the team always sees both (owner-directed
-                                    2026-08-27); only clients ever see the white-label alone. */}
-                                {first && <WhiteLabelTag name={g.best && g.best.whiteLabel} />}
+                                {first && <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{lenderHeading(g)}</span>}
+                                {/* OUR name leads and the rate sheet's spelling rides beneath it,
+                                    SAME as the priced board — one investor is called one thing on
+                                    both, which is exactly what `lenderHeading` exists to hold. */}
+                                {first && <VendorNameTag name={lenderVendorName(g)} />}
                                 {first && many && (
                                   <button type="button" onClick={() => toggleLender(gKey)} aria-expanded={gOpen}
                                     style={{

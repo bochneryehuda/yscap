@@ -80,30 +80,72 @@ console.log('\nB · the three answers, and why "never" is not "unknown"');
   eq(seen.lenderprice.state, 'unknown',
     'B2 A SHEET THAT HAS PRODUCED NO BOARD READS UNKNOWN — never "never", or a cold register would lock every button on the screen');
 
+  /* ⛔ B3 IS RE-POINTED, NOT LOOSENED (pre-merge audit, 2026-09-03). It used to assert that
+     ONE answered board is enough to read NEVER, and that was the defect: a search is about one
+     SCENARIO, so an investor absent from it has not been shown to be absent from the SHEET.
+     MEASURED on the real door — after a single ordinary search, 26 of 26 settings rows had a
+     locked button and 15 had BOTH locked. The property this guard is really about is that a
+     sheet which has genuinely never carried an investor reads NEVER and locks; what changed is
+     how much evidence "genuinely" takes. See `NEVER_AFTER_SEARCHES`. */
   const other = sightings.availabilityFor('verus', nx);
-  eq(other.loannex.state, 'never',
-    'B3 a sheet that HAS answered boards and never carried this investor reads NEVER — the one state that locks a button');
-  eq(other.loannex.sourceLastAnswered, T1, 'B3b …and says on the strength of which board');
+  eq(other.loannex.state, 'not_yet',
+    'B3 ONE answered board is NOT evidence a sheet has never carried an investor — it locks nothing');
+  eq(sightings.lockedOutFor('verus', nx).length, 0,
+    'B3a …proved on the lock itself, which is the thing that costs a person the screen');
+  let many = nx;
+  for (let i = 0; i < sightings.NEVER_AFTER_SEARCHES; i += 1) {
+    many = sightings.record(many, { source: 'loannex', keys: ['nqm'], at: T1 });
+  }
+  const proven = sightings.availabilityFor('verus', many);
+  eq(proven.loannex.state, 'never',
+    'B3b a sheet that has answered enough searches and never once carried this investor reads NEVER');
+  eq(sightings.lockedOutFor('verus', many)[0], 'loannex', 'B3c …and THAT is what locks a button');
+  eq(proven.loannex.sourceLastAnswered, T1, 'B3d …and says on the strength of which board');
+  /* ⛔ AND NEVER THE SOURCE IN USE. A row routed to LoanNEX whose LoanNEX button is dead
+     cannot be re-routed, and cannot be turned off and back on — it reads as broken. This is
+     what made ClearEdge, one of the five investors the owner had just switched to LoanNEX,
+     answer with "Off" as its only pressable control. */
+  eq(sightings.lockedOutFor('verus', many, 'loannex').length, 0,
+    'B3e the sheet an investor is actually SET to is never locked out, however strong the evidence');
 
   eq(sightings.availabilityFor('nqm', null).loannex.state, 'unknown',
     'B4 an empty register knows nothing about anybody');
-  eq(sightings.availabilityFor('', nx).loannex.state, 'never', 'B5 a blank key is nobody, and nobody was never carried');
+  eq(sightings.availabilityFor('', many).loannex.state, 'never', 'B5 a blank key is nobody, and nobody was never carried');
 }
 
 console.log('\nB2 · which buttons are locked out — the rule itself, not a copy of it');
 {
-  const nx = sightings.record(null, { source: 'loannex', keys: ['nqm'], at: T1 });
+  /* `proved(source, keys)` is a register in which that sheet has answered ENOUGH searches for
+     its silence to count — see B3's note. Written once here so every lock case below states
+     the same amount of evidence, and so the threshold can move in one place. */
+  const proved = (source, keys) => {
+    let reg = null;
+    for (let i = 0; i < sightings.NEVER_AFTER_SEARCHES; i += 1) {
+      reg = sightings.record(reg, { source, keys, at: T1 });
+    }
+    return reg;
+  };
+  const nx = proved('loannex', ['nqm']);
   eq(sightings.lockedOutFor('nqm', nx), [],
     'B6 an investor that sheet HAS carried locks nothing');
   eq(sightings.lockedOutFor('verus', nx), ['loannex'],
-    'B7 a sheet that has answered boards and never carried them IS locked out');
+    'B7 a sheet that has answered enough searches and never carried them IS locked out');
   eq(sightings.lockedOutFor('nqm', null), [],
     'B8 A COLD REGISTER LOCKS NOTHING — every button stays live until a board says otherwise');
+  /* THE MEASURED FAILURE, PINNED: one ordinary search used to lock 26 of 26 rows. */
+  const oneSearch = sightings.record(null, { source: 'loannex', keys: ['nqm'], at: T1 });
+  eq(sightings.lockedOutFor('verus', oneSearch), [],
+    'B8a ONE search locks nothing — a single scenario is no evidence about a whole rate sheet');
   ok(!sightings.lockedOutFor('verus', nx).includes('off'),
     'B9 OFF IS NEVER IN THE LIST — the owner’s rule is a property of this function, not of the screen that draws it');
-  const both = sightings.record(nx, { source: 'lenderprice', keys: [], at: T2 });
+  let both = nx;
+  for (let i = 0; i < sightings.NEVER_AFTER_SEARCHES; i += 1) {
+    both = sightings.record(both, { source: 'lenderprice', keys: [], at: T2 });
+  }
   eq(sightings.lockedOutFor('verus', both).sort(), ['lenderprice', 'loannex'],
     'B10 an investor neither sheet has ever carried is locked out of both — and can still be turned off');
+  eq(sightings.lockedOutFor('verus', both, 'lenderprice'), ['loannex'],
+    'B10a …and even then, the sheet it is SET to stays pressable, so the row is never a dead end');
 }
 
 console.log('\nC · the register reads what it wrote, and refuses what it cannot');
@@ -300,8 +342,17 @@ console.log('\nI · an investor may restate its OWN client-safe name');
 console.log('\nJ · the settings screen sends what it was shown, and shows what was saved');
 {
   const src = strip(read('app-v2/src/longterm/LtInvestorSources.jsx'));
-  ok(/\(!e && r\.source\)\s*\n?\s*\?\s*r\.source/.test(src) || /!e && r\.source/.test(src),
-    'J1 an UNTOUCHED row sends the source it was given, verbatim — never a rewritten one');
+  /* ⛔ J1 IS A DELEGATION CHECK, NOT A PROOF OF THE RULE. It used to be a regex over this
+     screen's own source, and the pre-merge audit of 2026-09-03 DEFEATED IT TWICE while fully
+     restoring the `both` defect — `(!e && r.source && false) ? …`, and a hoisted
+     `const _keep = !e && r.source;` beside the old expression — with this suite reporting all
+     88 checks passed. A second alternative in the pattern made the first one dead.
+     The rule now lives in `investorSourcePatch.js` and is RUN in section K. All this asserts
+     is that the screen still asks it rather than growing a second copy. */
+  ok(/from '\.\/investorSourcePatch\.js'/.test(src) && /sourcePatch\(r, e\)/.test(src),
+    'J1 the row that is sent is built by the shared rule — not by a copy inside the screen');
+  ok(!/const sourceAnswered =/.test(src) && !/choice === 'off' \? \(r\.source === 'loannex'/.test(src),
+    'J1b …and no copy of that rule has grown back here');
   ok(/setEdits\(\{\}\);\s*load\(\);/.test(src),
     'J2 after saving, the screen RE-READS the server rather than believing its own patch');
   /* Scoped to the FILTER, not the file: `sourceOrigin === 'setting'` is also read by
@@ -318,4 +369,52 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
     'J4 …and the empty state SAYS the switched-off rows are hidden, so nobody hunts for one');
 }
 
-console.log('\n' + pass + ' checks passed\n');
+/* ═══════════════════════════════════════════════════════════════════════════
+   K · THE RULE ITSELF, RUN — not read.
+
+   Section J can only ever say the screen CALLS the rule. This hands the rule real
+   rows and reads the real answers back, which is the only thing that can hold an
+   arithmetic/logic property (CLAUDE.md: "a regex over the caller can only pin the
+   spelling"). Every case below is one the pre-merge audit MEASURED going wrong.
+   ═══════════════════════════════════════════════════════════════════════════ */
+(async () => {
+  console.log('\nK · what a settings row actually sends');
+  const { sourcePatch, choiceOf } = await import('../app-v2/src/longterm/investorSourcePatch.js');
+
+  /* `both` is written by the COMBINED engine's settings screen, into the same stored key.
+     This screen does not offer it, so it may never translate it. */
+  const both = { key: 'nqm', source: 'both', enabled: true, whiteLabel: 'Ruby', holdback: 0.25 };
+  ok(sourcePatch(both).source === 'both',
+    'K1 a stored "both" survives a save nobody changed anything on');
+  ok(sourcePatch(both, { whiteLabel: 'Ruby II' }).source === 'both',
+    'K2 …survives RENAMING the investor — a name says nothing about which sheet prices it');
+  ok(sourcePatch(both, { holdback: 0.5 }).source === 'both',
+    'K3 …survives a HOLDBACK change, for the same reason');
+  const off = sourcePatch(both, { choice: 'off' });
+  ok(off.source === 'both' && off.enabled === false,
+    'K4 …and survives being switched OFF, so turning it back on restores the sheet it had');
+
+  /* The two presses that ARE an answer to the which-sheet question. */
+  ok(sourcePatch(both, { choice: 'loannex' }).source === 'loannex',
+    'K5 pressing LoanNEX stores LoanNEX — a real one-sheet answer replaces "both"');
+  ok(sourcePatch(both, { choice: 'lenderprice' }).source === 'lenderprice',
+    'K6 …and pressing Lender Price stores Lender Price');
+
+  /* An ordinary one-sheet row is untouched by any of this. */
+  const lp = { key: 'verus', source: 'lenderprice', enabled: true };
+  ok(sourcePatch(lp).source === 'lenderprice' && sourcePatch(lp).enabled === true,
+    'K7 an ordinary Lender Price row still sends Lender Price, on');
+  ok(sourcePatch({ key: 'x', source: 'loannex', enabled: false }).enabled === false,
+    'K8 …and a row stored OFF stays off');
+
+  /* WHICH BUTTON IS LIT is a different question from WHAT IS SENT, and `both` is exactly
+     where they differ: the screen lights Lender Price (it must light something) while the
+     save must still carry `both`. Conflating the two is the whole defect. */
+  ok(choiceOf(both) === 'lenderprice' && sourcePatch(both).source === 'both',
+    'K9 "both" LIGHTS Lender Price and SENDS "both" — the shown value never becomes the stored one');
+
+  ok(sourcePatch(null).enabled === true && sourcePatch(undefined, undefined).source === 'lenderprice',
+    'K10 a missing row answers the pre-fill rather than throwing');
+
+  console.log('\n' + pass + ' checks passed\n');
+})();

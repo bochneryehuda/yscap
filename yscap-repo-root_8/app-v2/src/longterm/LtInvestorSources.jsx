@@ -5,6 +5,7 @@ import LtSourceMisses from './LtSourceMisses.jsx';
 import { keyFromLabel, parseAliases } from './customInvestors.js';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, card, eyebrow, sub, input, label, LINE, WASH } from './ppeStyles.js';
 import { sourceLabel } from './sourceLabel.js';
+import { choiceOf, sourcePatch } from './investorSourcePatch.js';
 
 /**
  * THE SIDE-BY-SIDE INVESTOR LIST — the ONE new section in the General Pricing Engine's settings.
@@ -40,16 +41,10 @@ const CHOICES = [
 ];
 
 /** What a row is currently set to, as ONE of the three — the shape the buttons speak. */
-function choiceOf(row, edit) {
-  const e = edit || {};
-  if (e.choice) return e.choice;
-  if (row.enabled === false) return 'off';
-  // `both` is the combined engine's comparison mode and is not offered here: the general
-  // engine ROUTES, it does not compare (see `pricing/general-board.js`). A row already
-  // stored as `both` reads as the sheet it would take first, and pressing any button
-  // stores a real one-sheet answer.
-  return row.source === 'loannex' ? 'loannex' : 'lenderprice';
-}
+/* WHICH BUTTON IS LIT, and WHAT THE ROW SENDS, both live in `investorSourcePatch.js` —
+   plain `.js` so CI can RUN them. They were closures here, guarded by a regex over this
+   file, and the pre-merge audit defeated that guard twice while fully restoring the
+   `both` defect. See that module's header. */
 
 /**
  * "THIS SHEET HAS NEVER CARRIED THIS INVESTOR" — written once.
@@ -65,6 +60,11 @@ function availabilityNote(a) {
   if (!a) return null;
   if (a.state === 'seen') return 'has answered for this investor';
   if (a.state === 'never') return NEVER_CARRIED;
+  /* ANSWERED, BUT NOT ENOUGH TIMES FOR ITS SILENCE TO MEAN ANYTHING. A search is about
+     one scenario, so an investor missing from a handful of them has not been shown to be
+     absent from the sheet — see `NEVER_AFTER_SEARCHES`. Said plainly rather than dressed
+     up as either "available" or "never carried", and it locks nothing. */
+  if (a.state === 'not_yet') return 'not seen on this sheet yet';
   return 'not searched yet';
 }
 
@@ -76,7 +76,7 @@ function AvailabilityCell({ availability }) {
   const a = availability || {};
   const one = (id, name) => {
     const st = (a[id] && a[id].state) || 'unknown';
-    const colour = st === 'seen' ? '#2F7F86' : (st === 'never' ? '#B0B6BB' : GOLD);
+    const colour = st === 'seen' ? '#2F7F86' : (st === 'never' ? '#B0B6BB' : GOLD);  // not_yet/unknown both read as the amber "we do not know"
     return (
       <div key={id} style={{ fontSize: 12, color: st === 'seen' ? SLATE : MUTED, whiteSpace: 'nowrap' }}>
         <span style={dot(colour)} />{name} — {availabilityNote(a[id])}
@@ -265,21 +265,26 @@ export default function LtInvestorSources() {
     if (!touched && !pinned) return null;
     const choice = choiceOf(r, e);
     /**
-     * ⛔ AN UNTOUCHED ROW RE-STATES WHAT IS STORED, VERBATIM — it never re-derives it through the
-     * three-button vocabulary.
+     * ⛔ ONLY A PRESS OF THE SOURCE BUTTONS MAY CHANGE THE SOURCE. Everything else re-states what
+     * is stored, VERBATIM — it is never re-derived through the three-button vocabulary.
      *
      * `both` is a real stored value: the COMBINED engine's settings screen offers it and writes the
      * same key (`pricing.combinedInvestors`). This screen deliberately does not offer it, so
-     * `choiceOf` answers `'lenderprice'` for it — and a save nobody made a change on then silently
-     * re-routed every stored `both` row to Lender Price, with no button pressed. A screen that does
-     * not offer a value must PASS IT THROUGH, never translate it into the nearest one it knows.
+     * `choiceOf` answers `'lenderprice'` for it — and a save then silently re-routed every stored
+     * `both` row to Lender Price with no source button pressed. A screen that does not offer a
+     * value must PASS IT THROUGH, never translate it into the nearest one it knows.
+     *
+     * ⛔ AND THE TEST IS THE SOURCE, NOT THE ROW. The first cut asked whether the ROW had been
+     * edited at all, which is a different question and was wrong three ways out of four: renaming
+     * an investor, changing its holdback, or switching it OFF all re-routed a stored `both` to
+     * Lender Price, because none of them says anything whatever about which sheet to price on.
+     * Measured, all three. `choice` is what the buttons write, so `e.choice` is the only
+     * evidence that a person answered THIS question.
+     *
+     * SWITCHING OFF IS NOT AN ANSWER TO IT EITHER — an investor that is off has no sheet in use,
+     * and remembering the one it had is what lets turning it back on restore what was there.
      */
-    const out = {
-      source: (!e && r.source)
-        ? r.source
-        : (choice === 'off' ? (r.source === 'loannex' ? 'loannex' : 'lenderprice') : choice),
-      enabled: choice !== 'off',
-    };
+    const out = sourcePatch(r, e);
     const wl = e && e.whiteLabel !== undefined ? e.whiteLabel : r.whiteLabel;
     if (wl != null && String(wl).trim() !== '') out.whiteLabel = String(wl).trim();
     const hbv = e && e.holdback !== undefined ? e.holdback : r.holdback;

@@ -71,7 +71,26 @@ const SOURCES = ['lenderprice', 'loannex'];
  */
 const MAX_INVESTORS = 500;
 
-const EMPTY = { boards: {}, investors: {} };
+const EMPTY = { boards: {}, searches: {}, investors: {} };
+
+/* ⛔ HOW MANY ANSWERED SEARCHES BEFORE SILENCE MEANS ANYTHING.
+   A search is about ONE SCENARIO. An investor absent from one answer has NOT been
+   shown to be absent from the sheet — it may simply have no product for that loan.
+   The register used to lock a source button the moment a sheet answered ONCE
+   without carrying an investor, which is absence of evidence read as evidence of
+   absence. MEASURED by the pre-merge audit of 2026-09-03: after a single ordinary
+   search, 26 of 26 settings rows had a locked button and 15 had BOTH locked —
+   including ClearEdge, one of the five investors the owner had just switched to
+   LoanNEX, whose only pressable control was then "Off".
+
+   This number is a THRESHOLD, not a proof: no count of similar scenarios can prove
+   a sheet does not carry somebody. It is set where a fresh install cannot lock
+   anything (the reported failure) and where a sheet that has answered twenty
+   varied searches without ever naming an investor is genuinely worth flagging.
+   Erring low costs a wrong lock nobody can work around; erring high costs a
+   button somebody may press in vain — and a wrong route is caught and reported by
+   the miss register and its super-admin email, which a wrong lock is not. */
+const NEVER_AFTER_SEARCHES = 20;
 
 const isIso = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(v) && !Number.isNaN(Date.parse(v));
 const asKey = (v) => (typeof v === 'string' ? v.trim() : '');
@@ -84,7 +103,7 @@ const asKey = (v) => (typeof v === 'string' ? v.trim() : '');
  */
 function read(stored) {
   const problems = [];
-  const out = { boards: {}, investors: {} };
+  const out = { boards: {}, searches: {}, investors: {} };
   if (stored == null) return { ...out, problems };
   if (typeof stored !== 'object' || Array.isArray(stored)) {
     return { ...out, problems: ['The sightings register is not an object; it was ignored.'] };
@@ -92,6 +111,16 @@ function read(stored) {
   const b = stored.boards;
   if (b && typeof b === 'object' && !Array.isArray(b)) {
     for (const s of SOURCES) if (isIso(b[s])) out.boards[s] = b[s];
+  }
+  /* HOW MANY answered boards, per sheet. A register written before this counter
+     existed has none; it reads as 0, so it locks nothing until the sheet has
+     answered enough NEW searches to earn it. That is the safe direction. */
+  const n = stored.searches;
+  if (n && typeof n === 'object' && !Array.isArray(n)) {
+    for (const s of SOURCES) {
+      const v = Number(n[s]);
+      if (Number.isFinite(v) && v > 0) out.searches[s] = Math.floor(v);
+    }
   }
   const inv = stored.investors;
   if (inv && typeof inv === 'object' && !Array.isArray(inv)) {
@@ -132,7 +161,7 @@ function newestOf(row) {
  */
 function record(stored, { source, keys, at, answered = true } = {}) {
   const cur = read(stored);
-  const base = { boards: { ...cur.boards }, investors: {} };
+  const base = { boards: { ...cur.boards }, searches: { ...cur.searches }, investors: {} };
   for (const [k, v] of Object.entries(cur.investors)) base.investors[k] = { ...v };
 
   if (!SOURCES.includes(source)) return base;
@@ -141,6 +170,9 @@ function record(stored, { source, keys, at, answered = true } = {}) {
   if (!isIso(when)) return base;
 
   base.boards[source] = when;
+  // Counted per ANSWERED board, which is the same event `boards` timestamps — so the
+  // two can never disagree about how much this sheet has actually told us.
+  base.searches[source] = (Number(base.searches[source]) || 0) + 1;
   for (const raw of keys || []) {
     const key = asKey(raw);
     if (!key) continue;
@@ -165,9 +197,16 @@ function availabilityFor(key, stored) {
   const row = cur.investors[asKey(key)] || {};
   const out = {};
   for (const s of SOURCES) {
+    const searches = cur.searches[s] || 0;
     if (row[s]) out[s] = { state: 'seen', at: row[s] };
-    else if (cur.boards[s]) out[s] = { state: 'never', at: null, sourceLastAnswered: cur.boards[s] };
-    else out[s] = { state: 'unknown', at: null };
+    else if (cur.boards[s] && searches >= NEVER_AFTER_SEARCHES) {
+      out[s] = { state: 'never', at: null, sourceLastAnswered: cur.boards[s], searches };
+    } else if (cur.boards[s]) {
+      /* ANSWERED, BUT NOT ENOUGH TIMES TO MEAN ANYTHING. Distinct from `unknown`
+         ("no board from that sheet at all") so a screen can word the two honestly,
+         and neither locks a button. */
+      out[s] = { state: 'not_yet', at: null, sourceLastAnswered: cur.boards[s], searches };
+    } else out[s] = { state: 'unknown', at: null, searches };
   }
   return out;
 }
@@ -179,14 +218,25 @@ function availabilityFor(key, stored) {
  * only SOURCES, and `off` is not one — nothing here can ever produce a row that cannot be
  * switched off.
  *
- * ⛔ ONLY A PROVEN `never` LOCKS. An `unknown` is "no board from that sheet yet", and locking on
- * it would leave every button dead on a fresh install — including the five investors the owner
- * switched over. It lives here rather than in the route so the rule is callable, and testable,
- * without an HTTP door.
+ * ⛔ ONLY A PROVEN `never` LOCKS, and `never` now takes real evidence (see
+ * `NEVER_AFTER_SEARCHES`). `unknown` is "no board from that sheet at all" and `not_yet` is
+ * "it has answered, but not enough times for its silence to mean anything"; locking on either
+ * would leave every button dead on a fresh install — including the five investors the owner
+ * switched over, which is exactly what was measured.
+ *
+ * ⛔ AND THE SOURCE AN INVESTOR IS ACTUALLY SET TO IS NEVER LOCKED. You cannot lock the door
+ * somebody is standing in: a row routed to LoanNEX whose LoanNEX button is dead cannot be
+ * turned off and back on, cannot be re-routed, and reads as broken. `currentSource` is the
+ * setting in force for this investor; passing it is what makes that guarantee, and a caller
+ * that omits it gets the evidence rule alone.
+ *
+ * It lives here rather than in the route so the rule is callable, and testable, without an
+ * HTTP door.
  */
-function lockedOutFor(key, stored) {
+function lockedOutFor(key, stored, currentSource) {
   const a = availabilityFor(key, stored);
-  return SOURCES.filter((s) => a[s].state === 'never');
+  const inUse = typeof currentSource === 'string' ? currentSource : null;
+  return SOURCES.filter((s) => a[s].state === 'never' && s !== inUse);
 }
 
 /** Every investor key the register has ever seen, on either source. */
@@ -207,6 +257,6 @@ function validate(v) {
 
 module.exports = {
   SETTING_KEY, SOURCES, MAX_INVESTORS, EMPTY,
-  read, record, availabilityFor, lockedOutFor, keysSeen, validate,
+  read, record, availabilityFor, lockedOutFor, keysSeen, validate, NEVER_AFTER_SEARCHES,
   _internals: { isIso, newestOf },
 };

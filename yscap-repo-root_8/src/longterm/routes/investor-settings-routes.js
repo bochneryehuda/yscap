@@ -163,7 +163,10 @@ function attach(router) {
      */
     const investorsWithAvailability = d.investors.map((r) => {
       const availability = sightings.availabilityFor(r.key, sight);
-      return { ...r, availability, lockedOut: sightings.lockedOutFor(r.key, sight) };
+      /* The source THIS investor is set to is passed so it can never be locked out —
+         a row routed to LoanNEX whose LoanNEX button is dead cannot be re-routed or
+         turned off and back on, and reads as a broken screen. */
+      return { ...r, availability, lockedOut: sightings.lockedOutFor(r.key, sight, r.source) };
     });
     /**
      * THE OWNER'S LIST, NOT OUR WHOLE REGISTRY (owner-reported 2026-09-03: *"the list of

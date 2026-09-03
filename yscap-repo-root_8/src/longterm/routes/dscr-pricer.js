@@ -423,8 +423,11 @@ async function priceBrackets(req, res) {
      for that investor. A sheet that REFUSED files nothing at all: the board returns an empty
      `missing` for it, so one outage can never file forty reviews.
 
-     Best-effort throughout — the officer's board has already been built. */
-  await searchSeen.flush({ staffId: (req.actor && req.actor.id) || null, scenario: sc });
+     Best-effort throughout, and OFF THE RESPONSE PATH: the officer's board is
+     already built, and `flush` can reach an outbound email (measured: 161 ms to
+     answer without it, 3,183 ms with a three-second provider). `later` runs it
+     after the answer has gone and can never reject. */
+  searchRecord.later(() => searchSeen.flush({ staffId: (req.actor && req.actor.id) || null, scenario: sc }));
 
   if (!out.ok) {
     // A refusal here is about the DEAL (not enough figures to bracket by) or the
@@ -489,11 +492,12 @@ async function price(req, res) {
 
        The SAME collector the bands door uses, so the two doors can never record one search
        differently. Best-effort by construction: it swallows its own failures, and the board has
-       already been built by the time it runs. */
-    await searchRecord.recordOne(board, {
+       already been built by the time it runs — and it runs OFF THE RESPONSE PATH, because on the
+       first miss of a day the recording sends an email and this is the door an officer waits on. */
+    searchRecord.later(() => searchRecord.recordOne(board, {
       staffId: (req.actor && req.actor.id) || null,
       scenario: sc,
-    });
+    }));
 
     const effectiveFull = effectiveOf(board.request); // requested-vs-effective transparency
     const out = {
