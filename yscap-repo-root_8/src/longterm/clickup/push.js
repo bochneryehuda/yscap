@@ -426,6 +426,37 @@ async function loadBag(loanId, { ex = null, forCreate = false } = {}) {
     } catch (_) { /* optional */ }
   }
 
+  // The borrower's real estate and debts (the mirror's §3 / §2c) — what the
+  // "Primary Housing ($)" box is answered from when the borrower OWNS where they
+  // live (mapper.housingPayment). Absent (undefined) when unread, so the mapper
+  // can tell "no REO" from "could not look".
+  let reos; let liabilities;
+  if (borrower) {
+    try {
+      const { rows } = await db.query(
+        'SELECT * FROM lt_reo_properties WHERE party_id = $1::uuid', [borrower.id]);
+      reos = rows;
+      const { rows: debts } = await db.query(
+        'SELECT * FROM lt_liabilities WHERE party_id = $1::uuid', [borrower.id]);
+      liabilities = debts;
+    } catch (_) { reos = undefined; liabilities = undefined; }
+  }
+
+  // The file's own contacts desk — the title and hazard-insurance cards the
+  // officer picked before submittal (`lt_loan_vendors` → the shared directory,
+  // the same read `orders/data.js` makes). The mapper falls back to these when
+  // Encompass's File Contacts hold nothing. `undefined` = the desk was not read.
+  let vendors;
+  try {
+    const { rows } = await db.query(
+      `SELECT v.kind, sc.company_name, sc.contact_name, sc.email, sc.emails, sc.phone, sc.phones
+         FROM lt_loan_vendors v
+         LEFT JOIN service_contacts sc ON sc.id = v.service_contact_id
+        WHERE v.loan_id = $1::uuid AND v.is_primary AND v.kind IN ('title', 'hazard_insurance')`, [loanId]);
+    vendors = {};
+    for (const r of rows) vendors[r.kind] = r.company_name || r.contact_name || r.email ? r : null;
+  } catch (_) { vendors = undefined; }
+
   // Officer + processor from the file's own contact rows.
   let officer = null; let processor = null;
   try {
@@ -459,6 +490,7 @@ async function loadBag(loanId, { ex = null, forCreate = false } = {}) {
   const appUrl = String(process.env.APP_URL || 'https://yscap.onrender.com').replace(/\/$/, '');
   const bag = {
     loan, prop, borrower, coborrower, residence, priorResidence,
+    reos, liabilities, vendors,
     ex: ex || {},
     officer, processor,
     investorLoanNumber, investorName, investorChannel, ladder,

@@ -11112,6 +11112,20 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // Propagate a mapped condition's status to its ClickUp dropdown (scoped push;
   // self-gating no-op for unmapped items / unlinked files).
   enqueueChecklistStatusPush(req.params.itemId).catch(() => {});
+  // THE TITLE / INSURANCE ORDER FOLLOWS ITS CONDITION, NOW — not on the next
+  // digest tick (owner-directed 2026-09-03: the vendor answered in a new email
+  // chain, the documents were filed and the condition signed off by hand, and
+  // the Orders desk went on calling the order outstanding and past due). A
+  // sign-off or waive finishes the order; undoing one puts back only an order
+  // the condition itself finished. Self-gating for any other condition.
+  {
+    const orderTracking = require('../lib/order-tracking');
+    if (completing) {
+      orderTracking.completeFromCondition(req.params.itemId, { actorId: req.actor.id }).catch(() => {});
+    } else if (b.signedOff === false || b.waived === false) {
+      orderTracking.reopenFromCondition(req.params.itemId, { actorId: req.actor.id }).catch(() => {});
+    }
+  }
 
   // A super-admin override is a POLICY DECISION, not a checkbox: audit it, and
   // land it in the loan_exceptions register (born approved, record-only) exactly

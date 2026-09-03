@@ -638,6 +638,9 @@ model LtParty {
   citizenship  String? @map("citizenship")
   maritalStatus String? @map("marital_status")
   dependentCount Int?   @map("dependent_count")
+  /// Encompass 54 `dependentsAgesDescription` — the ages as one free-text line
+  /// ("10/8"); the ClickUp "Age of Dependents" box carries it verbatim (db/690).
+  dependentsAges String? @map("dependents_ages")
   email       String?
   homePhone   String? @map("home_phone")
   mobilePhone String? @map("mobile_phone")
@@ -2776,6 +2779,9 @@ model LtFileOrder {
   orderedAt      DateTime? @map("ordered_at") @db.Timestamptz(6)
   lastFollowupAt DateTime? @map("last_followup_at") @db.Timestamptz(6)
   cancelledAt    DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  /// When the order finished — stamped by a person's "Mark finished" or by the
+  /// condition it asked for being signed off (db/693, orders/condition-sync.js).
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz(6)
   cancelledBy    String?   @map("cancelled_by") @db.Uuid
   cancelReason   String?   @map("cancel_reason")
 

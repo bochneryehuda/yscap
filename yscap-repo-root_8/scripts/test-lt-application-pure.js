@@ -246,7 +246,7 @@ const PAIRS_LOAN = {
         firstName: 'Ann', middleName: 'B', lastName: 'Lee', suffixToName: 'Jr',
         birthDate: '1980-04-02', taxIdentificationIdentifier: '123-45-6789',
         emailAddressText: 'ann@example.com', homePhoneNumber: '201-555-0100',
-        maritalStatusType: 'Unmarried', dependentCount: 2,
+        maritalStatusType: 'Unmarried', dependentCount: 2, dependentsAgesDescription: '10/8',
         urla2020CitizenshipResidencyType: 'USCitizen',
         experianCreditScore: '756', transUnionScore: '760', equifaxScore: '752',
         middleCreditScore: '756',
@@ -272,6 +272,8 @@ check(pairs[0].parties.length === 1 && pairs[0].parties[0].role === 'borrower',
 check(pairs[0].parties[0].firstName === 'Ann' && pairs[0].parties[0].nameSuffix === 'Jr'
   && pairs[0].parties[0].dependentCount === 2 && pairs[0].parties[0].citizenship === 'USCitizen',
   'the person is read whole — name, suffix, dependants and citizenship');
+check(pairs[0].parties[0].dependentsAges === '10/8',
+  'and the dependants\' AGES ride along as the one free-text line field 54 holds (db/690 — the ClickUp "Age of Dependents" box is filled from it)');
 check(pairs[0].parties[0].ficoExperian === 756 && pairs[0].parties[0].ficoRepresentative === 756,
   'the credit scores arrive as STRINGS in this schema and land as numbers');
 

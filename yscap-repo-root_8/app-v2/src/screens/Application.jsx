@@ -601,6 +601,15 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
       ok: !!(b.current_address && ['line1', 'city', 'state', 'zip'].some((k) => String(b.current_address[k] || '').trim())),
       edit: false },
     { key: 'date_of_birth', label: 'Date of birth', ok: !!b.date_of_birth, type: 'date' },
+    /* THE SOCIAL IS PART OF A COMPLETE APPLICATION (owner-reported 2026-09-03:
+       a file read "10/10 Complete" while the Borrower box beside it said "SSN —
+       Not on file"). The staff panel has counted it since the shared-editor
+       work (`StaffApplication.jsx` `ssn` pill); the borrower's own list never
+       did, so the two panels disagreed about the same file. It is never typed
+       HERE — the Social has its own encrypted door (`SsnRow`, `api.saveProfile`)
+       — so this row is a click-through to that row, the way the staff pill is a
+       click-through to the Borrower section. */
+    { key: 'ssn', label: 'Social Security number', ok: !!b.ssn_last4, edit: false, goTo: 'borrower-ssn-row' },
     { key: 'fico', label: 'Estimated FICO', ok: b.fico != null, type: 'fico' },
     { key: 'citizenship', label: 'Citizenship', ok: !!b.citizenship, type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
   ];
@@ -669,6 +678,14 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
                   <button className="btn primary small" disabled={busy || val === '' || (f.type === 'fico' && !ficoValid(val))} onClick={() => save(f)}>{busy ? '…' : 'Save'}</button>
                   <button className="btn ghost small" onClick={() => setEditing(null)}>✕</button>
                 </span>
+              ) : f.edit === false && f.goTo ? (
+                <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold-ink)', cursor: 'pointer', background: 'none' }}
+                  title="Added on the Borrower card below — encrypted, never shown in full"
+                  onClick={() => {
+                    const el = document.getElementById(f.goTo);
+                    if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    window.dispatchEvent(new CustomEvent('ys:open-row', { detail: { id: f.goTo } }));
+                  }}>+ {f.label}</button>
               ) : f.edit === false ? (
                 <span key={f.key} className="pill" style={{ borderColor: 'var(--muted)', color: 'var(--muted)' }}>Missing: {f.label}</span>
               ) : (
@@ -1638,6 +1655,13 @@ function SsnRow({ profile, onSaved }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const onFile = profile && profile.ssn_last4;
+  // The completeness panel's "+ Social Security number" lands here and opens the
+  // box, so the borrower is never told to go and find a button.
+  useEffect(() => {
+    const onOpen = (e) => { if (e && e.detail && e.detail.id === 'borrower-ssn-row') setOpen(true); };
+    window.addEventListener('ys:open-row', onOpen);
+    return () => window.removeEventListener('ys:open-row', onOpen);
+  }, []);
   async function save() {
     const digits = ssn.replace(/\D/g, '');
     if (digits.length !== 9) { setErr('Enter all 9 digits.'); return; }
@@ -1647,7 +1671,7 @@ function SsnRow({ profile, onSaved }) {
     finally { setBusy(false); }
   }
   return (
-    <div className="metrow" style={{ alignItems: open ? 'flex-start' : 'center' }}>
+    <div id="borrower-ssn-row" className="metrow" style={{ alignItems: open ? 'flex-start' : 'center' }}>
       <span className="k">SSN</span>
       <span className="v">
         {!open ? (
