@@ -38,6 +38,7 @@ const roster = require('./../pricing/investor-roster');
 const vendorMargin = require('./../pricing/vendor-margin');
 const investorConfig = require('./../pricing/investor-config');
 const sightings = require('./../pricing/investor-sightings');
+const sourceMisses = require('./../pricing/source-misses');
 const { whiteLabelOf } = require('../lenderprice/investor-programs');
 
 const reasonOf = (e) => String((e && e.message) || e || 'unknown').slice(0, 300);
@@ -427,6 +428,41 @@ function attach(router) {
     if (!name) return res.status(400).json({ ok: false, error: 'missing_name', message: 'Send the spelling you want suggestions for.' });
     res.json({ ok: true, name, suggestions: investorLinks.suggestFor(name, { custom: c.custom }) });
   });
+
+  /**
+   * THE MISSING-INVESTOR REVIEW — the record behind the silence.
+   *
+   * Owner-directed 2026-09-03: an investor the second rate sheet answered about and did not
+   * carry is left off the board SILENTLY and the super admin is emailed, plus *"a manual
+   * review section recording the scenario, which investor LoanNEX missed, and whether Lender
+   * Price had it, so the cause can be dug into."* This is the read of that record.
+   *
+   * ⛔ AN UNREADABLE LOG SAYS SO. Answering with an empty list would read as "nothing has
+   * ever gone wrong", which is the one thing this section must never claim.
+   */
+  router.get('/misses', async (req, res) => {
+    const r = await sourceMisses.list({
+      openOnly: String((req.query && req.query.open) || '') === '1',
+      limit: req.query && req.query.limit,
+    });
+    res.json({ ok: true, ...r });
+  });
+
+  /**
+   * MARK ONE LOOKED AT, with the reviewer's own note — and un-mark it, because a row settled
+   * by mistake must be recoverable without a second door.
+   */
+  router.put('/misses/:id', async (req, res) => {
+    const b = req.body || {};
+    const r = await sourceMisses.review(req.params.id, {
+      reviewed: b.reviewed === false ? false : true,
+      note: b.note,
+      staffId: (req.actor && req.actor.id) || null,
+    });
+    if (!r.ok) return res.status(r.error === 'not_found' ? 404 : 500).json(r);
+    res.json(r);
+  });
+
   return router;
 }
 

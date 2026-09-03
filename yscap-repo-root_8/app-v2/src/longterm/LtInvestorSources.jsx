@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ltApi } from './api.js';
 import LtInvestorLinks from './LtInvestorLinks.jsx';
+import LtSourceMisses from './LtSourceMisses.jsx';
 import { keyFromLabel, parseAliases } from './customInvestors.js';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, card, eyebrow, sub, input, label, LINE, WASH } from './ppeStyles.js';
 
@@ -468,6 +469,14 @@ export default function LtInvestorSources() {
         </div>
         {ciMsg && <div style={{ fontSize: 13, color: GOLD_TEXT, marginTop: 6 }}>{ciMsg}</div>}
         {ciErr && <div style={{ fontSize: 13, color: DANGER, marginTop: 6 }}>{ciErr}</div>}
+      </div>
+
+      {/* THE RECORD BEHIND THE SILENCE — an investor the second system answered about and did not
+          carry is left off the board with nothing said, and lands here instead. It sits under the
+          list it is about, so the person changing a source and the person digging into a miss are
+          looking at the same screen. */}
+      <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${LINE}` }}>
+        <LtSourceMisses />
       </div>
 
       {/* LINK ANY NAME TO ANY INVESTOR — the owner's *"full linking"*. The whole block is the SAME

@@ -3111,3 +3111,64 @@ model LtTermSheetScenario {
   @@index([cartId, position], map: "lt_term_sheet_scenario_parent_idx")
   @@map("lt_term_sheet_scenario")
 }
+
+/// db/689 — THE MISSING-INVESTOR REVIEW LOG.
+///
+/// The General Pricing Engine takes five investors from LoanNEX. When LoanNEX is
+/// asked, ANSWERS, and simply does not carry one of them, that investor is left
+/// off the board silently (owner-directed 2026-09-03: *"leave it out silently and
+/// send the notification to the super admin email"*) — because once an investor
+/// is switched over, the Lender Price copy of its pricing is second-hand and
+/// showing it would be quoting a sheet we have stopped trusting for that
+/// investor.
+///
+/// Silently for the OFFICER. This is the record for us: *"a manual review section
+/// recording the scenario, which investor LoanNEX missed, and whether Lender Price
+/// had it."*
+///
+/// ONE ROW PER (investor, source, day), counted rather than repeated — a search
+/// asks the sheets once per DSCR band, so without the unique index one press of
+/// Search would file seven identical rows.
+model LtPricingSourceMiss {
+  id BigInt @id @default(autoincrement())
+
+  investorKey   String  @map("investor_key")
+  investorLabel String? @map("investor_label")
+
+  /// The sheet that was asked and did not carry them. A column rather than an
+  /// assumption, so a third rate sheet added later files its own misses here.
+  source String @default("loannex")
+
+  seenDay     DateTime @default(now()) @map("seen_day") @db.Date
+  firstSeenAt DateTime @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt  DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+
+  /// How many searches hit it that day. A reviewer's first question is "is this
+  /// every search or was it one odd scenario"; a count answers it at a glance.
+  hits Int @default(1)
+
+  /// DID THE OTHER SHEET HAVE THEM? The owner's own question, and the one that
+  /// separates "LoanNEX is having a bad day" from "this investor genuinely has no
+  /// product for this loan". NULL means we could not tell.
+  otherSourceHad Boolean? @map("other_source_had")
+
+  /// The loan's SHAPE, as the search ran it — enough to reproduce the miss and no
+  /// more. Never a borrower, never a name, never a document.
+  scenario Json @default("{}") @db.JsonB
+
+  note String?
+
+  /// Whether the super admin has been told, ON THE ROW — so "did anybody hear
+  /// about this?" is answerable where a reviewer is already looking, and so the
+  /// claim can be made with an IS NULL-guarded UPDATE, which is what stops two
+  /// searches finishing at once from both sending the same email.
+  alertedAt DateTime? @map("alerted_at") @db.Timestamptz(6)
+
+  reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewedBy String?   @map("reviewed_by") @db.Uuid
+  reviewNote String?   @map("review_note")
+
+  @@unique([investorKey, source, seenDay], map: "lt_pricing_source_misses_day_uk")
+  @@index([lastSeenAt(sort: Desc)], map: "lt_pricing_source_misses_recent_idx")
+  @@map("lt_pricing_source_misses")
+}

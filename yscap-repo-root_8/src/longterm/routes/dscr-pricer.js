@@ -20,6 +20,7 @@ const lp = require('../lenderprice/client');
 const investorPrograms = require('../lenderprice/investor-programs');
 const generalBoard = require('../pricing/general-board');
 const investorConfig = require('../pricing/investor-config');
+const sourceMisses = require('../pricing/source-misses');
 /* THE SECOND RATE SHEET. Required here so the bracket loop can hand both clients to
    `generalBoard`; it is never called unless an investor is routed to it, and a portal
    with no credentials simply refuses, which leaves the board Lender Price's alone —
@@ -351,6 +352,11 @@ async function priceBrackets(req, res) {
     lenderprice: { answered: false, keys: new Set() },
     loannex: { answered: false, keys: new Set() },
   };
+  /* WHO THE SECOND SHEET WAS EXPECTED TO CARRY AND DID NOT. Unioned across the bands for
+     the same reason the sightings are: an investor that answers in one band and not another
+     is carried, and reporting the narrow band as a miss would file a review nobody can act
+     on. Recorded once, after the search. */
+  const missedKeys = new Set();
 
   const runSearch = async (dscr) => {
     // A null ratio is the officer's own scenario, untouched — the probe.
@@ -367,6 +373,7 @@ async function priceBrackets(req, res) {
       sighted[src].answered = true;
       for (const k of o.keys || []) sighted[src].keys.add(k);
     }
+    for (const k of r.missing || []) missedKeys.add(k);
     /* ⛔ THE FULL PARSE, NOT THE SUMMARY — done inside `boardForScenario`, which returns
        the same `parseFull` answer with only its programme list replaced. A band has to
        render with the SAME code the whole board renders with (the owner: *"Every rate and
@@ -412,6 +419,31 @@ async function priceBrackets(req, res) {
     lenderprice: { answered: sighted.lenderprice.answered, keys: [...sighted.lenderprice.keys] },
     loannex: { answered: sighted.loannex.answered, keys: [...sighted.loannex.keys] },
   }, { staffId: (req.actor && req.actor.id) || null });
+
+  /* AN INVESTOR THE SECOND SHEET DID NOT CARRY IS LEFT OFF THE BOARD SILENTLY AND
+     RECORDED HERE (owner-directed 2026-09-03: the miss is left out silently and the super
+     admin is emailed, plus a manual review section recording the scenario, which investor
+     was missed, and whether the other sheet had it).
+
+     Silently, because once an investor is switched over the other sheet's copy of its
+     pricing is second-hand — showing it would be quoting a sheet we have stopped trusting
+     for that investor.
+
+     The band loop only ever adds a key when that sheet ANSWERED (the board returns an
+     empty `missing` for a sheet that refused), so one outage can never file forty reviews.
+     Best-effort throughout: the officer's board has already been built. */
+  if (missedKeys.size) {
+    await sourceMisses.record(
+      [...missedKeys].map((key) => ({
+        key,
+        /* Did the OTHER sheet have them? The owner's own question, and the one that tells
+           'the second sheet is having a bad day' apart from 'this investor has no product
+           for this loan'. Only answerable when that sheet actually answered. */
+        otherSourceHad: sighted.lenderprice.answered ? sighted.lenderprice.keys.has(key) : null,
+      })),
+      { source: 'loannex', scenario: sc, note: 'The second rate sheet answered this search and did not carry this investor.' },
+    );
+  }
 
   if (!out.ok) {
     // A refusal here is about the DEAL (not enough figures to bracket by) or the

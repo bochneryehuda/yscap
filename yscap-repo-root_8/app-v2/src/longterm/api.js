@@ -307,6 +307,16 @@ export const ltApi = {
   sourceLinkSuggest: (name) => ltGet(lt(`/dscr/investor-sources/investor-links/suggest?name=${encodeURIComponent(name)}`)),
   sourceCustomInvestors: () => ltGet(lt('/dscr/investor-sources/custom-investors')),
   sourceSaveCustomInvestors: (investors) => ltPut(lt('/dscr/investor-sources/custom-investors'), { investors }),
+  /**
+   * THE MISSING-INVESTOR REVIEW — the record behind the silence on the board.
+   *
+   * When the second rate sheet answers a search and does not carry an investor the settings
+   * point at it, that investor is left off the board with nothing said (owner-directed
+   * 2026-09-03), the super admin is emailed, and the search is recorded here so the cause can
+   * be dug into. A free read of our own server — it prices nothing.
+   */
+  sourceMisses: (openOnly) => ltGet(lt(`/dscr/investor-sources/misses${openOnly ? '?open=1' : ''}`)),
+  sourceReviewMiss: (id, body) => ltPut(lt(`/dscr/investor-sources/misses/${encodeURIComponent(id)}`), body || {}),
   // THE SIGNED-IN PERSON'S OWN SAVED SCENARIOS (owner-directed 2026-08-31). A
   // scenario is INPUTS — never a price — so none of these calls asks Lender Price
   // anything: re-running a saved scenario goes back through `dscrPrice` like any
