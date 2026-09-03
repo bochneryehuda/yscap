@@ -76,6 +76,235 @@ const linksRaw = () => investorConfig.linksRaw();
 const customRaw = () => investorConfig.customRaw();
 
 /**
+ * ⛔ THE SETTINGS SCREEN'S WHOLE PAYLOAD — ONE DEFINITION, ANSWERED BY THE READ
+ * AND BY EVERY WRITE THAT LANDS ON IT.
+ *
+ * The GET built this inline and the PUT answered `describeSettings` alone, so a
+ * successful save answered a DIFFERENT screen from the one it had just changed:
+ * the FULL 43-row registry instead of the owner's ~26-row list, summary counts
+ * over the whole roster, and no `availability`, `lockedOut`, `carriesSetting`,
+ * `connections`, `lastAnswered`, `hidden` or `sightings` at all. A screen that
+ * installed that answer would show a save visibly DEGRADING it — more rows than
+ * it is meant to draw, an empty "Available on" column, and buttons the register
+ * had locked going live again.
+ *
+ * The screen worked around it by throwing the answer away and re-reading. That
+ * is a workaround, not a fix: it costs a second round trip, it leaves a
+ * successful save reporting an error when only the re-read fails, and it leaves
+ * the trap armed for the next caller. So the payload is built HERE, once, and
+ * every door that answers about these settings returns it.
+ *
+ * ⛔ IT IS A FUNCTION SO A TEST CAN RUN IT. A regex over the route bodies can
+ * only ever pin how the answer is SPELLED — this repo has had four guards of
+ * exactly that shape defeated while the defect was fully restored. `_internals`
+ * exports it so the two doors' answers can be compared key for key.
+ */
+async function investorsBody() {
+  const src = await settingsRaw();
+  const c = await customRaw();
+  const sight = await investorConfig.sightingsRaw();
+  const d = routing.describeSettings(src.raw, { origin: src.origin, custom: c.custom });
+  /**
+   * WHICH RATE SHEET HAS ACTUALLY PRODUCED THIS INVESTOR — measured, never typed
+   * (owner-directed 2026-09-03: *"which systems that investor is available on"*, and
+   * *"the other option is locked out, but the investor can always be turned off"*).
+   *
+   * ⛔ THE LOCK IS THE ANSWER'S, NOT THE SCREEN'S. A browser deciding for itself which
+   * button to grey out would be a second copy of the rule, free to disagree with the
+   * board; `sightings.availabilityFor` states the three answers and the row carries
+   * `lockedOut` already resolved. `off` is never in that list — the owner's rule is
+   * that an investor can always be turned off, whatever the register says.
+   */
+  const investorsWithAvailability = d.investors.map((r) => {
+    const availability = sightings.availabilityFor(r.key, sight);
+    /* The source THIS investor is set to is passed so it can never be locked out —
+       a row routed to LoanNEX whose LoanNEX button is dead cannot be re-routed or
+       turned off and back on, and reads as a broken screen. */
+    return {
+      ...r,
+      availability,
+      lockedOut: sightings.lockedOutFor(r.key, sight, r.source),
+      /* WHETHER THIS ROW CARRIES A SETTING SOMEBODY SAVED — answered HERE, by the
+         one definition, so the screen's "use the pre-fill" control and the rule that
+         KEEPS the row on this list can never disagree about the same row. */
+      carriesSetting: investorSettings.carriesOwnSetting(r),
+    };
+  });
+  /**
+   * THE OWNER'S LIST, NOT OUR WHOLE REGISTRY (owner-reported 2026-09-03: *"the list of
+   * lenders that I put in my settings is way bigger than the list I gave you… I gave you
+   * a list only of ones that have white-labeled names"*).
+   *
+   * The rule lives in `investorSettings.belongsOnSettingsList` — one definition, with the
+   * reasoning — and is applied HERE rather than inside `roster()` on purpose: the board
+   * builds `expectedFromLoanNex` from the full roster, so narrowing that would change
+   * which investors it expects and reports as missing. This narrows the SCREEN only.
+   *
+   * A new investor a rate sheet has actually produced still comes through, off and
+   * unnamed, which is the case the owner asked for by name.
+   */
+  const shown = investorsWithAvailability.filter(
+    (r) => investorSettings.belongsOnSettingsList(r, r.availability),
+  );
+  /**
+   * WHY AN INVESTOR SET TO A RATE SHEET MIGHT NOT REACH THE BOARD AT ALL.
+   *
+   * The pricing page stays silent about a missing investor by the owner's own
+   * direction; this is the screen where that silence is answerable. Counted
+   * over the rows ACTUALLY SHOWN so the sentence and the list agree — a
+   * message reading "6 investors" above five countable rows is the same
+   * self-contradiction the summary block above was fixed for.
+   */
+  const connections = sheetConnection.connectionsFor(
+    sheetConfigured(), sheetConnection.routedCounts(shown),
+  );
+  /* WHEN EACH SHEET LAST ACTUALLY ANSWERED. `configured()` reads the
+     ENVIRONMENT, so a login that is set but WRONG reports connected and still
+     produces nothing; this is the fact that tells those two apart. Read from
+     the register the board already writes — nothing new is recorded. */
+  const lastAnswered = sheetConnection.lastAnsweredAll(sight && sight.boards);
+  return {
+    ...d,
+    investors: shown,
+    connections,
+    lastAnswered,
+    /* THE COUNTS DESCRIBE WHAT IS ON SCREEN. `describeSettings` totals the whole roster,
+       so spreading it unchanged beside a narrowed list would print "43" above 26 rows and
+       make the screen contradict itself. */
+    summary: {
+      ...d.summary,
+      total: shown.length,
+      on: shown.filter((r) => r.enabled).length,
+      off: shown.filter((r) => !r.enabled).length,
+      fromLenderPrice: shown.filter((r) => r.enabled && r.source === 'lenderprice').length,
+      fromLoanNex: shown.filter((r) => r.enabled && r.source === 'loannex').length,
+      fromBoth: shown.filter((r) => r.enabled && r.source === 'both').length,
+      missingWhiteLabel: shown.filter((r) => r.whiteLabelMissing).length,
+      custom: shown.filter((r) => r.custom).length,
+      withExtraHoldback: shown.filter((r) => r.holdbackOrigin === 'setting' && r.holdback !== 0).length,
+    },
+    /* What the screen is NOT showing, and why — so an empty-looking list is never a
+       mystery and nobody goes hunting for an investor that is deliberately absent. */
+    hidden: {
+      count: investorsWithAvailability.length - shown.length,
+      reason: 'no white-label name, never seen on a rate sheet, and no setting of its own',
+    },
+    /* Said plainly so a screen can explain an empty column rather than reading a
+       cold register as "this investor is on nothing". */
+    sightings: {
+      boards: sight.boards,
+      known: Object.keys(sight.investors || {}).length,
+      problem: sight.problem || null,
+    },
+    customInvestors: { count: c.custom.size, problems: c.problems, problem: c.problem },
+    // The ones with no client-safe name yet, named out loud so somebody can
+    // go and name them — an investor with no white label may never be put in
+    // front of a borrower or a broker.
+    needsWhiteLabel: shown.filter((r) => r.whiteLabelMissing).map((r) => ({ key: r.key, investor: r.label })),
+    storedProblem: src.problem || null,
+  };
+}
+
+/**
+ * THE LINKS SCREEN'S WHOLE PAYLOAD — same rule as `investorsBody` above, and for
+ * the same reason: the write answered `{saved, links}` alone, so a screen that
+ * installed it lost the pick-list it draws the "link this to that" control from
+ * and the count it prints. One definition, both doors.
+ */
+async function linksBody() {
+  const cur = await linksRaw();
+  const c = await customRaw();
+  return {
+    links: cur.raw,
+    linkCount: Object.keys(cur.raw || {}).length,
+    problem: cur.problem || null,
+    /**
+     * THE PICK-LIST, A TO Z (owner-directed 2026-09-02: *"the list should be
+     * alphabetical so I can find a name"*).
+     *
+     * It was ordered by how often the registry had SEEN each investor, which
+     * puts the common ones on top and leaves everything else in an order
+     * nobody can predict — on a list of forty-odd names, hunting. Sorted here
+     * as well as on the screen so the answer is already in order for anything
+     * that renders it without sorting.
+     *
+     * The list is the EFFECTIVE roster, so an investor somebody added by hand
+     * is linkable the moment it exists.
+     */
+    investors: roster.effectiveList(c.custom)
+      .map((i) => ({
+        key: i.key,
+        label: i.label,
+        whiteLabel: whiteLabelOf(i.key, c.custom) || null,
+        custom: i.custom === true,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+    customInvestors: { count: c.custom.size, problems: c.problems, problem: c.problem },
+  };
+}
+
+/**
+ * THE HAND-ADDED INVESTORS' WHOLE PAYLOAD — one definition, both doors.
+ *
+ * The write built this list a SECOND time, inline, byte-identical to the read's
+ * on the day it was written. Two copies of one answer is how a screen ends up
+ * showing one thing after a save and another after a refresh.
+ */
+async function customInvestorsBody() {
+  const c = await customRaw();
+  return {
+    investors: c.raw,
+    count: c.custom.size,
+    list: [...c.custom.values()]
+      .map((e) => ({
+        key: e.key,
+        label: e.label,
+        whiteLabel: e.whiteLabel || null,
+        aliases: e.aliases.slice(),
+        addedBy: e.addedBy || null,
+        addedAt: e.addedAt || null,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+    problems: c.problems,
+    problem: c.problem || null,
+    // Every key already in use, registry and hand-added together, so the form
+    // can say "that key is taken" before anybody presses save.
+    keysInUse: roster.effectiveList(c.custom).map((i) => i.key),
+  };
+}
+
+/**
+ * THE MARGIN HOLDBACK'S WHOLE PAYLOAD — one definition, the read and both write
+ * branches.
+ *
+ * ⛔ THIS ONE WAS VISIBLY BROKEN, not merely a trap for a future caller. The
+ * screen installs the write's answer (`setHb(r)`) and renders `hb.note`, and
+ * the write answered every field EXCEPT `note` — so the sentence explaining
+ * that Lender Price is absent because its feed already carries our holdback
+ * VANISHED from the screen the moment anybody saved, and stayed gone until the
+ * page was reloaded. The fallback beside it could not help: `hb` is truthy, so
+ * the ternary took the missing value rather than the default.
+ *
+ * SYNCHRONOUS AND PURE — it is handed the value to resolve rather than reading
+ * the store, so a write reports what it just saved rather than racing a second
+ * read against a concurrent one.
+ */
+function holdbackBody(saved) {
+  const r = vendorMargin.resolveHoldback('loannex', saved);
+  return {
+    points: r.points,
+    origin: r.origin,
+    problem: r.problem,
+    prefill: vendorMargin.holdbackFor('loannex'),
+    max: vendorMargin.MAX_HOLDBACK_POINTS,
+    // Stated rather than left to be inferred: the OTHER program is not
+    // configurable here, and the reason is a fact about its feed.
+    note: 'Held back on every LoanNEX quote before the two programs are compared. Lender Price is not '
+      + 'listed because its feed already carries our holdback — taking it again there would double it.',
+  };
+}
+
+/**
  * Mount the four settings doors onto a router.
  *
  * @param {import('express').Router} router  the router to attach them to
@@ -93,20 +322,7 @@ function attach(router) {
    * remember it — the same rule the investor rows follow.
    */
   router.get('/margin-holdback', async (req, res) => {
-    const saved = await holdbackRaw();
-    const r = vendorMargin.resolveHoldback('loannex', saved);
-    res.json({
-      ok: true,
-      points: r.points,
-      origin: r.origin,
-      problem: r.problem,
-      prefill: vendorMargin.holdbackFor('loannex'),
-      max: vendorMargin.MAX_HOLDBACK_POINTS,
-      // Stated rather than left to be inferred: the OTHER program is not
-      // configurable here, and the reason is a fact about its feed.
-      note: 'Held back on every LoanNEX quote before the two programs are compared. Lender Price is not '
-        + 'listed because its feed already carries our holdback — taking it again there would double it.',
-    });
+    res.json({ ok: true, ...holdbackBody(await holdbackRaw()) });
   });
 
   /**
@@ -130,8 +346,7 @@ function attach(router) {
       } catch (e) {
         return res.status(500).json({ ok: false, error: 'save_failed', message: reasonOf(e) });
       }
-      const r = vendorMargin.resolveHoldback('loannex', undefined);
-      return res.json({ ok: true, points: r.points, origin: r.origin, problem: null, prefill: vendorMargin.holdbackFor('loannex'), max: vendorMargin.MAX_HOLDBACK_POINTS });
+      return res.json({ ok: true, ...holdbackBody(undefined) });
     }
     const check = vendorMargin.resolveHoldback('loannex', raw);
     if (check.problem) {
@@ -142,113 +357,11 @@ function attach(router) {
     } catch (e) {
       return res.status(500).json({ ok: false, error: 'save_failed', message: reasonOf(e) });
     }
-    res.json({ ok: true, points: check.points, origin: check.origin, problem: null, prefill: vendorMargin.holdbackFor('loannex'), max: vendorMargin.MAX_HOLDBACK_POINTS });
+    res.json({ ok: true, ...holdbackBody(check.points) });
   });
 
   router.get('/investors', async (req, res) => {
-    const src = await settingsRaw();
-    const c = await customRaw();
-    const sight = await investorConfig.sightingsRaw();
-    const d = routing.describeSettings(src.raw, { origin: src.origin, custom: c.custom });
-    /**
-     * WHICH RATE SHEET HAS ACTUALLY PRODUCED THIS INVESTOR — measured, never typed
-     * (owner-directed 2026-09-03: *"which systems that investor is available on"*, and
-     * *"the other option is locked out, but the investor can always be turned off"*).
-     *
-     * ⛔ THE LOCK IS THE ANSWER'S, NOT THE SCREEN'S. A browser deciding for itself which
-     * button to grey out would be a second copy of the rule, free to disagree with the
-     * board; `sightings.availabilityFor` states the three answers and the row carries
-     * `lockedOut` already resolved. `off` is never in that list — the owner's rule is
-     * that an investor can always be turned off, whatever the register says.
-     */
-    const investorsWithAvailability = d.investors.map((r) => {
-      const availability = sightings.availabilityFor(r.key, sight);
-      /* The source THIS investor is set to is passed so it can never be locked out —
-         a row routed to LoanNEX whose LoanNEX button is dead cannot be re-routed or
-         turned off and back on, and reads as a broken screen. */
-      return {
-        ...r,
-        availability,
-        lockedOut: sightings.lockedOutFor(r.key, sight, r.source),
-        /* WHETHER THIS ROW CARRIES A SETTING SOMEBODY SAVED — answered HERE, by the
-           one definition, so the screen's "use the pre-fill" control and the rule that
-           KEEPS the row on this list can never disagree about the same row. */
-        carriesSetting: investorSettings.carriesOwnSetting(r),
-      };
-    });
-    /**
-     * THE OWNER'S LIST, NOT OUR WHOLE REGISTRY (owner-reported 2026-09-03: *"the list of
-     * lenders that I put in my settings is way bigger than the list I gave you… I gave you
-     * a list only of ones that have white-labeled names"*).
-     *
-     * The rule lives in `investorSettings.belongsOnSettingsList` — one definition, with the
-     * reasoning — and is applied HERE rather than inside `roster()` on purpose: the board
-     * builds `expectedFromLoanNex` from the full roster, so narrowing that would change
-     * which investors it expects and reports as missing. This narrows the SCREEN only.
-     *
-     * A new investor a rate sheet has actually produced still comes through, off and
-     * unnamed, which is the case the owner asked for by name.
-     */
-    const shown = investorsWithAvailability.filter(
-      (r) => investorSettings.belongsOnSettingsList(r, r.availability),
-    );
-    /**
-     * WHY AN INVESTOR SET TO A RATE SHEET MIGHT NOT REACH THE BOARD AT ALL.
-     *
-     * The pricing page stays silent about a missing investor by the owner's own
-     * direction; this is the screen where that silence is answerable. Counted
-     * over the rows ACTUALLY SHOWN so the sentence and the list agree — a
-     * message reading "6 investors" above five countable rows is the same
-     * self-contradiction the summary block above was fixed for.
-     */
-    const connections = sheetConnection.connectionsFor(
-      sheetConfigured(), sheetConnection.routedCounts(shown),
-    );
-    /* WHEN EACH SHEET LAST ACTUALLY ANSWERED. `configured()` reads the
-       ENVIRONMENT, so a login that is set but WRONG reports connected and still
-       produces nothing; this is the fact that tells those two apart. Read from
-       the register the board already writes — nothing new is recorded. */
-    const lastAnswered = sheetConnection.lastAnsweredAll(sight && sight.boards);
-    res.json({
-      ok: true, ...d,
-      investors: shown,
-      connections,
-      lastAnswered,
-      /* THE COUNTS DESCRIBE WHAT IS ON SCREEN. `describeSettings` totals the whole roster,
-         so spreading it unchanged beside a narrowed list would print "43" above 26 rows and
-         make the screen contradict itself. */
-      summary: {
-        ...d.summary,
-        total: shown.length,
-        on: shown.filter((r) => r.enabled).length,
-        off: shown.filter((r) => !r.enabled).length,
-        fromLenderPrice: shown.filter((r) => r.enabled && r.source === 'lenderprice').length,
-        fromLoanNex: shown.filter((r) => r.enabled && r.source === 'loannex').length,
-        fromBoth: shown.filter((r) => r.enabled && r.source === 'both').length,
-        missingWhiteLabel: shown.filter((r) => r.whiteLabelMissing).length,
-        custom: shown.filter((r) => r.custom).length,
-        withExtraHoldback: shown.filter((r) => r.holdbackOrigin === 'setting' && r.holdback !== 0).length,
-      },
-      /* What the screen is NOT showing, and why — so an empty-looking list is never a
-         mystery and nobody goes hunting for an investor that is deliberately absent. */
-      hidden: {
-        count: investorsWithAvailability.length - shown.length,
-        reason: 'no white-label name, never seen on a rate sheet, and no setting of its own',
-      },
-      /* Said plainly so a screen can explain an empty column rather than reading a
-         cold register as "this investor is on nothing". */
-      sightings: {
-        boards: sight.boards,
-        known: Object.keys(sight.investors || {}).length,
-        problem: sight.problem || null,
-      },
-      customInvestors: { count: c.custom.size, problems: c.problems, problem: c.problem },
-      // The ones with no client-safe name yet, named out loud so somebody can
-      // go and name them — an investor with no white label may never be put in
-      // front of a borrower or a broker.
-      needsWhiteLabel: shown.filter((r) => r.whiteLabelMissing).map((r) => ({ key: r.key, investor: r.label })),
-      storedProblem: src.problem || null,
-    });
+    res.json({ ok: true, ...(await investorsBody()) });
   });
 
   /**
@@ -287,11 +400,10 @@ function attach(router) {
     } catch (e) {
       return res.status(500).json({ ok: false, error: 'save_failed', message: reasonOf(e) });
     }
-    const src = await settingsRaw();
-    const c = await customRaw();
-    const d = routing.describeSettings(src.raw, { origin: src.origin, custom: c.custom });
-    res.json({ ok: true, saved: Object.keys(check.settings).length, ...d,
-      needsWhiteLabel: d.investors.filter((r) => r.whiteLabelMissing).map((r) => ({ key: r.key, investor: r.label })) });
+    /* ⛔ THE SAME PAYLOAD THE READ ANSWERS, so a screen can install this and be
+       showing exactly what it would have re-read. `saved` is the only thing this
+       door adds, and it is the one fact a read cannot carry. */
+    res.json({ ok: true, saved: Object.keys(check.settings).length, ...(await investorsBody()) });
   });
 
   /**
@@ -308,36 +420,7 @@ function attach(router) {
    * screen.
    */
   router.get('/investor-links', async (req, res) => {
-    const cur = await linksRaw();
-    const c = await customRaw();
-    res.json({
-      ok: true,
-      links: cur.raw,
-      linkCount: Object.keys(cur.raw || {}).length,
-      problem: cur.problem || null,
-      /**
-       * THE PICK-LIST, A TO Z (owner-directed 2026-09-02: *"the list should be
-       * alphabetical so I can find a name"*).
-       *
-       * It was ordered by how often the registry had SEEN each investor, which
-       * puts the common ones on top and leaves everything else in an order
-       * nobody can predict — on a list of forty-odd names, hunting. Sorted here
-       * as well as on the screen so the answer is already in order for anything
-       * that renders it without sorting.
-       *
-       * The list is the EFFECTIVE roster, so an investor somebody added by hand
-       * is linkable the moment it exists.
-       */
-      investors: roster.effectiveList(c.custom)
-        .map((i) => ({
-          key: i.key,
-          label: i.label,
-          whiteLabel: whiteLabelOf(i.key, c.custom) || null,
-          custom: i.custom === true,
-        }))
-        .sort((a, b) => a.label.localeCompare(b.label)),
-      customInvestors: { count: c.custom.size, problems: c.problems, problem: c.problem },
-    });
+    res.json({ ok: true, ...(await linksBody()) });
   });
 
   /**
@@ -360,8 +443,7 @@ function attach(router) {
     } catch (e) {
       return res.status(500).json({ ok: false, error: 'save_failed', message: reasonOf(e) });
     }
-    const cur = await linksRaw();
-    res.json({ ok: true, saved: Object.keys(check.links).length, links: cur.raw });
+    res.json({ ok: true, saved: Object.keys(check.links).length, ...(await linksBody()) });
   });
 
 
@@ -375,27 +457,7 @@ function attach(router) {
    * question is answerable on the screen rather than only at the door.
    */
   router.get('/custom-investors', async (req, res) => {
-    const c = await customRaw();
-    res.json({
-      ok: true,
-      investors: c.raw,
-      count: c.custom.size,
-      list: [...c.custom.values()]
-        .map((e) => ({
-          key: e.key,
-          label: e.label,
-          whiteLabel: e.whiteLabel || null,
-          aliases: e.aliases.slice(),
-          addedBy: e.addedBy || null,
-          addedAt: e.addedAt || null,
-        }))
-        .sort((a, b) => a.label.localeCompare(b.label)),
-      problems: c.problems,
-      problem: c.problem || null,
-      // Every key already in use, registry and hand-added together, so the form
-      // can say "that key is taken" before anybody presses save.
-      keysInUse: roster.effectiveList(c.custom).map((i) => i.key),
-    });
+    res.json({ ok: true, ...(await customInvestorsBody()) });
   });
 
   /**
@@ -484,27 +546,11 @@ function attach(router) {
       return res.status(500).json({ ok: false, error: 'save_failed', message: reasonOf(e) });
     }
 
-    const after = await customRaw();
-    res.json({
-      ok: true,
-      saved: Object.keys(clean).length,
-      removed: gone.length,
-      investors: after.raw,
-      count: after.custom.size,
-      list: [...after.custom.values()]
-        .map((e) => ({
-          key: e.key,
-          label: e.label,
-          whiteLabel: e.whiteLabel || null,
-          aliases: e.aliases.slice(),
-          addedBy: e.addedBy || null,
-          addedAt: e.addedAt || null,
-        }))
-        .sort((a, b) => a.label.localeCompare(b.label)),
-      problems: after.problems,
-      problem: after.problem || null,
-      keysInUse: roster.effectiveList(after.custom).map((i) => i.key),
-    });
+    /* ⛔ THE READ'S OWN PAYLOAD, not a second copy of it. This block WAS a
+       second copy — byte-identical on the day it was written, which is exactly
+       how two copies of one answer start. `saved` and `removed` are the only
+       things this door adds. */
+    res.json({ ok: true, saved: Object.keys(clean).length, removed: gone.length, ...(await customInvestorsBody()) });
   });
 
   /**
@@ -564,4 +610,7 @@ function makeRouter() {
   return attach(express.Router());
 }
 
-module.exports = { attach, makeRouter, _internals: { settingsRaw, holdbackRaw, linksRaw, customRaw, reasonOf } };
+module.exports = { attach, makeRouter,
+  /* Exported so the doors' answers can be compared key for key by RUNNING them —
+     a regex over a route body can only ever pin how an answer is spelled. */
+  _internals: { settingsRaw, holdbackRaw, linksRaw, customRaw, reasonOf, investorsBody, linksBody, customInvestorsBody, holdbackBody } };

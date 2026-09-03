@@ -379,8 +379,26 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
      `belongsOnSettingsList`; it asks the shared twin now, which L18..L20 hold to the server. */
   ok(/staysWithoutSetting\(r\)/.test(src) && !/r\.whiteLabel \? '' :/.test(src),
     'J1c …and the warning about leaving the list asks the shared rule, not the name the row shows now');
-  ok(/setEdits\(\{\}\);\s*load\(\);/.test(src),
-    'J2 after saving, the screen RE-READS the server rather than believing its own patch');
+  /**
+   * ⛔ RE-POINTED, NOT LOOSENED (2026-09-03). This asserted the literal
+   * `setEdits({}); load();`, which was ONE SPELLING of the property — the property
+   * itself is that the state after a save comes FROM THE SERVER, never from the
+   * screen's own patch. The write door used to answer a thinner payload than the
+   * read (no `availability`, no `lockedOut`, the whole registry instead of the
+   * owner's list), so re-reading was the only spelling available; it answers the
+   * read's own payload now (`test-lt-settings-doors-answer-pure` runs both doors
+   * and compares them key for key), so installing it is the same property with one
+   * fewer round trip — and it no longer reports an error on a save that WORKED when
+   * only the re-read failed.
+   *
+   * So both spellings are accepted, and what is REFUSED is the screen deriving the
+   * new rows itself.
+   */
+  ok(/setData\(out\);/.test(src) || /setEdits\(\{\}\);\s*load\(\);/.test(src),
+    'J2 after saving, the screen takes the SERVER’s answer — either the write’s own payload or a re-read');
+  ok(/setEdits\(\{\}\);/.test(src), 'J2a …and the form’s pending edits are cleared either way');
+  ok(!/setData\(\{\s*\.\.\.data/.test(src) && !/setData\(\(d\)/.test(src),
+    '⛔ J2b …and NEVER a row set the screen computed for itself — believing its own patch is the thing this forbids');
   /* Scoped to the FILTER, not the file: `sourceOrigin === 'setting'` is also read by
      `patchOf`, where it is CORRECT (the whole map is sent on every save, so a row carrying a
      stored setting must re-state it). A guard written over the whole file would forbid the
