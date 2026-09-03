@@ -72,6 +72,17 @@ function getPool() {
     max: POOL_MAX,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: CONNECT_MS,
+    // "When every client is idle, do not hold the process open." A pooled Postgres
+    // socket is a live TCP handle, and this pool's 30s idle window is longer than
+    // the interval on which anything re-queries it — so without this, a script or a
+    // test that touches a dashboard pays a 30-second exit tax, and one that
+    // re-queries inside that window never exits at all. That is the sixty-minute CI
+    // hang, verbatim; it was fixed for the two pools created at require time and
+    // this one was left, because it is built LAZILY on first use and no guard had
+    // ever made a request that reached it (pre-merge audit 2026-09-03: measured
+    // 30.09s to exit after a single query, against 0.07s with this set).
+    // On the live server it changes nothing — the HTTP listener holds the process.
+    allowExitOnIdle: true,
     // Shows up in pg_stat_activity, so "what is hammering the database" is answerable
     // without guessing.
     application_name: 'pilot-dashboards',

@@ -260,8 +260,13 @@ router.use('/ppe', require('./routes/ppe'));
 //
 // ON by default since 2026-08-23 (`LT_SYNC_ENABLED=0` turns it off), and it says so
 // in the log either way — this said "OFF by default … starts no timers and reads
-// nothing", which `sync/worker.js` has contradicted since that date and which every
-// child of `test-lt-pool-exit-db` disproves out loud with its `[lt-sync] on` line.
+// nothing", which `sync/worker.js` has contradicted since that date and which the
+// children of `test-lt-pool-exit-db` that REACH THIS FILE disprove out loud with
+// their `[lt-sync] on` line. That is children 3 and 4; children 1 and 2 require
+// `longterm/db` and `longterm/settings/store` directly and never load the worker
+// at all (measured: 0 `lt-sync` lines each). An earlier draft of this sentence
+// said "every child" — the same over-quantification the commit that wrote it was
+// correcting one file away, caught by the pre-merge audit.
 // The timers it arms are `unref`'d, so requiring this module still lets a test or a
 // script exit; what it does NOT do is stay silent.
 require('./sync/worker').start();

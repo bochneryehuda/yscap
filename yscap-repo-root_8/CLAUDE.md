@@ -171,12 +171,19 @@ assert a round trip now carry a value only the server could have returned (the b
 settings read awaited through `keepWarm`'s own `ready`). The third child's marker only proves the module
 loaded, which is all an exit test needs from it — an earlier version of this sentence said "each", and a
 later audit showed that child passes with the pool stubbed so no socket ever opens. KNOWN AND DELIBERATELY NOT FIXED HERE:
-`src/db.js` (RTL's pool) and `src/lib/dashboards/run.js` have the identical shape and are unguarded —
-they do not bite today, and THE REASON I FIRST WROTE DOWN WAS FALSE. It said "nothing re-queries them
+`src/db.js` (RTL's pool) has the identical shape and is unguarded —
+it does not bite today, and THE REASON I FIRST WROTE DOWN WAS FALSE. It said "nothing re-queries them
 on an unref'd timer faster than their 30s idle window". Two things do: `src/lib/flags.js:24,75` re-reads
 `integration_flags` every **20 seconds** on an `unref`'d interval through `require('../db')` — the
 incident verbatim, on RTL's unguarded pool — and `src/pipeline/worker.js:116-117` ticks every **3
-seconds** with the same pool handed to it at `src/server.js:1554`. THE REAL REASON is narrower and more
+seconds** with the same pool handed to it at `src/server.js:1554`, THOUGH ONLY WHEN `UW_WORKER_ENABLED`
+is set: `src/config.js:1117` defaults it OFF and `src/pipeline/worker.js:95` returns before ever arming
+the timer, so on a default deployment `flags.js` is the only one of the two that actually ticks. (That
+qualifier was missing, which made the sentence read as two live hazards where there is one — the same
+mistake, in the same paragraph, as the false reason it was written to correct.)
+`src/lib/dashboards/run.js` was in this list too and IS NOW GUARDED: it builds its pool lazily on first
+use, so no child that merely requires modules could ever see it, and a single query through it held the
+process for a measured 30.09 s. It carries `allowExitOnIdle` as of 2026-09-03. THE REAL REASON is narrower and more
 fragile than what I wrote: both are armed only BELOW `if (require.main === module)` (`src/server.js:887`;
 flags at `:1540`, pipeline at `:1554`), so they run only in a process an HTTP listener already holds
 open — or in `src/worker.js`, which carries a deliberately ref'd keepalive. Measured: `node -e

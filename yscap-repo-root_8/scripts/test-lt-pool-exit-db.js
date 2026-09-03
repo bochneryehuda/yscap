@@ -66,7 +66,20 @@
  * described that way and was not, because the application requires
  * `src/server.js`, not `src/longterm/index.js`. Case 4 boots the server and serves
  * a request, which is the only way to catch a pool built on FIRST USE rather than
- * at require time — the shape `src/lib/dashboards/run.js` already has.
+ * at require time — proven by mutation: a pool built lazily on the request path
+ * leaves this suite at 11/2, and only case 4 is red.
+ *
+ * ⛔ IT COVERS THAT SHAPE ONLY WHERE THE SERVED REQUEST REACHES IT, and this said
+ * flatly that it covered `src/lib/dashboards/run.js`, "the shape it already has".
+ * It did not: case 4 requests `/api/health`, which never calls that module's
+ * `getPool()` (measured: 0 calls during the request), so the named example would
+ * have sailed through at 13/0 — and that pool really did hold the process for 30
+ * seconds after a single query. Naming an example a guard does not cover is how
+ * the last one of these went unfixed for a day. The hazard is now closed at the
+ * pool itself (`allowExitOnIdle`, see that file), which is the fix; case 4 covers
+ * the FAMILY, on whatever the request path touches, which is the guard. Adding a
+ * fifth child per lazily-built pool would be a list to keep in sync, and this
+ * suite exists because such lists are not kept in sync.
  *
  * Each case checks THREE things, because "the child exited" on its own is a
  * result a crash produces too:
@@ -88,6 +101,7 @@
  */
 
 const assert = require('assert');
+const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { skipUnlessDb } = require('./lib/db-gate');
@@ -99,11 +113,22 @@ const ROOT = path.join(__dirname, '..');
 /**
  * The budget.
  *
- * A correctly-behaving child exits as soon as its query settles — measured at
- * well under two seconds on CI-sized hardware. Twenty seconds is chosen to be
- * far above that and still far below `keepWarm`'s own fifteen-second steady
- * interval doubled, so a child that is genuinely held open cannot slip through
- * by getting lucky with timer alignment.
+ * A correctly-behaving child exits as soon as its work settles. The three that
+ * only require a module do so in well under a second (73–642 ms measured). THE
+ * FOURTH DOES NOT: it boots the server, listens, and serves a real request, and
+ * that costs 3.4–3.8 seconds on an idle machine with a local Postgres. Twenty
+ * seconds is chosen to be far above the slowest of them and still far below
+ * `keepWarm`'s own fifteen-second steady interval doubled, so a child that is
+ * genuinely held open cannot slip through by getting lucky with timer alignment.
+ *
+ * ⛔ THE FLOOR WAS 2000 AND THIS PARAGRAPH STILL SAID "well under two seconds"
+ * AFTER THE FOURTH CHILD LANDED — so the smallest budget the clamp would accept
+ * was RED ON A CLEAN TREE (`LT_POOL_EXIT_BUDGET_MS=2000` → the boot child killed
+ * at 2010 ms, 11 passed / 2 failed). A guard whose own permitted range contains a
+ * false failure teaches the reader to widen the budget, which is the one thing
+ * the clamp exists to prevent. The floor is now 8000: comfortably above the
+ * slowest healthy child with room for a loaded CI runner, and still an order of
+ * magnitude below the sixty-minute hang.
  */
 const BUDGET_MS = (() => {
   const raw = Number(process.env.LT_POOL_EXIT_BUDGET_MS || 20000);
@@ -112,7 +137,7 @@ const BUDGET_MS = (() => {
   // exited" back into the sixty-minute hang this suite exists to catch, with a
   // green step until the job itself dies. The floor stops the opposite mistake.
   if (!Number.isFinite(raw)) return 20000;
-  return Math.min(120000, Math.max(2000, Math.trunc(raw)));
+  return Math.min(120000, Math.max(8000, Math.trunc(raw)));
 })();
 
 let PASS = 0;
@@ -156,6 +181,58 @@ function runChild(body, budgetMs) {
   await skipUnlessDb('lt-pool-exit');
 
   try {
+    // ---- 0. EVERY POOL IN THE PRODUCT IS ACCOUNTED FOR ---------------------
+    // The header above explains why this suite is behavioural and not a grep, and
+    // that still holds: a string check cannot tell a live option from a renamed,
+    // mis-spelled or dead one, and none of the children below is replaced by this.
+    //
+    // But a behavioural child only ever sees the pools its own require graph and
+    // its one request actually touch, and `src/lib/dashboards/run.js` proved that
+    // is not all of them — it builds its pool on FIRST USE, no child reached it,
+    // and it held a process for a measured 30.09 s after a single query while this
+    // suite sat at 13/0 (pre-merge audit 2026-09-03). The children answer "can a
+    // process that has finished its work finish"; this answers the different
+    // question "is there a pool nobody has thought about", which is the one that
+    // let that hole exist. A new pool added tomorrow is caught here on the day it
+    // is written rather than on the day somebody notices CI is slow.
+    //
+    // `src/db.js` IS THE ONE EXCEPTION, and it is named rather than pattern-matched
+    // away, with the reason it is safe written next to it — a reason that has
+    // already been wrong once (see CLAUDE.md).
+    const POOL_EXCEPTIONS = {
+      'src/db.js':
+        "RTL's pool. Everything that re-queries it on a sub-30s unref'd timer "
+        + '(`src/lib/flags.js`, `src/pipeline/worker.js`) is armed only below '
+        + "`if (require.main === module)` in `src/server.js`, so it runs only where an "
+        + 'HTTP listener already holds the process open. Narrow and fragile: calling '
+        + '`flags.start()` from any script reproduces the sixty-minute hang.',
+    };
+    {
+      const walk = (dir, out = []) => {
+        for (const e of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+          const rel = dir + '/' + e.name;
+          if (e.isDirectory()) { walk(rel, out); continue; }
+          if (e.name.endsWith('.js')) out.push(rel);
+        }
+        return out;
+      };
+      const sites = walk('src').filter((f) => /new Pool\(/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
+      ok(sites.length >= 3, `every pool in src/ is found and checked (${sites.length}: ${sites.join(', ')})`);
+      for (const f of sites) {
+        const src = fs.readFileSync(path.join(ROOT, f), 'utf8')
+          .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+        const guarded = /allowExitOnIdle\s*:\s*true/.test(src);
+        const excused = Object.prototype.hasOwnProperty.call(POOL_EXCEPTIONS, f);
+        ok(guarded || excused,
+          `${f} either releases the process when idle, or is a NAMED exception with its reason written down`);
+        ok(!(guarded && excused),
+          `${f} is not both guarded and excused — an exception that no longer applies is a stale reason somebody will trust`);
+      }
+      for (const f of Object.keys(POOL_EXCEPTIONS)) {
+        ok(sites.includes(f), `the named exception ${f} still creates a pool — a stale entry would excuse a file that moved`);
+      }
+    }
+
     // ---- 1. THE MECHANISM, MINIMAL -----------------------------------------
     // Long-Term's pool, one query, then a repeating re-query on an `unref`'d
     // timer — the shape `keepWarm` has, with the cadence tightened so the test
