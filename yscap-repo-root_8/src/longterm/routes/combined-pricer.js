@@ -83,7 +83,7 @@ const investorLinks = require('../pricing/investor-links');
 // second list this route keeps for itself.
 const { whiteLabelOf } = require('../lenderprice/investor-programs');
 const quoteShape = require('../pricing/quote-shape');
-const productFilter = require('../pricing/product-filter');
+const loannexHalf = require('../pricing/loannex-half');
 const breakdown = require('../pricing/breakdown');
 const nearTier = require('../pricing/near-tier');
 const vendorMargin = require('../pricing/vendor-margin');
@@ -361,32 +361,29 @@ async function priceBoth(scenario, opts = {}) {
    * which is the owner's own condition on this filter. It runs HERE, before the holdback, the merge,
    * the routing, the counts and the option shape, so every one of those describes the same board.
    */
-  // ⛔ THE INTEREST-ONLY ANSWER COMES OFF THE REQUEST LENDER PRICE WAS ACTUALLY SENT when the
-  // scenario is silent. The screen omits an OFF switch rather than sending `false` (see
-  // `product-filter.wantFrom`), so without this the LoanNEX board was never narrowed on
-  // interest-only while Lender Price's tenant default already had — one board answering an
-  // amortising question and the other answering none (owner-reported 2026-09-02).
-  //
-  // WHICH REQUEST: the WIRE body `lp.price` hands back (`request`), never only the static build in
-  // `chk.request`. The client builds the body it POSTs on the tenant's LIVE foundation, and
-  // `mergeKnownRequestDefaults` copies same-typed scalars — `criteria.interestOnly` included —
-  // from the live defaultSearch, so the two can disagree. The pre-merge audit (2026-09-02) found
-  // the first cut mirroring the static one: a live default of `true` would have narrowed LoanNEX
-  // to amortising while Lender Price was asked for interest-only. The static build is the
-  // FALLBACK for a Lender Price failure, when there is no wire body to mirror.
-  const wire = lpRes.status === 'fulfilled' && lpRes.value && lpRes.value.request && typeof lpRes.value.request === 'object'
-    ? lpRes.value.request : null;
-  const lpCriteria = (wire && wire.criteria && typeof wire.criteria === 'object') ? wire.criteria
-    : (chk.request && chk.request.criteria);
-  // ⛔ THE RATE LOCK COMES OFF THE BODY ROOT, not off `criteria` — `search-model` writes it to
-  // `dayLocksCriteria` (and `brokerCriteria.dayLocks`) beside `criteria`, never inside it. Same
-  // rule and same fallback as interest-only above: the WIRE body Lender Price actually received,
-  // and the static build only when Lender Price failed and there is no wire body to mirror.
-  const lpRequest = wire || (chk.request && typeof chk.request === 'object' ? chk.request : null);
-  const want = productFilter.wantFrom(sc, lpModel._internals, { lpCriteria, lpRequest });
-  const narrowed = nxRes.status === 'fulfilled'
-    ? productFilter.narrowBoard(nxRes.value.board, want)
-    : null;
+  // ⛔ WHICH REQUEST IS MIRRORED, AND WHAT IS NARROWED TO, IS `pricing/loannex-half.js` — the
+  // SAME function the general engine asks. The rule (`product-filter.wantFrom`) was never the
+  // thing that drifted; the CALLER-SIDE PREAMBLE was, written out once per engine, and the
+  // general one ended up never handing the rule the Lender Price criteria at all — so
+  // interest-only, the term and the rate lock went un-narrowed on that board while the rule
+  // sat there answering correctly about a request it had never seen. One definition now, so a
+  // change to any of it moves both boards or neither.
+  const wire = lpRes.status === 'fulfilled' && lpRes.value ? lpRes.value.request : null;
+  const want = loannexHalf.wantFor(sc, lpModel._internals, {
+    wireRequest: wire,
+    // The static build is the FALLBACK, for the case where Lender Price failed and there is
+    // no wire body to mirror at all.
+    staticRequest: chk.request,
+  });
+  /* THE NARROWING AND THE HOLDBACK, in that order and through the shared door: the narrowing
+     runs before the merge, the routing, the counts and the option shape so every one of those
+     describes the same board, and the holdback goes on before a single number is compared,
+     because Lender Price's feed already carries our margin and LoanNEX's does not. */
+  const nxHalf = loannexHalf.narrowAndHold(
+    nxRes.status === 'fulfilled' && nxRes.value ? nxRes.value.board : null,
+    want,
+    { saved: heldSetting, extraFor },
+  );
   // The wire body was for the narrowing; it is not part of the answer.
   const lpBoard = lpRes.status === 'fulfilled' ? (({ request: _wire, ...rest }) => rest)(lpRes.value) : null;
 
@@ -397,7 +394,7 @@ async function priceBoth(scenario, opts = {}) {
     // Price's feed already carries it and LoanNEX's does not, so this is what
     // puts the two on the same footing; applying it any later would have the
     // comparison electing on one set of numbers and the board showing another.
-    loannex: narrowed ? vendorMargin.applyToBoard(narrowed.board, 'loannex', { saved: heldSetting, extraFor }) : null,
+    loannex: nxHalf.board,
   };
   const errors = {
     lenderprice: lpRes.status === 'rejected' ? reasonOf(lpRes.reason) : null,
@@ -546,13 +543,13 @@ async function priceBoth(scenario, opts = {}) {
      */
     productFilter: {
       asked: want,
-      applied: !!(narrowed && narrowed.narrowed),
-      dropped: narrowed ? narrowed.dropped : { amortization: 0, interestOnly: 0, term: 0, lock: 0 },
+      applied: !!(nxHalf.detail && nxHalf.detail.narrowed),
+      dropped: nxHalf.detail ? nxHalf.detail.dropped : { amortization: 0, interestOnly: 0, term: 0, lock: 0 },
       // The lock removes RUNGS from programmes that stay, so it is reported as its own quantity
       // rather than folded into a programme count that would then not add up.
-      droppedRungs: narrowed ? narrowed.droppedRungs : { lock: 0 },
-      unclassified: narrowed ? narrowed.unclassified : 0,
-      unclassifiedRungs: narrowed ? narrowed.unclassifiedRungs : 0,
+      droppedRungs: nxHalf.detail ? nxHalf.detail.droppedRungs : { lock: 0 },
+      unclassified: nxHalf.detail ? nxHalf.detail.unclassified : 0,
+      unclassifiedRungs: nxHalf.detail ? nxHalf.detail.unclassifiedRungs : 0,
     },
     // The general engine's own top-level keys, so the copied screen needs no
     // reshaping of its own. `investorRoster` / `investorsUnmapped` keep the

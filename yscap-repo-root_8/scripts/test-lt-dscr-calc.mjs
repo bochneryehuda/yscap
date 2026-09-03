@@ -25,11 +25,27 @@ const near = (a, b, eps = 0.005) => a != null && b != null && Math.abs(a - b) <=
 const D = await import(new URL('../app-v2/src/longterm/dscrCalc.js', import.meta.url));
 const server = requireRepo('./src/longterm/encompass/formulas.js');
 
-console.log('\nthe ratio is the tenant\'s own, and the mirror agrees with the server');
+console.log('\nthe ratio is the tenant\'s own — CUT DOWN, never rounded up to meet it');
 
-// ── 1. THE MIRROR vs THE SERVER, over a battery ─────────────────────────────
+/**
+ * ⛔ THIS PAIR ASSERTED EQUALITY WITH THE TENANT'S FIELD AND IS RE-POINTED, NOT LOOSENED.
+ *
+ * The owner, 2026-08-30: *"The DSCR should always be rounded down, and the LTV should
+ * always be rounded up, so we should never see better."* So our figure is DELIBERATELY
+ * not the tenant's: `Round(x, 2)` — Encompass's own `CUST01FV` formula, owner-confirmed
+ * 2026-08-14 and recorded in `formulas.js` as settled knowledge that must not be
+ * re-derived — rounds to NEAREST, and can therefore land a cent ABOVE what the property
+ * actually earns. Ours may never do that.
+ *
+ * The two answer DIFFERENT QUESTIONS and both are right: `computeDscr` answers *"what does
+ * Encompass's field say?"*, which is a fact about a foreign system; ours answers *"what may
+ * we search, show and quote on?"*, which is the owner's rule. What must still hold — and
+ * what the drift this suite exists to catch would break — is the RELATIONSHIP between them:
+ * never above, never more than one cent below, and exactly the raw ratio cut down.
+ */
 {
-  let checked = 0; let disagreed = 0;
+  let checked = 0; let above = 0; let farOff = 0; let notCut = 0;
+  const cutDown = (x) => Math.floor((x * 100) + 1e-9) / 100;
   for (const rent of [0.01, 900, 2450, 2850, 3500, 6000, 12000, 100000]) {
     for (const pitia of [1, 1700.81, 1983.47, 2954.69, 4549.20, 4949.12, 9999.99]) {
       // Drive OUR module through a zero-rate interest-only loan whose P&I is exactly the
@@ -41,23 +57,45 @@ console.log('\nthe ratio is the tenant\'s own, and the mirror agrees with the se
       });
       const theirs = server.computeDscr(rent, pitia);
       checked += 1;
-      if (!near(mine.dscr, theirs, 0.0001)) { disagreed += 1; console.log(`   ${rent}/${pitia}: mine ${mine.dscr} vs server ${theirs}`); }
+      // ⛔ THE ONE THAT MATTERS: a figure ABOVE the tenant's is the owner's "seeing better".
+      if (mine.dscr > theirs + 1e-9) { above += 1; console.log(`   ABOVE ${rent}/${pitia}: mine ${mine.dscr} vs tenant ${theirs}`); }
+      // …and a figure far BELOW it would be a different bug — a cut is one cent, never more.
+      if (theirs - mine.dscr > 0.01 + 1e-9) { farOff += 1; console.log(`   FAR ${rent}/${pitia}: mine ${mine.dscr} vs tenant ${theirs}`); }
+      // And it is the RAW ratio cut down, not the tenant's already-rounded figure cut down —
+      // 0.999 rounds to 1.00 and cutting THAT leaves 1.00, which is exactly the cent this
+      // rule exists to refuse.
+      if (!near(mine.dscr, cutDown(rent / pitia), 1e-9)) { notCut += 1; console.log(`   NOTCUT ${rent}/${pitia}: mine ${mine.dscr} vs cut ${cutDown(rent / pitia)}`); }
     }
   }
-  ok(checked === 56 && disagreed === 0,
-    `M1 the browser mirror and the server agree on all ${checked} ratios`);
+  ok(checked === 56 && above === 0,
+    `M1 over all ${checked} ratios ours is NEVER above the tenant's — the owner's "never see better"`);
+  ok(farOff === 0 && notCut === 0,
+    'M1b …and is exactly the raw ratio cut to the cent, never the tenant\'s rounded figure cut again');
 }
 
-// The owner-verified example rows recorded in formulas.js, recomputed here.
+/* The owner-verified example rows recorded in `formulas.js` — the tenant's OWN stored
+   ratios — with what our rule makes of each. Two of the four differ by a cent, and those
+   two are the rule working: 2850/4549.20 is 0.6265, which Encompass stores as 0.63 and we
+   may not quote as 0.63. Every figure below is computed by hand from the recorded pair,
+   never read off a run. */
 {
-  const rows = [[2450, 1700.81, 1.44], [6000, 4949.12, 1.21], [2850, 4549.20, 0.63], [4575, 1983.47, 2.31]];
-  let good = 0;
-  for (const [rent, pitia, want] of rows) {
+  const rows = [
+    [2450, 1700.81, 1.44, 1.44], // 1.4405 — agrees
+    [6000, 4949.12, 1.21, 1.21], // 1.2123 — agrees
+    [2850, 4549.20, 0.63, 0.62], // 0.6265 — the tenant rounds UP; we may not
+    [4575, 1983.47, 2.31, 2.30], // 2.3066 — the tenant rounds UP; we may not
+  ];
+  let good = 0; let sane = 0;
+  for (const [rent, pitia, tenant, want] of rows) {
     const mine = D.dscrFrom({ loanAmount: 1, ratePct: 0, interestOnly: true, termYears: 30,
       rentMonthly: rent, taxMonthly: pitia, insuranceMonthly: 0, hoaMonthly: 0 });
-    if (mine.dscr === want) good += 1; else console.log(`   ${rent}/${pitia} -> ${mine.dscr}, recorded ${want}`);
+    if (mine.dscr === want) good += 1; else console.log(`   ${rent}/${pitia} -> ${mine.dscr}, expected ${want}`);
+    // A CONTROL on the fixture itself: the tenant's recorded figure must be what
+    // `computeDscr` actually answers, or the row above is being compared to a typo.
+    if (server.computeDscr(rent, pitia) === tenant) sane += 1;
   }
-  ok(good === rows.length, 'M2 …and reproduces every row the tenant\'s own verification recorded');
+  ok(sane === rows.length, 'M2a CONTROL: every recorded row is what the tenant\'s own formula answers');
+  ok(good === rows.length, 'M2 …and ours is each one cut down — never a cent better than the property earns');
 }
 
 // ── 2. THE PAYMENT ──────────────────────────────────────────────────────────

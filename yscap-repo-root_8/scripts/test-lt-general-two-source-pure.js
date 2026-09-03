@@ -592,11 +592,19 @@ const byInvestor = (programs) => {
     /* The module states plainly that the LADDER's own points have NO anchor and would drift,
        and that this is safe only because the door is called once per board per vendor. This
        change added a call, so that count is now pinned rather than assumed. */
-    const gbCalls = (require('fs').readFileSync(path.join(ROOT, 'src/longterm/pricing/general-board.js'), 'utf8')
+    /* ⛔ COUNTED ACROSS BOTH FILES, because the LoanNEX half's call moved into
+       `pricing/loannex-half.js` when that half was lifted out for BOTH engines to share.
+       The property is "once per sheet", not "twice in this file" — so it is counted where
+       each call actually lives, and each file is pinned on its own: a second call added to
+       either one is what would make the ladder's unanchored points drift, and a count of
+       the total alone could be satisfied by 2-and-0. */
+    const callsIn = (rel) => (require('fs').readFileSync(path.join(ROOT, rel), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
       .match(/vendorMargin\.applyToBoard\(/g) || []).length;
-    ok(gbCalls === 2,
-      `HOLD-3b the board applies the holdback exactly ONCE per sheet — two calls, two boards (${gbCalls})`);
+    const gbCalls = callsIn('src/longterm/pricing/general-board.js');
+    const halfCalls = callsIn('src/longterm/pricing/loannex-half.js');
+    ok(gbCalls === 1 && halfCalls === 1,
+      `HOLD-3b the board applies the holdback exactly ONCE per sheet — the Lender Price half here (${gbCalls}), the LoanNEX half in the shared module (${halfCalls})`);
 
     /* THE BOARD MUST ACTUALLY GO THROUGH THAT DOOR — a rule the builder does not call
        is a rule nobody is following, which is exactly what this defect was. */
