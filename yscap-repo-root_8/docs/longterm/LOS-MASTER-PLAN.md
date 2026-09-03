@@ -651,7 +651,7 @@ Every long-term switch was then swept for the same shape. The full result, so no
 | `efolder.writesEnabled` | off | Safe: read by NOTHING in production, so turning it on does nothing. There is no write path to enable, which is the intended state. |
 | `pipeline.inactiveFolders` | empty | Correct: `loadPipeline` reads it once and threads it into both builders, and the configured path is tested. |
 | `LP_DIAG_TOKEN` | unset | Correct: 404s when unset, constant-time compare, all four cases tested on the gate itself. |
-| `LT_SYNC_ENABLED` | off | Correct: on/off word parsing, both passes, one-half-fails, and overlap protection all tested. |
+| `LT_SYNC_ENABLED` | **on** (blank-is-on since `562dff5`, 2026-08-25; `=0` turns it off) | Correct: on/off word parsing, both passes, one-half-fails, and overlap protection all tested. This row said `off` until 2026-09-03. |
 
 The rule that falls out: **a switch is not finished until something has run the side it does not ship
 in.** Four of the six were already fine, which is the point of writing the sweep down rather than the
@@ -1174,9 +1174,14 @@ Writes `lt_loans` and its sections, `lt_loan_contacts`, milestones. Records
 > happened to notice. That is the same "built but never triggered" failure as a mirror with no
 > writer, one level up: every writer existed and nothing ever called them.
 >
-> It is **OFF by default** behind `LT_SYNC_ENABLED`, exactly as `ENCOMPASS_ENABLED` and
-> `CLICKUP_OUTBOUND_ENABLED` gate their own workers — and it SAYS so in the log either way,
-> because a worker that is silently off looks exactly like one that is broken. With the switch
+> It is **ON by default** behind `LT_SYNC_ENABLED`; `LT_SYNC_ENABLED=0` turns it off — and it
+> SAYS which either way in the log, because a worker that is silently off looks exactly like one
+> that is broken. ⛔ This paragraph read "**OFF by default** … exactly as `ENCOMPASS_ENABLED` and
+> `CLICKUP_OUTBOUND_ENABLED` gate their own workers" until 2026-09-03. It was never true —
+> `src/longterm/sync/worker.js` has returned `true` on an unset variable since the day it was
+> added (`562dff5`, 2026-08-25) — and the comparison was wrong too: `ENCOMPASS_ENABLED`'s own
+> master switch is blank-is-ON as well. This document is where a reader checks a claim, so it was
+> the worst of the three places the sentence lived and the last to be fixed. With the switch
 > off it schedules nothing, reads nothing and costs nothing, so it ships to every deployment as
 > it stands and changes none of them. `LT_SYNC_POLL_MIN` (default 20) and
 > `LT_SYNC_FIRST_RUN_SEC` (default 90) tune it.
