@@ -21,9 +21,14 @@ for the speed program is $1 million. Go ahead."* Two things that adds to the rul
   $2.5M for a 4-comp borrower even though Silver's Tier 1 wall is $4.5M. With R11 the Speed wall is
   `min(those two, $1,000,000)`.
 
-**Phase 1 (this PR): the three engine levers of §5.2 are in both copies of both engines, proven
-byte-identical when unset by `scripts/test-speed-levers-pure.js` (in `npm test`); cache-busters
-bumped; CLAUDE.md carries the authorization record.** Phases 2–6 follow §10.
+**Built in full 2026-09-03 (phases 1–6, one PR).** Phase 1: the three engine levers of §5.2, proven
+byte-identical when unset by `scripts/test-speed-levers-pure.js`. Phases 2–6: the composition module
+`web/tools/speed-program.js` with its battery `scripts/test-speed-program-pure.js` (20,746-scenario matrix
+plus a seeded soak mode), the server wiring, the studio card and derivation block, the app screens, the
+docs. **The shipped record is `docs/SPEED-PROGRAM.md`** — including two mechanisms the soak found that this
+research did not foresee: a parent's own FLOOR on the initial (Standard's judicial $20k down payment) and a
+gate that passes on the 10% basis but fails on the parent's own 15% basis (Silver's value-add gate), both now
+part of the composition.
 
 **Product: RTL.** The Speed Program is a fourth registerable RTL pricing program beside Standard,
 Gold and Silver. It touches nothing on the Long-Term side.

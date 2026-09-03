@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { PROGRAM_SHORT } from '../lib/programLabel.js';
 
 /* Pricing Admin Center (super admin / manage_pricing capability).
  *
@@ -20,15 +21,26 @@ import { useAuth } from '../lib/auth.jsx';
 // camelCase keys shared by GET .current / .systemDefaults and the PUT body.
 const KEYS = ['markupStdPct', 'markupGoldPct', 'markupSilverPct', 'origStdPct', 'origGoldPct', 'origSilverPct', 'lenderFee', 'creditFee', 'appraisalFee', 'titleFee'];
 
+// THE MARKETED PROGRAMS, and which of them carry pricing knobs. ONE list drives
+// three things — the program ON/OFF switches, the discontinued-note default and
+// the history's "Programs off" column for every program, and the markup-tier grids
+// for the `hasKnobs` ones only. Speed (2026-09-03) is the composition of Standard
+// and Silver: it inherits BOTH programs' markup and origination through the
+// composition and has no knob, sticky per-file markup or column of its own (owner
+// decision), so it is switchable here and priceable nowhere on this screen. Two
+// hand-kept lists — one for the switches, one for the grid — is exactly how a
+// program ends up togglable but unpriceable, or the reverse; hence one list + a flag.
+export const PROGRAMS = [
+  { key: 'standard', label: PROGRAM_SHORT.standard, hasKnobs: true },
+  { key: 'gold', label: PROGRAM_SHORT.gold, hasKnobs: true },
+  { key: 'silver', label: PROGRAM_SHORT.silver, hasKnobs: true },
+  { key: 'speed', label: PROGRAM_SHORT.speed, hasKnobs: false },
+];
 // Per-experience-tier markup (item 15). Company defaults shaped
 // { standard:{1,2,3}, gold, silver } of percents — Tier 1 = the MOST-experienced
 // tier. A blank cell keeps that program/tier's normal markup (for Gold the top
-// tier is normally 0). Programs/tiers listed here drive both the form + save.
-const PROGRAMS = [
-  { key: 'standard', label: 'Standard' },
-  { key: 'gold', label: 'Gold Standard' },
-  { key: 'silver', label: 'Silver' },
-];
+// tier is normally 0). Only the programs WITH knobs drive the grid + its save.
+export const KNOB_PROGRAMS = PROGRAMS.filter((p) => p.hasKnobs);
 const TIERS = ['1', '2', '3'];
 
 // ── Program ON/OFF switches (owner-directed 2026-08-18) ──────────────────────
@@ -99,7 +111,7 @@ const lfToBody = (f) => {
 const tiersToForm = (o) => {
   const mt = (o && o.markupTiers) || {};
   const out = {};
-  for (const p of PROGRAMS) {
+  for (const p of KNOB_PROGRAMS) {
     out[p.key] = {};
     for (const t of TIERS) {
       const v = mt[p.key] && mt[p.key][t];
@@ -113,7 +125,7 @@ const tiersToForm = (o) => {
 // feature off, so every tier keeps its historic markup).
 const tiersToBody = (t) => {
   const out = {};
-  for (const p of PROGRAMS) {
+  for (const p of KNOB_PROGRAMS) {
     const row = {};
     for (const tk of TIERS) {
       const v = t[p.key] && t[p.key][tk];
@@ -125,6 +137,70 @@ const tiersToBody = (t) => {
 };
 const money = (v) => (v == null || v === '' || isNaN(Number(v))) ? '—' : '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
 const pct = (v) => (v == null || v === '' || isNaN(Number(v))) ? '—' : Number(v) + '%';
+
+/* The program ON/OFF switches — EVERY marketed program, knob or not. A program
+   without knobs says so in place of a markup box, so nobody goes looking for one. */
+export function ProgramSwitches({ avail, setProgOn, setProgNote, programs = PROGRAMS }) {
+  return programs.map((p) => (
+    <div key={p.key} data-program-switch={p.key} style={{ border: '1px solid var(--line, #E5E0D5)', borderRadius: 10, padding: '10px 12px', marginBottom: 8 }}>
+      <div className="row" style={{ gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <strong style={{ color: '#141B22', minWidth: 130 }}>{p.label}</strong>
+        <label className="row small" style={{ gap: 6, alignItems: 'center', color: '#141B22' }}>
+          <input type="radio" name={`prog-${p.key}`} checked={avail[p.key].on} onChange={() => setProgOn(p.key, true)} />
+          <span>Offered</span>
+        </label>
+        <label className="row small" style={{ gap: 6, alignItems: 'center', color: '#141B22' }}>
+          <input type="radio" name={`prog-${p.key}`} checked={!avail[p.key].on} onChange={() => setProgOn(p.key, false)} />
+          <span>Discontinued (turned off)</span>
+        </label>
+        {!avail[p.key].on && <span className="pill" style={{ color: '#8a5b00', borderColor: '#d9b26a' }}>OFF — not offered</span>}
+      </div>
+      {p.hasKnobs === false && (
+        <div className="hint" style={{ marginTop: 6 }}>
+          No markup or origination settings of its own — the {p.label} program is composed from the
+          Standard and Silver programs (the lesser leverage, the higher rate) and inherits theirs.
+        </div>
+      )}
+      {!avail[p.key].on && (
+        <div className="field" style={{ marginTop: 8 }}>
+          <label>Discontinued note (shows on the program box when a super admin turns it back on for one file)</label>
+          <input className="input" value={avail[p.key].note} maxLength={300}
+            onChange={(e) => setProgNote(p.key, e.target.value)} />
+          <div className="hint">Plain language, borrower-safe — never name a capital partner here.</div>
+        </div>
+      )}
+    </div>
+  ));
+}
+
+/* The per-tier markup grid — ONLY the programs that carry knobs. Used by the
+   company grid and the TPO channel grid alike, so the two can never disagree
+   about which programs are priceable. */
+export function MarkupTierGrid({ tiers, setTier, placeholder, programs = KNOB_PROGRAMS }) {
+  return (
+    <div className="tbl-scroll">
+      <table className="tbl" data-markup-tier-grid="1">
+        <thead>
+          <tr><th>Program</th><th>Tier 1 (top)</th><th>Tier 2</th><th>Tier 3</th></tr>
+        </thead>
+        <tbody>
+          {programs.map((p) => (
+            <tr key={p.key} data-markup-tier-row={p.key}>
+              <td style={{ whiteSpace: 'nowrap' }}>{p.label}</td>
+              {TIERS.map((t) => (
+                <td key={t}>
+                  <input className="input" inputMode="decimal" style={{ maxWidth: 120 }}
+                    value={(tiers[p.key] && tiers[p.key][t]) || ''} placeholder={placeholder}
+                    onChange={(e) => setTier(p.key, t, e.target.value)} />
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 // Hoisted out of the screen so it keeps a stable identity across renders —
 // a component defined inline in render() remounts every keystroke and the
@@ -212,25 +288,7 @@ function TpoChannelPricing({ isAdmin }) {
         Fine-tune the broker markup per tier. <strong>Tier 1 is the most-experienced tier.</strong>
         {' '}Leave a cell blank to use the broker per-program markup above (or retail if that is blank too).
       </p>
-      <div className="tbl-scroll">
-        <table className="tbl">
-          <thead><tr><th>Program</th><th>Tier 1 (top)</th><th>Tier 2</th><th>Tier 3</th></tr></thead>
-          <tbody>
-            {PROGRAMS.map((p) => (
-              <tr key={p.key}>
-                <td style={{ whiteSpace: 'nowrap' }}>{p.label}</td>
-                {TIERS.map((t) => (
-                  <td key={t}>
-                    <input className="input" inputMode="decimal" style={{ maxWidth: 120 }}
-                      value={tiers[p.key][t]} placeholder="—"
-                      onChange={(e) => setTier(p.key, t, e.target.value)} />
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <MarkupTierGrid tiers={tiers} setTier={setTier} placeholder="—" />
 
       <h3 style={{ margin: '18px 0 0' }}>Broker origination points</h3>
       <p className="muted small" style={{ margin: '2px 0 8px' }}>Origination on a broker file, per program. Cut this to leave room for the broker’s own fee.</p>
@@ -351,30 +409,7 @@ export default function StaffCompanyPricing() {
           the file’s Products &amp; Pricing panel — the note below (pre-filled) is what shows on that
           file’s program box. Files already registered on the program keep their locked-in terms.
         </p>
-        {PROGRAMS.map((p) => (
-          <div key={p.key} style={{ border: '1px solid var(--line, #E5E0D5)', borderRadius: 10, padding: '10px 12px', marginBottom: 8 }}>
-            <div className="row" style={{ gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-              <strong style={{ color: '#141B22', minWidth: 130 }}>{p.label}</strong>
-              <label className="row small" style={{ gap: 6, alignItems: 'center', color: '#141B22' }}>
-                <input type="radio" name={`prog-${p.key}`} checked={avail[p.key].on} onChange={() => setProgOn(p.key, true)} />
-                <span>Offered</span>
-              </label>
-              <label className="row small" style={{ gap: 6, alignItems: 'center', color: '#141B22' }}>
-                <input type="radio" name={`prog-${p.key}`} checked={!avail[p.key].on} onChange={() => setProgOn(p.key, false)} />
-                <span>Discontinued (turned off)</span>
-              </label>
-              {!avail[p.key].on && <span className="pill" style={{ color: '#8a5b00', borderColor: '#d9b26a' }}>OFF — not offered</span>}
-            </div>
-            {!avail[p.key].on && (
-              <div className="field" style={{ marginTop: 8 }}>
-                <label>Discontinued note (shows on the program box when a super admin turns it back on for one file)</label>
-                <input className="input" value={avail[p.key].note} maxLength={300}
-                  onChange={(e) => setProgNote(p.key, e.target.value)} />
-                <div className="hint">Plain language, borrower-safe — never name a capital partner here.</div>
-              </div>
-            )}
-          </div>
-        ))}
+        <ProgramSwitches avail={avail} setProgOn={setProgOn} setProgNote={setProgNote} />
 
         <h3 style={{ margin: '18px 0 0' }}>Markup over the note-buyer rate</h3>
         <p className="muted small" style={{ margin: '2px 0 8px' }}>The spread added on top of the wholesale rate for each program.</p>
@@ -383,6 +418,10 @@ export default function StaffCompanyPricing() {
           <Field form={form} set={set} k="markupGoldPct" label="Gold Standard program markup (%)" />
           <Field form={form} set={set} k="markupSilverPct" label="Silver program markup (%, max 1.00)" />
         </div>
+        <p className="muted small" style={{ margin: '4px 0 0', maxWidth: 640 }}>
+          The Speed Program has no markup of its own: it is priced at the higher of the Standard and
+          Silver rates after these markups, so it moves with them.
+        </p>
 
         <h3 style={{ margin: '18px 0 0' }}>Markup by experience tier (optional)</h3>
         <p className="muted small" style={{ margin: '2px 0 8px', maxWidth: 640 }}>
@@ -393,27 +432,7 @@ export default function StaffCompanyPricing() {
           exact tier’s markup (Silver stays capped at 1.00%). This is a fine-tune on top of the
           per-program markup above.
         </p>
-        <div className="tbl-scroll">
-          <table className="tbl">
-            <thead>
-              <tr><th>Program</th><th>Tier 1 (top)</th><th>Tier 2</th><th>Tier 3</th></tr>
-            </thead>
-            <tbody>
-              {PROGRAMS.map((p) => (
-                <tr key={p.key}>
-                  <td style={{ whiteSpace: 'nowrap' }}>{p.label}</td>
-                  {TIERS.map((t) => (
-                    <td key={t}>
-                      <input className="input" inputMode="decimal" style={{ maxWidth: 120 }}
-                        value={tiers[p.key][t]} placeholder="normal"
-                        onChange={(e) => setTier(p.key, t, e.target.value)} />
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <MarkupTierGrid tiers={tiers} setTier={setTier} placeholder="normal" />
 
         <h3 style={{ margin: '18px 0 0' }}>Origination points</h3>
         <p className="muted small" style={{ margin: '2px 0 8px' }}>Origination fee as a percent of the loan amount.</p>

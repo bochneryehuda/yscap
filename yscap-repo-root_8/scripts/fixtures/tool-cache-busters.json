@@ -94,6 +94,12 @@
       "silver9-bandeps-tiermk1-tsprog1-oopauto1-speedlev1"
     ]
   },
+  "web/v2/tools/speed-program.js": {
+    "sha": "1e1898c1c6835eaf",
+    "v": [
+      "speed1"
+    ]
+  },
   "web/v2/tools/standard-program.js": {
     "sha": "8df87b2edf0ad896",
     "v": [
@@ -102,9 +108,9 @@
     ]
   },
   "web/v2/tools/termsheet.js": {
-    "sha": "641e7adbdea9f525",
+    "sha": "17e28dfcfcf54ddc",
     "v": [
-      "feerows1-heavyrehab1-cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1-derivpage1-bizpurpose1"
+      "feerows1-heavyrehab1-cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1-derivpage1-bizpurpose1-speed1"
     ]
   },
   "web/v2/tools/title-cost.js": {

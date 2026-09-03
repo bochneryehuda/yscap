@@ -74,8 +74,12 @@
   // null = the deal's true maximum) says which lever the rung IS, so the selection, the
   // pricing and the highlighted row on a signable document can never disagree.
   var silverChosenRung = null;
+  // SPEED carries a chosen rung as an LTC value, exactly like Standard (its ladder is
+  // Standard-shaped, built by SPP.priceLadder through the composition). Its own
+  // variable, so the Standard slider and the Speed slider can never move each other.
+  var speedChosenLTC = null;
   var lastDeal = null;   // tracks deal-type changes (to default the ground-up term/reserve once)
-  var chosenProgram = null;   // null = offers view; "standard" | "gold" | "silver" | "manual" = drilled into that program's detail
+  var chosenProgram = null;   // null = offers view; "standard" | "gold" | "silver" | "speed" | "manual" = drilled into that program's detail
                               // ("manual" = the admin-priced scenario — prices on the Standard engine with the
                               //  admin-set basis, exactly what the server records for a Manual Program register)
 
@@ -422,18 +426,20 @@
   // MANUAL / escalation deal (exit shortfall, city review, admin manual basis) IS
   // issuable, but the PDF prints stamped "subject to manual review \u2014 not valid without
   // our countersignature". A hard-INELIGIBLE or unsizeable deal can NOT print one.
-  function issueDeal() { var d = calc(); if (chosenProgram === "gold") { var g = calcGold(); if (g && !g.unavailable) d = g; } else if (chosenProgram === "silver") { var sv = calcSilver(); if (sv && !sv.unavailable) d = sv; } return d; }
+  function issueDeal() { var d = calc(); if (chosenProgram === "gold") { var g = calcGold(); if (g && !g.unavailable) d = g; } else if (chosenProgram === "silver") { var sv = calcSilver(); if (sv && !sv.unavailable) d = sv; } else if (chosenProgram === "speed") { var sp = calcSpeed(); if (sp && !sp.unavailable) d = sp; } return d; }
   // The deal object for the currently drilled-in program (falls back to Standard).
   function calcChosen() {
     if (chosenProgram === "gold") return calcGold() || calc();
     if (chosenProgram === "silver") { var sv = calcSilver(); return (sv && !sv.unavailable) ? sv : calc(); }
+    if (chosenProgram === "speed") { var sp = calcSpeed(); return (sp && !sp.unavailable) ? sp : calc(); }
     return calc();
   }
-  function progOf(d) { return d && d.gold ? "gold" : (d && d.silver ? "silver" : "standard"); }
+  function progOf(d) { return d && d.gold ? "gold" : (d && d.silver ? "silver" : (d && d.speed ? "speed" : "standard")); }
   function chosenProgramName(withManual) {
     if (chosenProgram === "manual") return "Manual Program";
     if (chosenProgram === "gold") return "Gold Standard Program";
     if (chosenProgram === "silver") return "Silver Program";
+    if (chosenProgram === "speed") return "Speed Program";
     return (withManual && manualOn()) ? "Manual Program" : "Standard Program";
   }
   function canIssue(d) { return !!(d && d.totalLoan > 0 && d.status !== "INELIGIBLE"); }
@@ -956,6 +962,87 @@
     };
   }
 
+  /* ---------------- THE SPEED PROGRAM (owner-directed 2026-09-03) ----------------
+     A COMPOSITION of the Standard and Silver engines — window.SPP (speed-program.js)
+     runs both frozen engines on the Speed basis, takes the elementwise lesser of the
+     two ceilings (plus its own $1,000,000 wall), and reports the higher of the two
+     note rates. This function holds NO math of its own beyond two studio-side knobs
+     the module deliberately leaves to the surface that owns the company settings:
+       origination      = the HIGHER of the Standard and Silver origination the studio
+                          would apply (adminOrigPct("speed"), incl. the admin overrides);
+       minimum interest = ON if the Standard OR the Silver flag is on (minInterestOn).
+     Speed has no markup of its own — its rate is the higher of two note rates that
+     already carry each program's markup — so BOTH engines are set exactly as calc()
+     and calcSilver() see them (syncAdminMarkup) before the composition runs, and the
+     two parents inside it price with the same markups the Standard and Silver cards
+     show. Shaped exactly like calcSilver() so every shared renderer works unchanged.
+     Returns null when the module isn't loaded. */
+  function speedOrigPct() { return Math.max(adminOrigPct("standard"), adminOrigPct("silver")); }
+  function calcSpeed() {
+    var SP = (typeof SPP !== "undefined" && SPP) ? SPP : null;
+    if (!SP) return null;
+    syncAdminMarkup();                                    // both parents at the studio's live markups
+    var inp = gather();
+    if (speedChosenLTC) inp.targetLTC = speedChosenLTC;   // a chosen rung rides as targetLTC, like Standard
+    var R = SP.evaluate(inp);
+    if (manualOn()) { if (R.status === "INELIGIBLE") R.status = "MANUAL"; R.exitShortfall = 0; }   // admin-priced basis
+    var s = R.sizing || {};
+    var asg = R.assignment;
+    var rate = (R.noteRate || 0) * 100;
+    var _sp = oopReslice(R, inp);                        // floored split + OOP-rehab re-slice (byte-identical when no exception)
+    var totalLoan = _sp.totalLoan;
+    var rehabHoldbackR = _sp.rehabHoldback;
+    var initialAdvance = _sp.initialAdvance;
+    var financedIRr = _sp.financedIR;
+    var origPct = adminOrigPct("speed");
+    var origFee = totalLoan * origPct;
+    var rFrac = (R.noteRate || 0) / 12;
+    var title = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(inp.state, totalLoan, inp.loanType) : { total: 0 };
+    var titleOvr = adminTitle();
+    var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
+    var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
+    var brokerFee = brokerFeeAmt(totalLoan);   // TPO broker origination points (0 off a TPO file → inert)
+    var gov = govCharges(totalLoan, inp);                                   // mortgage / transfer / recording tax — see calc()
+    var feeParts = lenderFeeParts(), settleFee = settlementFee(), cemaAmt = cemaFee();
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + settleFee + cemaAmt + gov.borrowerTotal;
+    var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
+    var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sp.downPayment + excessOOP + closing);
+    var reserves = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac) * reserveMonths(totalLoan);   // same liquidity buffer as Standard
+    var closingBuffer = liqBufferWaived() ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;   // 1% closing-cost buffer (owner-authorized 2026-07-31); waivable per file
+    var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
+    var costAcq = (s.acqDenom > 0) ? s.acqDenom : basisPrice;
+    return {
+      R: R, inp: inp, speed: true, speedInfo: R.speed || null, eff: basisPrice, basisPrice: basisPrice,
+      constr: num("construction"), asg: asg, pricingReady: !!R.pricingReady,
+      asIs: num("asIs"), arv: num("arv"), rate: rate, term: inp.term, irMonths: inp.irMonths,
+      totalLoan: totalLoan, initialAdvance: initialAdvance, rehabHoldback: rehabHoldbackR,
+      financedIR: financedIRr, unfinancedIR: 0,
+      maxReserve: s.maxReserve || 0, reserveCapped: !!s.reserveCapped, reserveCapBy: s.reserveCapBy || "",
+      maxReserveMonths: s.maxReserveMonths || 0, desiredReserve: s.desiredReserve || 0,
+      initialPayment: (_sp.oopRehab > 0 ? (initialAdvance * rFrac) : (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac)),
+      fullPayment: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
+      monthlyInterest: s.monthlyInterest || (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
+      totalCost: costAcq + num("construction") + financedIRr,
+      downPayment: _sp.downPayment, excessOOP: excessOOP,
+      oopRehab: _sp.oopRehab, maxOopRehab: _sp.maxOopRehab, initialCut: _sp.initialCut, maxInitial: _sp.maxInitial,
+      origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
+      uwFee: feeParts.underwriting, legalFee: feeParts.legal, feeSplit: feeParts.split, legalBasis: feeParts.basis,
+      settleFee: settleFee, settleLabel: SETTLEMENT_LABEL,
+      cemaFee: cemaAmt, cemaLabel: CEMA_LABEL,
+      closing: closing, extraFees: extraFeeList(), feasFee: feasFeeAmount(), feasKind: feasFee().kind, feasLabel: feasLabel(feasFee().kind), feasManual: feasFee().manual, cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: cashToClose + reserves + _sp.oopRehab + closingBuffer,
+      closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
+      gov: gov, govTotal: gov.borrowerTotal, govLender: gov.lenderTotal,
+      ltcPct: s.ltcPct || 0,
+      ltvPct: (_sp.oopRehab > 0 && s.acqDenom > 0) ? (initialAdvance / s.acqDenom) : (s.acqLtvPct || 0),
+      arvPct: s.arvPct || 0,
+      // Speed publishes ONE ceiling: the combined one (caps === pricedCeiling in the module).
+      binding: s.binding || "", caps: R.pricedCeiling || R.caps, progCaps: R.caps, tierCaps: null,
+      status: R.status, reasons: R.reasons || [],
+      exitShortfall: R.exitShortfall || 0, cityReview: R.cityReview || R.geoReview || null,
+      tierLabel: R.tierLabel, fico: inp.fico, overlays: R.overlays || [], market: R.market, sizeBand: R.sizeBand
+    };
+  }
+
   /* ---------------- render ---------------- */
   function statusClass(st) { return st === "ELIGIBLE" ? "good" : st === "MANUAL" ? "warn" : "bad"; }
   function statusText(st) { return st === "ELIGIBLE" ? "Eligible" : st === "MANUAL" ? "Not eligible as-is — manual-review exception" : "Not eligible"; }
@@ -995,7 +1082,7 @@
                   backstop, so a longer value than any we can produce today still
                   cannot escape (same treatment as .pcard-badge). */
   function cardUSD(n) { return YS.fmtUSD(Math.round(Number(n) || 0)); }
-  var FIT_IDS = ["stdRateBig", "stdOrigBig", "goldRateBig", "goldOrigBig", "silverRateBig", "silverOrigBig", "manRateBig", "manOrigBig"];
+  var FIT_IDS = ["stdRateBig", "stdOrigBig", "goldRateBig", "goldOrigBig", "silverRateBig", "silverOrigBig", "speedRateBig", "speedOrigBig", "manRateBig", "manOrigBig"];
   function fitStat(e) {
     if (!e) return;
     e.removeAttribute("data-fit");
@@ -1016,7 +1103,7 @@
        program's ENTIRE box disappears; on a file with a super-admin per-deal
        exception it returns carrying the pre-filled discontinued banner. Applied
        FIRST so everything below renders into the surviving cards only. */
-    var PROG_CARD = { standard: { card: "pcardStd", disc: "stdDisc" }, gold: { card: "pcardGold", disc: "goldDisc" }, silver: { card: "pcardSilver", disc: "silverDisc" } };
+    var PROG_CARD = { standard: { card: "pcardStd", disc: "stdDisc" }, gold: { card: "pcardGold", disc: "goldDisc" }, silver: { card: "pcardSilver", disc: "silverDisc" }, speed: { card: "pcardSpeed", disc: "speedDisc" } };
     for (var pk in PROG_CARD) {
       var pc = el(PROG_CARD[pk].card);
       var gone = !progOffered(pk);
@@ -1029,7 +1116,7 @@
           // borrower's and the broker's studio too (audit 2026-08-18 #5). The
           // fallback note mirrors program-availability.defaultDiscontinuedNote.
           dEl.hidden = false;
-          dEl.textContent = "\u26a0 " + (di.note || ("The " + (pk === "gold" ? "Gold Standard" : pk === "silver" ? "Silver" : "Standard") + " program has been discontinued and is not being offered on new deals right now."))
+          dEl.textContent = "\u26a0 " + (di.note || ("The " + (pk === "gold" ? "Gold Standard" : pk === "silver" ? "Silver" : pk === "speed" ? "Speed" : "Standard") + " program has been discontinued and is not being offered on new deals right now."))
             + " Turned back on for this file only by an approved exception.";
         } else { dEl.hidden = true; dEl.textContent = ""; }
       }
@@ -1124,6 +1211,36 @@
       YS.put("silverSub", !ready ? EM : (silverWhy || (svProg ? ("Max LTC " + pctLbl(svProg.maxLTC) + (pricedBelowTier(svProg, svEff) ? " \u00b7 this deal caps at " + pctLbl(svEff.maxLTC) : "") + " \u00b7 " + (S.tierLabel || "")) : (S.tierLabel || ""))));
     }
 
+    // ---- Speed card (owner-directed 2026-09-03) ----
+    // The composition of Standard and Silver: the lesser ceiling of the two, the
+    // higher rate, the higher origination, a 10% assignment cap and a $1,000,000
+    // wall. Painted from calcSpeed() so the origination shown is the max(std, silver)
+    // the registration would charge — never a third knob.
+    var SPd = calcSpeed();
+    var speedCard = el("pcardSpeed");
+    if (!SPd) {
+      YS.put("speedLoanBig", EM); YS.put("speedRateBig", EM); YS.put("speedOrigBig", EM);
+      setBadge("speedBadge", "UNAVAILABLE", ready);
+      YS.put("speedSub", "Speed pricing unavailable");
+      if (speedCard) speedCard.classList.add("pcard-off");
+    } else {
+      if (speedCard) speedCard.classList.remove("pcard-off");
+      var speedExit = ready && (SPd.exitShortfall > 0);
+      var speedGeo = ready && !!SPd.cityReview;
+      var spSized = ready && (SPd.totalLoan > 0) && SPd.status !== "INELIGIBLE" && !speedExit && !speedGeo;
+      YS.put("speedLoanBig", speedGeo ? "Manual" : (spSized ? YS.fmtUSD(SPd.totalLoan) : ((ready && SPd.status !== "INELIGIBLE") ? "$0" : EM)));
+      YS.put("speedRateBig", (spSized && SPd.pricingReady && SPd.rate > 0) ? fmtRate3(SPd.rate) + "%" : EM);
+      YS.put("speedOrigBig", spSized ? cardUSD(SPd.origFee) : EM);
+      YS.put("speedOrigPts", origPtStr(adminOrigPct("speed")));
+      setBadge("speedBadge", SPd.status, ready);
+      var speedWhy = speedExit ? shortMsg(exitMsg(SPd.reasons)) : (SPd.status !== "ELIGIBLE" ? shortReason(SPd.reasons) : "");
+      // The sub-line names the COMPOSITION rather than a tier row — Speed has no tier
+      // of its own, and "Max LTC" here would be whichever parent set it on this deal.
+      var spAsg = (SPd.speedInfo && SPd.speedInfo.assignmentMaxPct > 0) ? SPd.speedInfo.assignmentMaxPct : 0.10;
+      var spWall = (SPd.speedInfo && SPd.speedInfo.maxLoanCap > 0) ? SPd.speedInfo.maxLoanCap : 1000000;
+      YS.put("speedSub", !ready ? EM : (speedWhy || ("Lesser of Standard & Silver \u00b7 max " + YS.fmtUSD(spWall) + " \u00b7 " + pctLbl(spAsg) + " assignment fee")));
+    }
+
     // ---- Manual card ----
     // The Manual Program is the admin-priced scenario (tsManualOn + the custom
     // LTV/LTC/ARV/rate basis in the pricing controls). It prices on the Standard
@@ -1159,18 +1276,20 @@
     var stdCard0 = el("pcardStd");
     if (stdCard0) stdCard0.classList.toggle("pcard-off", mOn);
     if (mOn) {
-      var gc0 = el("pcardGold"), sc0 = el("pcardSilver");
+      var gc0 = el("pcardGold"), sc0 = el("pcardSilver"), spc0 = el("pcardSpeed");
       if (gc0) gc0.classList.add("pcard-off");
       if (sc0) sc0.classList.add("pcard-off");
+      if (spc0) spc0.classList.add("pcard-off");
       YS.put("stdSub", "Manual scenario is on \u2014 pricing is admin-set. See the Manual card.");
       YS.put("goldSub", "Manual scenario is on \u2014 see the Manual card.");
       YS.put("silverSub", "Manual scenario is on \u2014 see the Manual card.");
+      YS.put("speedSub", "Manual scenario is on \u2014 see the Manual card.");
     }
 
     // ---- comparison note ----
     var note = el("progNote");
     if (note) {
-      var msg = comparisonNote(d, G, S, ready);
+      var msg = comparisonNote(d, G, S, SPd, ready);
       if (msg) { note.style.display = ""; note.innerHTML = msg; } else { note.style.display = "none"; note.innerHTML = ""; }
     }
     // Every headline stat now holds its final text — size it to the column it
@@ -1179,7 +1298,7 @@
     return G;
   }
 
-  function comparisonNote(d, G, S, ready) {
+  function comparisonNote(d, G, S, SPd, ready) {
     if (!ready) return "";
     // Structural manual basis: the program comparison is meaningless (every card
     // prices on the admin-set basis and a register records a Manual Program).
@@ -1190,7 +1309,8 @@
     var progs = [
       { key: "standard", name: "Standard", ok: d.status !== "INELIGIBLE" && d.totalLoan > 0 && d.pricingReady, rate: (d.rate || 0) / 100, loan: d.totalLoan || 0, manual: d.status === "MANUAL" },
       { key: "gold", name: "Gold Standard", ok: !!(G && G.available !== false && G.status !== "INELIGIBLE" && G.sizing && G.sizing.totalLoan > 0 && G.pricingReady && G.noteRate > 0), rate: (G && G.noteRate) || 0, loan: (G && G.sizing && G.sizing.totalLoan) || 0, manual: !!(G && G.status === "MANUAL") },
-      { key: "silver", name: "Silver", ok: !!(S && S.status !== "INELIGIBLE" && S.sizing && S.sizing.totalLoan > 0 && S.pricingReady && S.noteRate > 0), rate: (S && S.noteRate) || 0, loan: (S && S.sizing && S.sizing.totalLoan) || 0, manual: !!(S && S.status === "MANUAL") }
+      { key: "silver", name: "Silver", ok: !!(S && S.status !== "INELIGIBLE" && S.sizing && S.sizing.totalLoan > 0 && S.pricingReady && S.noteRate > 0), rate: (S && S.noteRate) || 0, loan: (S && S.sizing && S.sizing.totalLoan) || 0, manual: !!(S && S.status === "MANUAL") },
+      { key: "speed", name: "Speed", ok: !!(SPd && SPd.status !== "INELIGIBLE" && SPd.totalLoan > 0 && SPd.pricingReady && SPd.rate > 0 && !SPd.cityReview), rate: ((SPd && SPd.rate) || 0) / 100, loan: (SPd && SPd.totalLoan) || 0, manual: !!(SPd && SPd.status === "MANUAL") }
     ].filter(function (p) { return progOffered(p.key); });
     var live = progs.filter(function (p) { return p.ok; });
     if (!live.length) return "";
@@ -1212,6 +1332,10 @@
   }
 
   function pctLbl(x) { return (Math.round(x * 1000) / 10) + "%"; }
+  /* THE ASSIGNMENT CAP AS A LABEL — read off the engine's own `assignment.maxPct` (the share it
+     actually applied: 15% on Standard and Silver, 10% on the Speed Program), never a literal.
+     A literal "15%" printed on a Speed sheet would state a cap the loan was not sized under. */
+  function asgCapLbl(a) { return pctLbl((a && a.maxPct > 0) ? a.maxPct : 0.15); }
 
   // Gold leverage ladder — mirrors YSP.priceLadder but for the Gold engine. Gold's rate is flat
   // across leverage; the ladder exists only so an admin can issue a smaller-loan / lower-leverage term sheet.
@@ -1240,13 +1364,15 @@
   // when a program is drilled into.
   function renderLeverage(ready) {
     var wrap = el("rLevWrap"); if (!wrap) return;
-    var isGold = chosenProgram === "gold", isSilver = chosenProgram === "silver";
+    var isGold = chosenProgram === "gold", isSilver = chosenProgram === "silver", isSpeed = chosenProgram === "speed";
     if (!ready || !chosenProgram) { wrap.style.display = "none"; return; }
+    if (isSpeed && (typeof SPP === "undefined" || !SPP)) { wrap.style.display = "none"; return; }
     // On a manual admin exception (LTC/rate overwritten) the leverage-by-tier ladder
     // is meaningless — the admin fixed the basis, so every "tier" would show the same
     // overridden loan/rate. Hide the slider entirely (audit #13/#35).
     if (manualOn() && (adminNumRaw("tsMLtc") != null || adminNumRaw("tsMRate") != null)) { wrap.style.display = "none"; return; }
-    var ladder = isGold ? goldLadder() : (isSilver ? SVP.priceLadder(gather()) : YSP.priceLadder(gather()));
+    // Speed's ladder is Standard-shaped (rows keyed by LTC), built through the composition.
+    var ladder = isGold ? goldLadder() : (isSilver ? SVP.priceLadder(gather()) : (isSpeed ? SPP.priceLadder(gather()) : YSP.priceLadder(gather())));
     if (!ladder.eligible || !ladder.rows.length) { wrap.style.display = "none"; return; }
     var rows = ladder.rows;
     // Silver is keyed on the RUNG, everything else on the LTC value (see silverChosenRung).
@@ -1255,8 +1381,8 @@
     // an unfindable selection falls back to the deal's maximum rather than silently
     // pricing on a step the ladder no longer offers.
     var keys = rows.map(function (r) { return isSilver ? r.key : r.ltc; });
-    var chosen = isGold ? goldChosenLTC : (isSilver ? silverChosenRung : chosenLTC);
-    if (chosen && keys.indexOf(chosen) < 0) { if (isGold) goldChosenLTC = null; else if (isSilver) silverChosenRung = null; else chosenLTC = null; chosen = null; }
+    var chosen = isGold ? goldChosenLTC : (isSilver ? silverChosenRung : (isSpeed ? speedChosenLTC : chosenLTC));
+    if (chosen && keys.indexOf(chosen) < 0) { if (isGold) goldChosenLTC = null; else if (isSilver) silverChosenRung = null; else if (isSpeed) speedChosenLTC = null; else chosenLTC = null; chosen = null; }
     var effIdx = chosen ? keys.indexOf(chosen) : 0;
     if (effIdx < 0) effIdx = 0;
     var maxV = rows.length - 1, row = rows[effIdx];
@@ -1265,7 +1391,7 @@
     slider.value = String(maxV - effIdx);                         // right end = maximum leverage
     slider.disabled = rows.length <= 1;
     var lv = el("rLevVal"), hint = el("rLevHint");
-    var progEl = el("rLevProg"); if (progEl) progEl.textContent = isGold ? "\u00b7 Gold Standard" : (isSilver ? "\u00b7 Silver" : (chosenProgram === "manual" ? "\u00b7 Manual" : "\u00b7 Standard"));
+    var progEl = el("rLevProg"); if (progEl) progEl.textContent = isGold ? "\u00b7 Gold Standard" : (isSilver ? "\u00b7 Silver" : (isSpeed ? "\u00b7 Speed" : (chosenProgram === "manual" ? "\u00b7 Manual" : "\u00b7 Standard")));
     // On Silver the LOAN is the subject \u2014 the rung may have been earned on the value
     // side, where the LTC is an OUTCOME rather than the thing that was dialled, so
     // labelling every step "x% LTC" would name a number the borrower never chose.
@@ -1312,15 +1438,16 @@
 
   // Show the offers (cards) by default; reveal a single program's full detail when drilled into.
   function applyProgramView(ready) {
-    var stdCard = el("pcardStd"), goldCard = el("pcardGold"), silverCard = el("pcardSilver"), manCard = el("pcardManual");
+    var stdCard = el("pcardStd"), goldCard = el("pcardGold"), silverCard = el("pcardSilver"), speedCard = el("pcardSpeed"), manCard = el("pcardManual");
     if (stdCard) stdCard.classList.toggle("pcard-active", chosenProgram === "standard");
     if (goldCard) goldCard.classList.toggle("pcard-active", chosenProgram === "gold");
     if (silverCard) silverCard.classList.toggle("pcard-active", chosenProgram === "silver");
+    if (speedCard) speedCard.classList.toggle("pcard-active", chosenProgram === "speed");
     if (manCard) manCard.classList.toggle("pcard-active", chosenProgram === "manual");
     var head = el("progDetailHead");
     if (head) head.textContent = chosenProgramName(false) + " \u2014 full breakdown";
     var lev = el("rLevWrap"); if (lev && !chosenProgram) lev.style.display = "none";   // slider shows for the drilled-in program
-    var pdf = el("tsPdf"); if (pdf) pdf.textContent = "Download " + (chosenProgram === "gold" ? "Gold Standard" : chosenProgram === "silver" ? "Silver" : chosenProgram === "manual" ? "Manual Program" : "Standard") + " Term Sheet (PDF) \u2913";
+    var pdf = el("tsPdf"); if (pdf) pdf.textContent = "Download " + (chosenProgram === "gold" ? "Gold Standard" : chosenProgram === "silver" ? "Silver" : chosenProgram === "speed" ? "Speed" : chosenProgram === "manual" ? "Manual Program" : "Standard") + " Term Sheet (PDF) \u2913";
     var detail = el("progDetail"); if (detail) detail.style.display = chosenProgram ? "" : "none";
     var mb = el("rManualBanner"); if (mb) mb.hidden = !(manualOn() && chosenProgram);
     var hint = el("progHint"); if (hint) hint.style.display = (ready && !chosenProgram) ? "" : "none";
@@ -1333,7 +1460,7 @@
     // Silver with no engine, Manual while the admin scenario is off, and the
     // three program cards while the admin scenario is ON (a register would
     // record a Manual Program regardless of the card \u2014 see renderPrograms).
-    var CARD_OF = { standard: "pcardStd", gold: "pcardGold", silver: "pcardSilver", manual: "pcardManual" };
+    var CARD_OF = { standard: "pcardStd", gold: "pcardGold", silver: "pcardSilver", speed: "pcardSpeed", manual: "pcardManual" };
     var card = el(CARD_OF[p]);
     if (card && card.classList.contains("pcard-off")) return;
     chosenProgram = (chosenProgram === p) ? null : p;            // tap the open program again to collapse
@@ -1343,6 +1470,7 @@
 
   function tierNudge(d) {
     if (!d || !d.tierLabel || d.status === "INELIGIBLE" || !(d.totalLoan > 0)) return "";
+    if (d.speed) return "";   // Speed sits on BOTH parents' tiers at once — no single ladder to nudge along
     var inp = d.inp || {}, isGold = !!d.gold, isSilver = !!d.silver, sc = YSP.normStrategy(inp.strategy);
     var count, thresholds, unit;
     if (isSilver) {
@@ -1433,6 +1561,10 @@
   function adminOrigPct(prog) {
     if (prog === "gold") return adminNum("tsOrigGold", CO.origGold) / 100;
     if (prog === "silver") return adminNum("tsOrigSilver", CO.origSilver) / 100;
+    // SPEED has no origination knob of its own (owner-directed 2026-09-03: "the higher
+    // origination fees") — the HIGHER of the Standard and Silver points as the studio
+    // resolves them, admin overrides included. Mirrors pricing.js normalize().
+    if (prog === "speed") return Math.max(adminOrigPct("standard"), adminOrigPct("silver"));
     // MANUAL falls back to the STANDARD KNOB AS RESOLVED — the Standard FIELD if
     // the staffer typed one, else the company default. NOT the bare company
     // default: that is what the server does (pricing.js `origKey` picks
@@ -1838,6 +1970,8 @@
   // may turn it off). prog = "standard" | "gold"; a manual scenario overrides.
   function minInterestOn(prog) {
     if (manualOn()) { var e = el("tsMinIntManual"); return e ? !!e.checked : true; }
+    // SPEED: ON if either parent's flag is on — the stricter of the two, like every other Speed term.
+    if (prog === "speed") return chk("tsMinIntStd") || chk("tsMinIntSilver");
     return (prog === "gold") ? chk("tsMinIntGold") : (prog === "silver") ? chk("tsMinIntSilver") : chk("tsMinIntStd");
   }
   // Accrual type — Non-Dutch / As-Drawn by default; admin may switch to Dutch /
@@ -1957,6 +2091,17 @@
     // here — that is the raw workbook row (92.5% on GUC tier 2), a leverage the grid
     // never prices and therefore exactly the unreachable number we are removing.
     if (d.silver) return d.progCaps || (R && R.caps) || null;
+    if (d.speed) {
+      // SPEED's "program maximum" is the combined ceiling with the borrower's own
+      // narrowing (a ladder rung) stripped — the same treatment Gold gets below. The
+      // module recomputes the composition; nothing here derives a cap.
+      var SP = (typeof SPP !== "undefined" && SPP) ? SPP : null;
+      if (!SP || !R || !R.caps) return (R && R.caps) || null;
+      try {
+        var bareSp = SP.evaluate(Object.assign({}, d.inp, { targetLTC: 0, targetARLTV: 0 }));
+        return (bareSp && (bareSp.pricedCeiling || bareSp.caps)) || R.caps;
+      } catch (eSp) { return R.caps; }
+    }
     if (d.gold) {
       var GS = (typeof GSP !== "undefined" && GSP) ? GSP : null;
       if (!GS || !R || !R.caps) return (R && R.caps) || null;
@@ -1994,7 +2139,7 @@
       }
     }
     var ovrOn = (adminNumRaw("tsMLtc") != null || adminNumRaw("tsMLtv") != null || adminNumRaw("tsMArv") != null);
-    var chosen = d && d.silver ? silverChosenRung : (d && d.gold ? goldChosenLTC : chosenLTC);
+    var chosen = d && d.silver ? silverChosenRung : (d && d.gold ? goldChosenLTC : (d && d.speed ? speedChosenLTC : chosenLTC));
     // A Silver step can be earned on EITHER axis, so ask whether the ceiling moved on
     // the axis this rung actually cut — testing only the LTC would stay silent about a
     // value-side step the user deliberately picked, and fall through to the generic
@@ -2147,11 +2292,40 @@
     if (m) {                                        // Silver is keyed by rung
       silverChosenRung = raw;
       var v = parseFloat(m[2]);
-      if (m[1] === "ltc" && v > 0) { chosenLTC = v; goldChosenLTC = v; }
+      if (m[1] === "ltc" && v > 0) { chosenLTC = v; goldChosenLTC = v; speedChosenLTC = v; }
       return;
     }
-    var n = parseFloat(raw);                        // Standard / Gold carry an LTC value
-    if (n > 0) { chosenLTC = n; goldChosenLTC = n; silverChosenRung = "ltc:" + n; }
+    var n = parseFloat(raw);                        // Standard / Gold / Speed carry an LTC value
+    if (n > 0) { chosenLTC = n; goldChosenLTC = n; speedChosenLTC = n; silverChosenRung = "ltc:" + n; }
+  }
+
+  /* THE SPEED COMPOSITION ON SCREEN (owner-directed 2026-09-03). The same four-row table the
+     PDF's derivation page prints — Standard's ceiling, Silver's, the one Speed enforced and who set
+     it — plus the two rates and the 10% assignment line, painted from the module's own `speed`
+     explain block. Nothing is derived here. Hidden on every other program. Staff-facing wording
+     says "Standard" / "Silver"; no note buyer is ever named. */
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;"; }); }
+  function renderSpeedComposition(d, sized) {
+    var box = el("rSpeedComp"); if (!box) return;
+    if (!d || !d.speed || !d.speedInfo || chosenProgram !== "speed") { box.hidden = true; box.innerHTML = ""; return; }
+    var sp = d.speedInfo, own = sp.standard || {}, ownV = sp.silver || {}, cS = own.ownCeiling || {}, cV = ownV.ownCeiling || {};
+    var enf = d.caps || {}, donor = sp.capDonor || {};
+    var money = function (n) { return YS.fmtUSD(Math.round(n || 0)); };
+    var who = function (k) { var w = donor[k]; return w === "standard" ? "Standard" : w === "silver" ? "Silver" : w === "both" ? "both" : w === "speed" ? ("Speed " + money(sp.maxLoanCap || 1000000) + " maximum") : "\u2014"; };
+    var fig = function (c, k, isMoney) { return (c && c[k] > 0) ? (isMoney ? money(c[k]) : pcFull(c[k])) : "\u2014"; };
+    var row = function (label, k, isMoney) {
+      return "<tr><td>" + esc(label) + "</td><td>" + esc(fig(cS, k, isMoney)) + "</td><td>" + esc(fig(cV, k, isMoney)) + "</td><td class=\"enf\">" + esc(fig(enf, k, isMoney)) + "</td><td>" + esc(who(k)) + "</td></tr>";
+    };
+    var rate = function (r) { return r > 0 ? fmtRate3(r * 100) + "%" : "unpriced"; };
+    var html = "<h4>How the Speed Program was composed</h4>" +
+      "<div class=\"tsc-wrap\"><table><thead><tr><th>Ceiling</th><th>Standard</th><th>Silver</th><th>Speed enforces</th><th>Set by</th></tr></thead><tbody>" +
+      row("Maximum loan", "maxLoan", true) + row("Acquisition LTV", "maxAcqLTV") + row("After-repair LTV", "maxARLTV") + row("Loan-to-cost", "maxLTC") +
+      "</tbody></table></div>" +
+      "<p>Rate at this structure \u2014 Standard <b>" + esc(rate(own.noteRate)) + "</b>, Silver <b>" + esc(rate(ownV.noteRate)) + "</b>; the Speed Program charges the higher" +
+      (sp.rateDonor ? (" (" + (sp.rateDonor === "silver" ? "Silver" : "Standard") + ")") : "") + (d.rate > 0 ? (": <b>" + esc(fmtRate3(d.rate)) + "%</b>") : "") + ".</p>" +
+      (d.asg ? ("<p>Assignment fee financeable to <b>" + esc(asgCapLbl(d.asg)) + "</b> of the seller\u2019s contract price (" + esc(money(d.asg.maxFee)) + ").</p>") : "") +
+      (sized ? ("<p>Each program\u2019s own total under the combined ceiling \u2014 Standard " + esc(own.totalLoan > 0 ? money(Math.floor(own.totalLoan)) : "\u2014") + ", Silver " + esc(ownV.totalLoan > 0 ? money(Math.floor(ownV.totalLoan)) : "\u2014") + " (they differ only by the interest reserve each prices at its own rate).</p>") : "");
+    box.innerHTML = html; box.hidden = false;
   }
 
   function recompute() {
@@ -2180,12 +2354,14 @@
     var d = dStd;                                                 // detail renders the program you drilled into
     if (chosenProgram === "gold") { var gd = calcGold(); if (!gd || gd.unavailable) chosenProgram = null; else d = gd; }
     else if (chosenProgram === "silver") { var svd = calcSilver(); if (!svd || svd.unavailable) chosenProgram = null; else d = svd; }
+    else if (chosenProgram === "speed") { var spd = calcSpeed(); if (!spd || spd.unavailable) chosenProgram = null; else d = spd; }
     applyProgramView(ready);                                      // show/hide the detail; slider only for Standard
     var sized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE";
     // The dollar box shows the reserve the loan CARRIES for the program in view (never a
     // months x payment estimate) and names that program — the reserve is per-program and
     // the Excel prints one section per program (owner-reported 2026-07-30).
     syncIrMirror(d, sized, chosenProgramName(false));
+    renderSpeedComposition(d, sized);                             // the Speed drill-in's composition table (hidden elsewhere)
     var EM = "\u2014";
 
     YS.put("rLoan", sized ? YS.fmtUSD(d.totalLoan) : EM);
@@ -2415,7 +2591,7 @@
       var seller = num("origPrice"), total = num("price");
       if (!isRefi() && isAssign() && seller > 0 && total > seller) {
         var fee = Math.max(0, total - seller), a = d.asg;
-        var capPhrase = (a && a.dollarCap) ? ("the lesser of " + YS.fmtUSD(a.dollarCap) + " or 15% of the original contract price") : "15% of the original contract price";
+        var capPhrase = (a && a.dollarCap) ? ("the lesser of " + YS.fmtUSD(a.dollarCap) + " or " + asgCapLbl(a) + " of the original contract price") : (asgCapLbl(a) + " of the original contract price");
         if (a && a.overridden) {
           an.style.display = ""; an.className = "ts-assign ok";
           an.innerHTML = "<b>Admin exception in effect.</b> The effective purchase price is set to " + YS.fmtUSD(a.recognizedPrice) +
@@ -2554,6 +2730,8 @@
           ? "<strong>Refinance types.</strong> A rate-&-term refi takes essentially no cash to you. A cash-out refi \u2014 cash to you over the lesser of $20,000 or 2% of the loan \u2014 is capped by the program leverage or 100% of verified hard costs; cash over $250,000 requires an escalation review."
           : d.silver
           ? "<strong>Refinance types.</strong> A rate-&-term refi takes no cash to you. Cash-out proceeds are capped at 50% of the total projected project profit; interest reserves are netted from cash-out proceeds; a stabilized refi needs the borrower current on all payments and taxes."
+          : d.speed
+          ? "<strong>Refinance types.</strong> A rate-&-term refi takes no cash to you. On the Speed Program a cash-out refi must satisfy BOTH the Standard and the Silver rules \u2014 cash to the borrower is capped at $50,000 and at 50% of the total projected project profit, interest reserves are netted from cash-out proceeds, and a stabilized refi needs the borrower current on all payments and taxes."
           : "<strong>Refinance types.</strong> A rate-&-term refi takes no cash to you (proceeds at or under 2% of the loan). A cash-out refi \u2014 proceeds over 2% of the loan \u2014 is capped at $50,000 cash to the borrower.";
         /* WHAT THE BORROWER ACTUALLY WALKS AWAY WITH (owner-directed 2026-07-31:
            "on cash out then you should have also how much the cash out is
@@ -2874,10 +3052,56 @@
         if (svi > -1) Array.prototype.splice.apply(silver, [svi, 0].concat(sd.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
       }
     }
+    // ---- Speed Program section (owner-directed 2026-09-03; same shape as the Silver block) ----
+    // Keyed on ITS OWN data variable (`pd`) so the fee-audit roster can prove every fee is
+    // named on the Speed column too — never on a neighbouring column's rows.
+    var pd = calcSpeed();
+    var speed;
+    if (!pd) { speed = [["Availability", "Speed pricing unavailable"]]; }
+    else {
+      var pExit = pd.exitShortfall > 0, pGeo = !!pd.cityReview, pOk = !pExit && !pGeo && pd.pricingReady && pd.status !== "INELIGIBLE" && pd.totalLoan > 0;
+      var pInfo = pd.speedInfo || {};
+      speed = [
+        ["Status", statusLabel(pd.status)],
+        ["Composition", "Lesser of the Standard and Silver programs \u00b7 max " + money(pInfo.maxLoanCap || 1000000) + " \u00b7 assignment fee financeable to " + pctLbl(pInfo.assignmentMaxPct || 0.10)],
+        ["Loan amount", (pExit || pGeo) ? "Manual review" : (pOk && pd.totalLoan ? money(pd.totalLoan) : EM)],
+        ["Note rate", (pOk && pd.rate > 0) ? fmtRate3(pd.rate) + "%" : EM],
+        (pOk && pInfo.rateDonor) ? ["Rate set by", pInfo.rateDonor === "silver" ? "Silver (the higher of the two)" : "Standard (the higher of the two)"] : null,
+        minInterestOn("speed") ? ["Minimum interest", MIN_INTEREST_ROW] : null,
+        ["Interest accrual", accrualLabel()],
+        (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("speed").join("; ")],
+        ["Initial advance", pOk ? money(pd.initialAdvance) : EM],
+        ["Rehab / construction holdback", pOk ? money(pd.rehabHoldback) : EM],
+        (pOk && pd.oopRehab > 0) ? ["Out-of-pocket rehab (funded over construction)", money(pd.oopRehab)] : null,
+        ["Financed interest reserve", pOk ? money(pd.financedIR) : EM],
+        isRefi() ? null : ["Down payment (equity)", pOk ? money(pd.downPayment) : EM],
+        ["Leverage \u2014 LTC / as-is / ARV", pOk ? (pct(pd.ltcPct) + " / " + pct(pd.ltvPct) + " / " + pct(pd.arvPct)) : EM],
+        xlsxTierMaxRow(pd, pct), xlsxPricedRow(pd, pct),
+        ["Origination (" + origPctStr((pd.origPct != null ? pd.origPct : 0.0125)) + ")", (pOk && pd.totalLoan) ? money2(pd.origFee) : EM],
+        (pOk && pd.feeSplit) ? ["Underwriting & processing", money2(pd.uwFee)] : null,
+        (pOk && pd.feeSplit) ? ["Legal fee", money2(pd.legalFee)] : null,
+        (pOk && !pd.feeSplit) ? ["UW / processing / legal", money2(pd.lenderFee)] : null,
+        (!pOk) ? ["UW / processing / legal", EM] : null,
+        (pOk && pd.settleFee > 0) ? [pd.settleLabel, money2(pd.settleFee)] : null,
+        (pOk && pd.cemaFee > 0) ? [pd.cemaLabel, money2(pd.cemaFee)] : null,
+        ["Credit report", pOk ? money2(pd.creditFee) : EM],
+        ["Appraisal (est., POC)", pOk ? money2(pd.apprFee) : EM],
+        ["Title / escrow (est.)", (pOk && pd.titleCost > 0) ? money2(pd.titleCost) : EM],
+        (pOk && pd.feasFee > 0) ? [pd.feasLabel, money2(pd.feasFee)] : null,
+        ...govXlsxRows(pOk ? pd : null),
+        ["Estimated cash to close", pOk ? money2(pd.cashToClose) : EM],
+        pOk ? ["Closing cost buffer (1% of loan amount)", pd.closingBufferWaived ? "Waived" : money2(pd.closingBuffer || 0)] : null,
+        ["Liquidity to show", pOk ? money2(pd.liquidity) : EM]
+      ];
+      if (pOk && pd.extraFees && pd.extraFees.length) {
+        var spi = speed.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
+        if (spi > -1) Array.prototype.splice.apply(speed, [spi, 0].concat(pd.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
+      }
+    }
     // TPO broker origination fee (owner-directed 2026-08-06) — its own line before
     // cash-to-close, so the Excel fee list adds up the same as the panel and PDF.
     // brokerFee is 0 on every retail sheet, so nothing is inserted there.
-    [[std, d, stdOk], [gold, gd, (gd && !gd.unavailable && gOk)], [silver, sd, (sd && sOk)]].forEach(function (pr) {
+    [[std, d, stdOk], [gold, gd, (gd && !gd.unavailable && gOk)], [silver, sd, (sd && sOk)], [speed, pd, (pd && pOk)]].forEach(function (pr) {
       var rows = pr[0], dd = pr[1], ok = pr[2];
       if (!ok || !dd || !(dd.brokerFee > 0)) return;
       var i = rows.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
@@ -2888,7 +3112,7 @@
     // 2026-08-04) — otherwise a refi's fees sum to closing costs while cash-to-close
     // includes the payoff shortfall, which looks like an error.
     if (isRefi() && !isCashOut() && num("payoff") > 0) {
-      [[std, d, stdOk], [gold, gd, (gd && !gd.unavailable && gOk)], [silver, sd, (sd && sOk)]].forEach(function (pr) {
+      [[std, d, stdOk], [gold, gd, (gd && !gd.unavailable && gOk)], [silver, sd, (sd && sOk)], [speed, pd, (pd && pOk)]].forEach(function (pr) {
         var rows = pr[0], dd = pr[1], ok = pr[2];
         if (!ok || !dd) return;
         var i = rows.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
@@ -2912,7 +3136,8 @@
     return [{ title: "Deal & property", items: deal.filter(Boolean) }, { title: isRefi() ? "Property & project costs" : "Purchase & project costs", items: costs.filter(Boolean) },
             (progOffered("standard") || manualBasisOn()) ? { title: stdTitle, items: std.filter(Boolean) } : null,
             progOffered("gold") ? { title: "Gold Standard Program", items: gold.filter(Boolean) } : null,
-            progOffered("silver") ? { title: "Silver Program", items: silver.filter(Boolean) } : null].filter(Boolean);
+            progOffered("silver") ? { title: "Silver Program", items: silver.filter(Boolean) } : null,
+            progOffered("speed") ? { title: "Speed Program", items: speed.filter(Boolean) } : null].filter(Boolean);
   }
   async function exportXlsx(btn) {
     var o = btn ? btn.textContent : ""; if (btn) { btn.textContent = "Exporting\u2026"; btn.disabled = true; }
@@ -3395,7 +3620,7 @@
       yL = cardHead(xL, colW, "Loan structure", yL);
       yL = rowIn(xL, colW, isRefi() ? "As-is value" : "Purchase price", money(isRefi() ? d.basisPrice : (num("price") || d.basisPrice)), yL);
       if (!isRefi() && isAssign()) yL = rowIn(xL, colW, "Seller price / assignment fee", money(num("origPrice")) + " / " + money(Math.max(0, num("price") - num("origPrice"))), yL);
-      if (!isRefi() && isAssign() && d.asg && (d.asg.overLimit || d.asg.overridden)) yL = rowIn(xL, colW, "Effective purchase price " + (d.asg.overridden ? "(admin exception)" : d.asg.dollarCap ? "(fee capped at the program limit)" : "(fee capped at 15%)"), money(d.asg.recognizedPrice), yL);
+      if (!isRefi() && isAssign() && d.asg && (d.asg.overLimit || d.asg.overridden)) yL = rowIn(xL, colW, "Effective purchase price " + (d.asg.overridden ? "(admin exception)" : d.asg.dollarCap ? "(fee capped at the program limit)" : "(fee capped at " + asgCapLbl(d.asg) + ")"), money(d.asg.recognizedPrice), yL);
       if (!isBridge) {
         yL = rowIn(xL, colW, "Construction / rehab budget", money(d.constr), yL);
         if (d.financedIR > 0) { var finMo = (d.fullPayment > 0) ? Math.round(d.financedIR / d.fullPayment) : (d.irMonths || 0); yL = rowIn(xL, colW, "Financed interest reserve (" + finMo + " mo)", money(d.financedIR), yL); }
@@ -3515,7 +3740,7 @@
         yR = rowIn(xR, colW, "Less funds advanced at closing (initial advance)", "\u2212" + money(fundedAtClose(d)), yR);
       }
       if (!isRefi()) yR = rowIn(xR, colW, "Down payment (equity)", sized ? money(d.downPayment) : "\u2014", yR, { bold: true });
-      if (d.excessOOP > 0) yR = rowIn(xR, colW, ((d.asg && d.asg.dollarCap) ? "Assignment over cap (out of pocket)" : "Assignment over 15% (out of pocket)"), money(d.excessOOP), yR);
+      if (d.excessOOP > 0) yR = rowIn(xR, colW, ((d.asg && d.asg.dollarCap) ? "Assignment over cap (out of pocket)" : "Assignment over " + asgCapLbl(d.asg) + " (out of pocket)"), money(d.excessOOP), yR);
       yR = rowIn(xR, colW, "Estimated cash to close", sized ? money2(d.cashToClose) : "\u2014", yR, { bold: true, accent: true });
       // 1% closing-cost buffer inside the liquidity to show (owner-authorized
       // 2026-07-31) \u2014 printed just before the liquidity total; a waived buffer
@@ -3532,7 +3757,7 @@
 
       if (!isRefi() && isAssign() && d.asg && (d.asg.overLimit || d.asg.overridden)) {
         band("Assignment");
-        var capDesc = d.asg.dollarCap ? ("the financeable cap (lesser of " + money(d.asg.dollarCap) + " or 15% of the " + money(d.asg.sellerPrice) + " original contract price = " + money(d.asg.maxFee) + ")") : ("the program's 15% limit (" + money(d.asg.maxFee) + ", 15% of the " + money(d.asg.sellerPrice) + " original contract price)");
+        var capDesc = d.asg.dollarCap ? ("the financeable cap (lesser of " + money(d.asg.dollarCap) + " or " + asgCapLbl(d.asg) + " of the " + money(d.asg.sellerPrice) + " original contract price = " + money(d.asg.maxFee) + ")") : ("the program's " + asgCapLbl(d.asg) + " limit (" + money(d.asg.maxFee) + ", " + asgCapLbl(d.asg) + " of the " + money(d.asg.sellerPrice) + " original contract price)");
         if (d.asg.overridden) para("An approved exception sets the effective purchase price at " + money(d.asg.recognizedPrice) + ": " + money(d.asg.financeableFee) + " of the " + money(d.asg.fee) + " assignment fee is financed and all terms are sized on the effective purchase price" + (d.asg.excessOOP > 0.5 ? ("; the remaining " + money(d.asg.excessOOP) + " is paid out of pocket at closing") : "") + ".");
         else para("Your assignment fee of " + money(d.asg.fee) + " exceeds " + capDesc + ". " + money(d.asg.financeableFee) + " is financeable and all terms are sized on the effective purchase price of " + money(d.asg.recognizedPrice) + "; the remaining " + money(d.asg.excessOOP) + " is paid out of pocket at closing. A higher assignment limit may be requested as an exception, subject to credit-committee approval.");
       }
@@ -3588,7 +3813,7 @@
           ? "Gold Standard construction draws require a physical inspection (no virtual inspections) at $250 per draw."
           : (_dfIsNC
             ? "Ground-up construction draws require a physical inspection (no virtual inspections) at $499 per draw."
-            : ((d.silver ? "Silver Program" : "Standard") + " construction draws are $299 per draw with a hybrid inspection, or $499 per draw with a physical inspection.")), 7);
+            : ((d.silver ? "Silver Program" : d.speed ? "Speed Program" : "Standard") + " construction draws are $299 per draw with a hybrid inspection, or $499 per draw with a physical inspection.")), 7);
       }
       /* THE CLOSING RESCHEDULE FEE (owner-directed 2026-08-26) — across the board, on every file,
          and stated as an event fee rather than folded into cash to close (see the constant). */
@@ -3685,7 +3910,8 @@
       // makes every leverage step identical, so the page would print duplicate rows
       // on a signable document (audit #13/#35).
       var ladderOverridden = manualOn() && (adminNumRaw("tsMLtc") != null || adminNumRaw("tsMRate") != null);
-      var lad = (!d.gold && !ladderOverridden) ? (d.silver ? SVP.priceLadder(gather()) : YSP.priceLadder(gather())) : { eligible: false, rows: [] };
+      // Speed's ladder is Standard-shaped (LTC rungs through the composition) and prints in the Standard columns.
+      var lad = (!d.gold && !ladderOverridden) ? (d.silver ? SVP.priceLadder(gather()) : (d.speed && typeof SPP !== "undefined" && SPP) ? SPP.priceLadder(gather()) : YSP.priceLadder(gather())) : { eligible: false, rows: [] };
       if (!d.gold && !ladderOverridden && lad.eligible && lad.rows.length) {
         doc.addPage(); header(); y = 92;
         doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor.apply(doc, DARK);
@@ -3734,7 +3960,7 @@
            Standard slider's chosenLTC on a Silver sheet used to highlight a row the
            borrower never picked, and vice versa. */
         var selKey = d.silver ? (silverChosenRung || lad.rows[0].key) : null;
-        var selLtc = d.silver ? null : ((d.gold ? goldChosenLTC : chosenLTC) || lad.rows[0].ltc);
+        var selLtc = d.silver ? null : ((d.gold ? goldChosenLTC : (d.speed ? speedChosenLTC : chosenLTC)) || lad.rows[0].ltc);
         lad.rows.forEach(function (r, i) {
           var rowH = 20;
           var isSel = d.silver
@@ -3945,7 +4171,7 @@
       // ---- footer ----
       doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.8); doc.line(M, H - 48, W - M, H - 48);
       doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); doc.setTextColor(150, 158, 162);
-      doc.text(pdfSafe((minInterestOn(chosenProgram === "gold" ? "gold" : chosenProgram === "silver" ? "silver" : "standard") ? MIN_INTEREST_DETAIL + " " : "") + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Business-purpose lending only. This document is proof of funds / pre-qualification and is not a commitment to lend or an offer to extend consumer credit. Figures are indicative and subject to full underwriting, appraisal, title and final credit approval."), M, H - 36, { maxWidth: W - 2 * M });
+      doc.text(pdfSafe((minInterestOn(chosenProgram === "gold" ? "gold" : chosenProgram === "silver" ? "silver" : chosenProgram === "speed" ? "speed" : "standard") ? MIN_INTEREST_DETAIL + " " : "") + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Business-purpose lending only. This document is proof of funds / pre-qualification and is not a commitment to lend or an offer to extend consumer credit. Figures are indicative and subject to full underwriting, appraisal, title and final credit approval."), M, H - 36, { maxWidth: W - 2 * M });
 
       drawDerivationPage(doc, d, "Basis for This Proof of Funds", "The figures in the preceding letter were generated from the inputs below, provided by the applicant through the YS Capital Term Sheet Studio. This page shows what was entered and how the financing amount was determined.");
       doc.save("YS-Capital-Proof-of-Funds-" + borrower.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "") + ".pdf");
@@ -4070,7 +4296,7 @@
       var doSend = function () {
         if (!FORM_TOKEN.t) return;
         var addr = chk("addrTBD") ? "TBD" : (val("propAddr") || val("propState") || "");
-        var subject = kind + " generated \u2014 " + ((chosenProgram === "gold") ? "Gold Standard" : (chosenProgram === "silver") ? "Silver" : (chosenProgram === "manual") ? "Manual Program" : "Standard") +
+        var subject = kind + " generated \u2014 " + ((chosenProgram === "gold") ? "Gold Standard" : (chosenProgram === "silver") ? "Silver" : (chosenProgram === "speed") ? "Speed" : (chosenProgram === "manual") ? "Manual Program" : "Standard") +
           (d && d.totalLoan ? " \u2014 " + YS.fmtUSD(d.totalLoan) : "") + (addr ? " \u2014 " + addr : "");
         var ob = window.YSBRAND || {};
         var code = ob.email ? String(ob.email).split("@")[0].toLowerCase().replace(/[^a-z0-9._-]/g, "") : "";
@@ -4367,7 +4593,7 @@
       [isRefi ? "As-is value entered" : "Purchase price entered", money(isRefi ? num("asIs") : num("price"))],
       assignOn ? ["Assignment \u2014 seller's contract price", money(num("origPrice"))] : null,
       assignOn ? ["Assignment fee", money(num("assignFee"))] : null,
-      (assignOn && d.asg && (d.asg.overLimit || d.asg.overridden)) ? ["Effective purchase price \u2014 " + (d.asg.overridden ? "approved exception" : d.asg.dollarCap ? "fee capped at the program limit" : "fee counted up to 15% of the seller's price"), money(d.asg.recognizedPrice)] : null,
+      (assignOn && d.asg && (d.asg.overLimit || d.asg.overridden)) ? ["Effective purchase price \u2014 " + (d.asg.overridden ? "approved exception" : d.asg.dollarCap ? "fee capped at the program limit" : "fee counted up to " + asgCapLbl(d.asg) + " of the seller's price"), money(d.asg.recognizedPrice)] : null,
       (!isRefi && num("asIs") > 0) ? ["As-is value entered", money(num("asIs"))] : null,
       num("arv") > 0 ? ["After-repair value (ARV)", money(num("arv"))] : null,
       num("construction") > 0 ? ["Construction / rehab budget", money(num("construction"))] : null,
@@ -4398,6 +4624,37 @@
       derivRows.push(["Total loan amount", money(d.totalLoan), "tot"]);
     }
     section("How the loan amount was determined", derivRows);
+
+    /* HOW THE SPEED PROGRAM WAS COMPOSED (owner-directed 2026-09-03). Speed is not a third
+       guideline book: it is the lesser ceiling of the Standard and Silver programs (and its own
+       $1,000,000 wall) priced at the higher of the two rates. This block is what makes a Speed
+       term sheet auditable against either program's guidelines — every figure is read off the
+       module's explain block (`speed`), nothing is derived here. Staff-facing wording says
+       "Standard" and "Silver"; no note buyer is ever named on a term sheet. */
+    if (d.speed && d.speedInfo) (function () {
+      var sp = d.speedInfo, own = sp.standard || {}, ownV = sp.silver || {}, cS = own.ownCeiling || {}, cV = ownV.ownCeiling || {};
+      var enf = d.caps || {}, donor = sp.capDonor || {};
+      var who = function (k) {
+        var w = donor[k];
+        return w === "standard" ? "Standard" : w === "silver" ? "Silver" : w === "both" ? "both" : w === "speed" ? ("Speed " + money(sp.maxLoanCap || 1000000) + " maximum") : "\u2014";
+      };
+      var fig = function (c, k, isMoney) { return (c && c[k] > 0) ? (isMoney ? money(c[k]) : pc(c[k])) : "\u2014"; };
+      var rows = [
+        ["Ceiling", "Standard  \u00b7  Silver  \u00b7  Speed enforced (set by)", "sub"],
+        ["Maximum loan", fig(cS, "maxLoan", true) + "  \u00b7  " + fig(cV, "maxLoan", true) + "  \u00b7  " + fig(enf, "maxLoan", true) + " (" + who("maxLoan") + ")"],
+        ["Acquisition LTV", fig(cS, "maxAcqLTV") + "  \u00b7  " + fig(cV, "maxAcqLTV") + "  \u00b7  " + fig(enf, "maxAcqLTV") + " (" + who("maxAcqLTV") + ")"],
+        ["After-repair LTV", fig(cS, "maxARLTV") + "  \u00b7  " + fig(cV, "maxARLTV") + "  \u00b7  " + fig(enf, "maxARLTV") + " (" + who("maxARLTV") + ")"],
+        ["Loan-to-cost", fig(cS, "maxLTC") + "  \u00b7  " + fig(cV, "maxLTC") + "  \u00b7  " + fig(enf, "maxLTC") + " (" + who("maxLTC") + ")"],
+        ["Standard rate at this structure", own.noteRate > 0 ? fmtRate3(own.noteRate * 100) + "%" : "unpriced"],
+        ["Silver rate at this structure", ownV.noteRate > 0 ? fmtRate3(ownV.noteRate * 100) + "%" : "unpriced"],
+        ["Rate the Speed Program charges", (d.rate > 0 ? fmtRate3(d.rate) + "%" : "\u2014") + (sp.rateDonor ? ("  (the higher \u2014 " + (sp.rateDonor === "silver" ? "Silver" : "Standard") + ")") : ""), "tot"],
+        d.asg ? ["Assignment fee financeable to", asgCapLbl(d.asg) + " of the seller\u2019s contract price (" + money(d.asg.maxFee) + ")"] : null,
+        ["Standard\u2019s own loan under the combined ceiling", own.totalLoan > 0 ? money(Math.floor(own.totalLoan)) : "\u2014"],
+        ["Silver\u2019s own loan under the combined ceiling", ownV.totalLoan > 0 ? money(Math.floor(ownV.totalLoan)) : "\u2014"],
+        ["Both figures above are each program\u2019s total at the SAME combined ceiling; they differ only by the interest reserve each prices at its own rate.", "", "sub"]
+      ];
+      section("How the Speed Program was composed", rows);
+    })();
 
     // The derivation page has to answer "where did this number come from", so it
     // shows BOTH ceilings and never one that moves under a fixed-sounding label
@@ -4530,15 +4787,16 @@
     ["origPrice", "price"].forEach(function (id) { var e = el(id); if (e) e.addEventListener("blur", validateAssign); });
     var slider = el("rLevSlider");
     if (slider) slider.addEventListener("input", function () {
-      var isGold = chosenProgram === "gold", isSilver = chosenProgram === "silver";
-      var rows = ((isGold ? goldLadder() : isSilver ? SVP.priceLadder(gather()) : YSP.priceLadder(gather())).rows) || [];
+      var isGold = chosenProgram === "gold", isSilver = chosenProgram === "silver", isSpeed = chosenProgram === "speed";
+      if (isSpeed && (typeof SPP === "undefined" || !SPP)) return;
+      var rows = ((isGold ? goldLadder() : isSilver ? SVP.priceLadder(gather()) : isSpeed ? SPP.priceLadder(gather()) : YSP.priceLadder(gather())).rows) || [];
       if (!rows.length) return;
       var maxV = rows.length - 1;
       var idx = maxV - parseInt(slider.value, 10);
       if (idx < 0) idx = 0; if (idx > maxV) idx = maxV;
       // Silver stores the rung's KEY (which side the cut is on); the others store the LTC value.
       var chosen = (idx === 0) ? null : (isSilver ? rows[idx].key : rows[idx].ltc);   // top of range = max leverage
-      if (isGold) goldChosenLTC = chosen; else if (isSilver) silverChosenRung = chosen; else chosenLTC = chosen;
+      if (isGold) goldChosenLTC = chosen; else if (isSilver) silverChosenRung = chosen; else if (isSpeed) speedChosenLTC = chosen; else chosenLTC = chosen;
       recompute();
     });
     // Fetch the anti-bot form token at load — by the time a sheet is generated
@@ -4558,6 +4816,7 @@
     var scard = el("pcardStd"); if (scard) scard.addEventListener("click", function () { selectProgram("standard"); });
     var gcard = el("pcardGold"); if (gcard) gcard.addEventListener("click", function () { selectProgram("gold"); });
     var svcard = el("pcardSilver"); if (svcard) svcard.addEventListener("click", function () { selectProgram("silver"); });
+    var spcard = el("pcardSpeed"); if (spcard) spcard.addEventListener("click", function () { selectProgram("speed"); });
     var mcard = el("pcardManual"); if (mcard) mcard.addEventListener("click", function () { selectProgram("manual"); });
     // The stat columns get narrower as the viewport shrinks, so the adaptive
     // font-size ladder has to re-run on resize — otherwise a value that fitted at
@@ -4630,7 +4889,7 @@
     // origination + the broker's origination fee — so the broker sheet prices and
     // prints exactly what the register records. Wins over the boot fetch.
     setPricingDefaults: function (d) { try { pricingDefaultsOverridden = true; applyPricingDefaults(d); seedAdminDefaults(); recompute(); } catch (e) {} },
-    _calc: calc, _calcGold: calcGold, _calcSilver: calcSilver, _xlsxSections: xlsxSections, _gather: gather, _manualOn: manualOn };
+    _calc: calc, _calcGold: calcGold, _calcSilver: calcSilver, _calcSpeed: calcSpeed, _xlsxSections: xlsxSections, _gather: gather, _manualOn: manualOn };
   window.APP = window.TS;
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire); else wire();
 })();

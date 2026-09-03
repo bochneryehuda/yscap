@@ -211,6 +211,17 @@
   .pcard.gold{ border-color:rgba(201,168,106,.5); background:linear-gradient(180deg,rgba(201,168,106,.07),rgba(201,168,106,.015)); }
   .pcard.silver{ border-color:rgba(148,163,178,.55); background:linear-gradient(180deg,rgba(148,163,178,.09),rgba(148,163,178,.02)); }
   .pcard.manual{ border-style:dashed; border-color:rgba(127,169,176,.5); background:linear-gradient(180deg,rgba(47,127,134,.05),rgba(47,127,134,.01)); }
+  /* Speed (2026-09-03): its own lavender accent, #9F8CC2 — mirrors the Silver card's rules; neither Gold's gold, Silver's #8A99A8 nor Manual's teal. */
+  .pcard.speed{ border-color:rgba(159,140,194,.55); background:linear-gradient(180deg,rgba(159,140,194,.09),rgba(159,140,194,.02)); }
+  .ts-speed-comp{ margin:.55rem 0 .6rem; padding:.65rem .8rem; border:1px solid rgba(159,140,194,.55); border-radius:9px; background:rgba(159,140,194,.08); font-size:.78rem; line-height:1.45; }
+  .ts-speed-comp h4{ margin:0 0 .4rem; font-family:var(--font-b); font-size:.7rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:#9F8CC2; }
+  .ts-speed-comp table{ width:100%; border-collapse:collapse; margin:.3rem 0 .45rem; }
+  .ts-speed-comp th, .ts-speed-comp td{ text-align:right; padding:.22rem .35rem; border-bottom:1px solid var(--line-2); white-space:nowrap; }
+  .ts-speed-comp th:first-child, .ts-speed-comp td:first-child{ text-align:left; }
+  .ts-speed-comp th{ font-size:.66rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted-2); font-weight:600; }
+  .ts-speed-comp td.enf{ font-weight:700; color:#9F8CC2; }
+  .ts-speed-comp .tsc-wrap{ overflow-x:auto; }
+  .ts-speed-comp p{ margin:.25rem 0; color:var(--muted); }
   .pcard.pcard-off{ opacity:.5; }
   /* A company-DISCONTINUED program's whole box disappears (owner-directed
      2026-08-18) — display:none, not a dim: "that entire box … should disappear". */
@@ -231,6 +242,7 @@
   .pcard-name{ font-family:var(--font-b); font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--ivory); }
   .pcard.gold .pcard-name{ color:var(--gold-ink); }
   .pcard.silver .pcard-name{ color:#8A99A8; }
+  .pcard.speed .pcard-name{ color:#9F8CC2; }
   .pcard.manual .pcard-name{ color:var(--teal-br,#7FA9B0); }
   /* The badge is a CHIP inside a 249px card, so it can never be allowed to set
      the card's width: max-width + ellipsis is the structural backstop (a long
@@ -247,6 +259,7 @@
   .pcard-loan.tealed{ color:var(--teal-br,#7FA9B0); }
   .pcard.gold .pcard-loan{ color:var(--gold-ink); }
   .pcard.silver .pcard-loan{ color:#8A99A8; }
+  .pcard.speed .pcard-loan{ color:#9F8CC2; }
   .pcard.manual .pcard-loan{ color:var(--teal-br,#7FA9B0); }
   .pcard-headline{ display:flex; gap:.6rem; padding-top:.6rem; border-top:1px solid var(--line-2); min-width:0; }
   /* TWO STATS SHARE ~249px OF CARD, SO EACH GETS ~120px (~105px at 1024px).
@@ -268,6 +281,7 @@
   .pcard-statnum[data-fit="4"]{ font-size:.9rem; letter-spacing:-.01em; }
   .pcard.gold .pcard-statnum{ color:var(--gold-ink); }
   .pcard.silver .pcard-statnum{ color:#8A99A8; }
+  .pcard.speed .pcard-statnum{ color:#9F8CC2; }
   .pcard.manual .pcard-statnum{ color:var(--teal-br,#7FA9B0); }
   /* The label may WRAP to two lines (acceptable — owner-directed), but it must
      never overlap or clip the number above it, and never widen the stat. */
@@ -291,16 +305,19 @@
   .pcard:hover{ border-color:var(--teal,#7FA9B0); transform:translateY(-2px); }
   .pcard.gold:hover{ border-color:var(--gold); }
   .pcard.silver:hover{ border-color:#8A99A8; }
+  .pcard.speed:hover{ border-color:#9F8CC2; }
   .pcard.manual:hover{ border-color:var(--teal-br,#7FA9B0); }
   .pcard.pcard-active{ border-color:var(--teal,#7FA9B0); box-shadow:0 0 0 2px rgba(47,127,134,.28); }
   .pcard.gold.pcard-active{ border-color:var(--gold); box-shadow:0 0 0 2px rgba(201,168,106,.3); }
   .pcard.silver.pcard-active{ border-color:#8A99A8; box-shadow:0 0 0 2px rgba(148,163,178,.32); }
+  .pcard.speed.pcard-active{ border-color:#9F8CC2; box-shadow:0 0 0 2px rgba(159,140,194,.32); }
   .pcard.manual.pcard-active{ border-color:var(--teal-br,#7FA9B0); box-shadow:0 0 0 2px rgba(47,127,134,.3); }
   .pcard.pcard-off{ cursor:default; }
   .pcard.pcard-off:hover{ transform:none; border-color:var(--line-2); }
   .pcard-cta{ margin-top:.7rem; font-size:.72rem; font-weight:700; letter-spacing:.02em; color:var(--teal-br,#7FA9B0); }
   .pcard.gold .pcard-cta{ color:var(--gold-ink); }
   .pcard.silver .pcard-cta{ color:#8A99A8; }
+  .pcard.speed .pcard-cta{ color:#9F8CC2; }
   .pcard.manual .pcard-cta{ color:var(--teal-br,#7FA9B0); }
   .pcard.pcard-off .pcard-cta{ display:none; }
   .prog-hint{ text-align:center; font-size:.8rem; color:var(--muted); margin:.1rem 0 .4rem; line-height:1.4; }
@@ -479,6 +496,7 @@
   .results-col .pcard{ background:var(--ds-card); border-color:var(--ds-line); }
   .results-col .pcard.gold{ border-color:rgba(174,135,70,.5); background:linear-gradient(180deg,rgba(174,135,70,.08),rgba(174,135,70,.02)); }
   .results-col .pcard.silver{ border-color:rgba(120,134,148,.5); background:linear-gradient(180deg,rgba(120,134,148,.08),rgba(120,134,148,.02)); }
+  .results-col .pcard.speed{ border-color:rgba(132,112,170,.5); background:linear-gradient(180deg,rgba(132,112,170,.08),rgba(132,112,170,.02)); }
   .results-col .pcard.manual{ border-color:rgba(47,127,134,.45); background:linear-gradient(180deg,rgba(47,127,134,.05),rgba(47,127,134,.01)); }
   .results-col .panel{ background:var(--ds-card); border:1px solid var(--ds-line); border-radius:12px; }
   .results-col .prog-detail-head{ color:var(--ds-ink-soft); }
@@ -640,7 +658,7 @@
 
         <div class="panel reveal">
             <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M3 7h18v12H3zM3 11h18M7 15h4"/></svg></span> Purchase &amp; project costs <span class="ptag">Step 2</span></h2>
-            <p class="panel-note">Taking over a wholesale contract? Toggle assignment and enter the seller's contract price — the fee fills in automatically and the program finances it up to 15%.</p>
+            <p class="panel-note">Taking over a wholesale contract? Toggle assignment and enter the seller's contract price — the fee fills in automatically and the program finances it up to its cap (15% of the seller’s price on the Standard and Silver programs, 10% on the Speed Program).</p>
             <div class="field cond" data-cond="purchaseOnly">
                 <label for="price">Purchase price<span class="tip" tabindex="0" role="note" aria-label="The contract price you’re paying for the property. For a refinance, the as-is value is used instead.">i<span class="tip-bub">The contract price you’re paying for the property. For a refinance, the as-is value is used instead.</span></span></label>
                 <div class="input"><span class="adorn">$</span><input id="price" type="number" inputmode="numeric" placeholder="e.g. 400,000"></div>
@@ -1029,6 +1047,23 @@
                 <div class="pcard-sub" id="silverSub">—</div>
                 <div class="pcard-cta" id="silverCta">View full details &rarr;</div>
             </article>
+            <!-- THE SPEED PROGRAM (owner-directed 2026-09-03): the composition of Standard and
+                 Silver — the lesser ceiling of the two, the higher rate and origination, a 10%
+                 assignment cap, a $1,000,000 wall. Sits AFTER Silver and BEFORE Manual so the
+                 2×2 grid rule holds (D7): with Gold discontinued the grid reads Standard + Silver
+                 / Speed + Manual; with Gold on, Standard + Gold / Silver + Speed / Manual. -->
+            <article class="pcard speed" id="pcardSpeed" data-prog="speed">
+                <div class="pcard-top"><span class="pcard-name">Speed</span><span class="pcard-badge" id="speedBadge">—</span></div>
+                <div class="pcard-disc" id="speedDisc" hidden></div>
+                <div class="pcard-loanlbl">Loan amount</div>
+                <div class="pcard-loan" id="speedLoanBig">$0</div>
+                <div class="pcard-headline">
+                    <div class="pcard-stat"><div class="pcard-statnum" id="speedRateBig">—</div><div class="pcard-statlbl">note rate<span class="tip" tabindex="0" role="note" aria-label="Your interest rate on the loan. It’s charged interest-only during the term — you pay interest each month, not principal.">i<span class="tip-bub">Your interest rate on the loan. It’s charged interest-only during the term — you pay interest each month, not principal.</span></span></div></div>
+                    <div class="pcard-stat"><div class="pcard-statnum" id="speedOrigBig">$0</div><div class="pcard-statlbl">origination · <span id="speedOrigPts">1.25 pts</span><span class="tip" tabindex="0" role="note" aria-label="The lender’s fee at closing. “1 point” = 1% of the loan amount.">i<span class="tip-bub">The lender’s fee at closing. “1 point” = 1% of the loan amount.</span></span></div></div>
+                </div>
+                <div class="pcard-sub" id="speedSub">Lesser of Standard &amp; Silver · max $1M · 10% assignment fee</div>
+                <div class="pcard-cta" id="speedCta">View full details &rarr;</div>
+            </article>
             <article class="pcard manual" id="pcardManual" data-prog="manual">
                 <div class="pcard-top"><span class="pcard-name">Manual</span><span class="pcard-badge" id="manBadge">—</span></div>
                 <div class="pcard-loanlbl">Loan amount</div>
@@ -1072,6 +1107,10 @@
 
         <div class="prog-detail-head" id="progDetailHead">Standard Program — full breakdown</div>
         <div class="ts-manual-banner" id="rManualBanner" hidden>⚑ Manually underwritten — pricing and leverage set on an admin-defined basis, not the program's automated matrix.</div>
+        <!-- Speed Program drill-in (2026-09-03): the composition — which parent set each ceiling and
+             the rate. Painted by renderSpeedComposition() from the module's own explain block; hidden
+             on every other program. The PDF's derivation page carries the same table. -->
+        <div class="ts-speed-comp" id="rSpeedComp" hidden></div>
         <input type="hidden" id="rLoan">
 
         <div class="ts-missing" id="rMissing" style="display:none"></div>
@@ -1109,7 +1148,7 @@
         <div class="panel">
             <div class="ts-sub first">Loan structure</div>
             <div class="ts-line"><span class="k" id="rEffLbl">Purchase price</span><span class="v" id="rEff">$0</span></div>
-            <div class="ts-line cond hidden" data-cond="asgEff"><span class="k">Effective purchase price<span class="tip" tabindex="0" role="note" aria-label="On an assignment, the fee counts only up to 15% of the seller&#39;s contract price. Every calculation — the initial advance, cost basis and leverage — uses this effective price, never the full purchase price.">i<span class="tip-bub">On an assignment, the fee counts only up to 15% of the seller&#39;s contract price. Every calculation — the initial advance, cost basis and leverage — uses this effective price, never the full purchase price.</span></span></span><span class="v" id="rEffAsg">$0</span></div>
+            <div class="ts-line cond hidden" data-cond="asgEff"><span class="k">Effective purchase price<span class="tip" tabindex="0" role="note" aria-label="On an assignment, the fee counts only up to the program&#39;s cap on the seller&#39;s contract price (15% on the Standard and Silver programs, 10% on the Speed Program). Every calculation — the initial advance, cost basis and leverage — uses this effective price, never the full purchase price.">i<span class="tip-bub">On an assignment, the fee counts only up to the program&#39;s cap on the seller&#39;s contract price (15% on the Standard and Silver programs, 10% on the Speed Program). Every calculation — the initial advance, cost basis and leverage — uses this effective price, never the full purchase price.</span></span></span><span class="v" id="rEffAsg">$0</span></div>
             <div class="ts-line cond" data-cond="hasRehab"><span class="k">Construction / rehab budget</span><span class="v" id="rConstr">$0</span></div>
             <div class="ts-line cond" data-cond="hasRehab"><span class="k">Financed interest reserve<span class="tip" tabindex="0" role="note" aria-label="Interest payments rolled into the loan so the project pays its own carrying cost during the term. You don’t bring this to closing.">i<span class="tip-bub">Interest payments rolled into the loan so the project pays its own carrying cost during the term. You don’t bring this to closing.</span></span></span><span class="v" id="rIR">—</span></div>
             <div class="ts-line em cond" data-cond="hasRehab"><span class="k">Total project cost<span class="tip" tabindex="0" role="note" aria-label="The purchase price (on a capped assignment, the effective purchase price) plus the full rehab budget, plus any financed reserve. Your loan-to-cost is measured against this number.">i<span class="tip-bub">The purchase price (on a capped assignment, the effective purchase price) plus the full rehab budget, plus any financed reserve. Your loan-to-cost is measured against this number.</span></span></span><span class="v" id="rCost">$0</span></div>
@@ -1260,10 +1299,11 @@
 <script src="standard-program.js?v=asgseller18-asgelig-tiermk1-tsprog1-oopauto1-judsmall1-speedlev1"></script>
 <script src="gold-standard.js?v=asgseller19-tiermk1-tsprog1-oopauto1"></script>
 <script src="silver-program.js?v=silver9-bandeps-tiermk1-tsprog1-oopauto1-speedlev1"></script>
+<script src="speed-program.js?v=speed1"></script>
 <script src="title-cost.js?v=admin8-tsprog1"></script>
 <script src="gov-charges.js?v=gov2"></script>
 <script src="address-autocomplete.js?v=admin9-tsprog1"></script>
-<script src="termsheet.js?v=feerows1-heavyrehab1-cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1-derivpage1-bizpurpose1"></script>
+<script src="termsheet.js?v=feerows1-heavyrehab1-cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1-derivpage1-bizpurpose1-speed1"></script>
 <script src="../float-actions.js?v=admin10-applyfix-tsprog1"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

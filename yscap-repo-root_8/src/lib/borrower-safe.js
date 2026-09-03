@@ -183,7 +183,8 @@ function borrowerSafeQuoteBundle(out) {
   if (!out || typeof out !== 'object') return out;
   return { ...out, inputs: stripInputsInternal(out.inputs),
     standard: stripQuoteInternal(out.standard), gold: stripQuoteInternal(out.gold),
-    silver: stripQuoteInternal(out.silver) };
+    silver: stripQuoteInternal(out.silver),
+    speed: stripQuoteInternal(out.speed) };
 }
 
 module.exports = { scrubText, scrubTextExcept, scrubFields, hasPartnerName, PROGRAM, PARTNER_PATTERNS,

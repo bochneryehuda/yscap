@@ -41,6 +41,16 @@ ok(!pp.programMatchesBuyer('gold', 'fidelis'), 'gold does NOT match fidelis');
 ok(!pp.programMatchesBuyer('standard', 'bluelake'), 'standard does NOT match bluelake');
 ok(!pp.programMatchesBuyer('manual', 'fidelis'), 'manual matches nothing');
 ok(!pp.programMatchesBuyer(null, 'fidelis'), 'null program matches nothing');
+// THE SPEED PROGRAM (2026-09-03) — sellable to EITHER parent buyer, implied to NEITHER.
+eq(pp.providerForProgram('speed'), null, 'speed implies no single buyer (the team chooses — like manual)');
+ok(pp.programMatchesBuyer('speed', 'fidelis'), 'speed matches fidelis (the Standard parent)');
+ok(pp.programMatchesBuyer('speed', 'emcap'), 'speed matches emcap (the Silver parent)');
+ok(!pp.programMatchesBuyer('speed', 'bluelake'), 'speed does NOT match bluelake (Gold is not a parent)');
+ok(!pp.programMatchesBuyer('speed', null), 'speed with no buyer matches nothing');
+eq(pp.providersForProgram('speed').join(','), 'fidelis,emcap', 'speed lists both parent buyers');
+eq(pp.providersForProgram('silver').join(','), 'emcap', 'silver lists its one buyer');
+eq(pp.providersForProgram('manual').length, 0, 'manual lists none');
+eq(pp.programLabel('speed'), 'Speed', 'speed label');
 ok(!pp.PARKED_PROGRAMS.has('silver'), 'silver is LIVE (un-parked 2026-07-29 — the EMCAP Silver program build)');
 ok(!pp.PARKED_PROGRAMS.has('gold'), 'gold is not parked');
 // The bulk picker flags a provider "admin-only" when its paired program is absent
@@ -176,6 +186,58 @@ ok(av.length > 0 && av.every((t) => t.available), 'admin sees every tape availab
 // Back-compat: no opts → treated as a non-admin, unregistered loan (all unavailable).
 av = buyerRule.tapeAvailability('fidelis', 'Fidelis');
 ok(av.every((t) => !t.available), 'no-opts availability defaults to gated (register first)');
+
+// ── 3b. THE SPEED PROGRAM (2026-09-03) through the gate — one program, two possible buyers ──
+// The reverse of programMatchesBuyer is DERIVED over program-availability.PROGRAM_KEYS.
+eq(buyerRule.programsForProvider('fidelis').join(','), 'standard,speed', 'Fidelis ships Standard and Speed');
+eq(buyerRule.programsForProvider('emcap').join(','), 'silver,speed', 'EMCAP ships Silver and Speed');
+eq(buyerRule.programsForProvider('bluelake').join(','), 'gold', 'Blue Lake ships Gold only');
+eq(buyerRule.programsForProvider(null).length, 0, 'no buyer → no program');
+{
+  const pa = require('../src/lib/program-availability');
+  for (const b of ['fidelis', 'emcap', 'bluelake']) {
+    eq(buyerRule.programsForProvider(b).join(','), pa.PROGRAM_KEYS.filter((p) => pp.programMatchesBuyer(p, b)).join(','),
+      `programsForProvider('${b}') IS the filter of PROGRAM_KEYS by programMatchesBuyer — one definition`);
+  }
+}
+eq(buyerRule.programsLabel(['silver', 'speed']), 'Silver or Speed', 'two programs read "A or B"');
+eq(buyerRule.programsLabel(['standard']), 'Standard', 'one program reads plainly');
+// A Speed loan exports whichever parent tape its buyer names — and neither while the buyer is blank.
+ok(buyerRule.exportGate(loan('Fidelis Investors LLC'), fidelisTape, { isAdmin: false, registeredProgram: 'speed' }).ok, 'speed + Fidelis → Fidelis tape OK for a non-admin');
+ok(buyerRule.exportGate(loan('EMCAP Financial'), emcapTape, { isAdmin: false, registeredProgram: 'speed' }).ok, 'speed + EMCAP → EMCAP tape OK for a non-admin');
+g = buyerRule.exportGate(loan('Blue Lake Capital'), bluelakeTape, { isAdmin: false, registeredProgram: 'speed' });
+ok(!g.ok && g.error.code === 'program_mismatch', 'speed + Blue Lake → program_mismatch (Gold is not a Speed parent)');
+ok(/is for Gold loans\. Register it as Gold,/.test(g.error.message), 'and the message still reads as a sentence for a 1:1 buyer');
+g = buyerRule.exportGate(loan('Fidelis Investors LLC'), emcapTape, { isAdmin: false, registeredProgram: 'speed' });
+ok(!g.ok && g.error.code === 'buyer_mismatch', 'a Speed loan on Fidelis cannot export the EMCAP tape — the buyer on the file decides');
+g = buyerRule.exportGate(loan(null), fidelisTape, { isAdmin: false, registeredProgram: 'speed' });
+ok(!g.ok && g.error.code === 'buyer_mismatch' && /no capital provider set/i.test(g.error.message), 'a Speed loan with a BLANK buyer exports neither tape, and says to set the buyer');
+// The mismatch copy names EVERY program a tape ships, derived — never "is for  loans".
+g = buyerRule.exportGate(loan('Fidelis'), fidelisTape, { isAdmin: false, registeredProgram: 'gold' });
+ok(/is for Standard or Speed loans\. Register it as Standard or Speed,/.test(g.error.message), 'the Fidelis mismatch names Standard or Speed');
+eq(g.error.requiredProgram, 'standard', 'requiredProgram (the buyer\'s OWN program) is unchanged for the 1:1 rows');
+eq(g.error.requiredPrograms.join(','), 'standard,speed', 'requiredPrograms lists every program that may ship');
+g = buyerRule.exportGate(loan('EMCAP'), emcapTape, { isAdmin: false, registeredProgram: 'standard' });
+ok(/is for Silver or Speed loans/.test(g.error.message), 'the EMCAP mismatch names Silver or Speed');
+{
+  // A tape whose buyer has NO paired program (programForProvider null) still reads as a sentence.
+  const orphan = { key: 'orphan', name: 'Orphan', fullName: 'Orphan Capital', buyerKey: 'orphan' };
+  const e = new buyerRule.ProgramMismatchError(orphan, 'speed');
+  ok(!/for  loans|as ,/.test(e.message) && /no program is paired with the Orphan tape/.test(e.message) && /Ask an admin/.test(e.message),
+    'an unpaired buyer\'s mismatch says so and points at an admin — never an empty blank');
+  eq(e.requiredProgram, null, '…with no required program');
+}
+// tapeAvailability for a Speed loan: the buyer on the file picks the tape.
+av = buyerRule.tapeAvailability('fidelis', 'Fidelis Investors LLC', { isAdmin: false, registeredProgram: 'speed' });
+ok(byKey(av, 'fidelis').available, 'speed + Fidelis: the Fidelis tape is available');
+ok(!byKey(av, 'emcap').available && /switch it to EMCAP/i.test(byKey(av, 'emcap').reason), 'the EMCAP tape asks to switch the capital provider');
+ok(!byKey(av, 'bluelake').available, 'the Blue Lake tape is not available');
+av = buyerRule.tapeAvailability('emcapfinancial', 'EMCAP Financial', { isAdmin: false, registeredProgram: 'speed' });
+ok(byKey(av, 'emcap').available && !byKey(av, 'fidelis').available, 'speed + EMCAP: the EMCAP tape, not the Fidelis one');
+av = buyerRule.tapeAvailability(null, null, { isAdmin: false, registeredProgram: 'speed' });
+ok(av.every((t) => !t.available && /No capital provider set/.test(t.reason)), 'speed + blank buyer: nothing exports, every reason says to set the capital provider');
+av = buyerRule.tapeAvailability('fidelis', 'Fidelis', { isAdmin: false, registeredProgram: 'gold' });
+ok(/is for Standard or Speed loans/.test(byKey(av, 'fidelis').reason), 'the availability reason lists every program the tape ships');
 
 // ── 4. permission defaults ─────────────────────────────────────────────────
 const has = (role) => perms.defaultsFor(role).has('export_data_tapes');

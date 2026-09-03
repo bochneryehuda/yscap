@@ -12,6 +12,7 @@ import { US_STATES } from '../components/LlcManager.jsx';
 import { MoneyInput, PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.jsx';
 import { moneyStr, moneyNum } from '../lib/money.js';
 import { fullNameOf } from '../lib/personName.js';
+import { programLabel } from '../lib/programLabel.js';
 import TermSheetStudio, {
   buildStudioState, portalLoanType, portalProgram, selectionFromSnapshot, blobToBase64, rehabTypePatch,
 } from '../components/TermSheetStudio.jsx';
@@ -447,7 +448,7 @@ export default function Apply() {
     const s = studioRef.current && studioRef.current.snapshot();
     if (!s) { setErr('The Term Sheet Studio is still loading — one moment.'); return; }
     if (!s.ready) { setErr('Complete the required pricing fields first: ' + s.missing.join(', ')); return; }
-    if (!s.program) { setErr('Tap the Standard, Gold Standard or Silver card above to choose your product, then register.'); return; }
+    if (!s.program) { setErr('Tap a program card above to choose your product, then register.'); return; }
     const d = s.d;
     if (!d || d.status === 'INELIGIBLE' || !(d.totalLoan > 0)) {
       setErr("This scenario isn't eligible as entered — adjust the deal above, or finish later and price it with your loan team.");
@@ -931,7 +932,7 @@ export default function Apply() {
             <p className="muted small" style={{ marginBottom: 12 }}>
               This is the live YS Term Sheet Studio, prefilled from your application — the same
               guidelines, limits and pricing as our public tool. Adjust anything, compare the
-              Standard, Gold Standard and Silver programs, choose your leverage, then tap a program card
+              programs offered on your deal, choose your leverage, then tap a program card
               and register: your loan amount, structure, cash to close, liquidity requirement and
               the signable term sheet PDF are all saved onto your loan file.
             </p>
@@ -970,8 +971,8 @@ export default function Apply() {
         {step === 4 && (
           <p className="muted small" style={{ marginTop: 8 }}>
             {snap && !snap.ready ? `Still needed to price: ${snap.missing.join(', ')}.`
-              : snap && !snap.program ? 'Tap the Standard, Gold Standard or Silver card above to open your product.'
-              : snap && snap.d && snap.d.totalLoan > 0 ? `Selected: ${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : 'Standard'} · ${'$' + Math.round(snap.d.totalLoan).toLocaleString('en-US')} @ ${snap.d.rate ? snap.d.rate.toFixed(2) + '%' : '—'} · cash to close ${'$' + Number(snap.d.cashToClose).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · liquidity to show ${'$' + Number(snap.d.liquidity).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : snap && !snap.program ? 'Tap a program card above to open your product.'
+              : snap && snap.d && snap.d.totalLoan > 0 ? `Selected: ${programLabel(snap.program, { short: true })} · ${'$' + Math.round(snap.d.totalLoan).toLocaleString('en-US')} @ ${snap.d.rate ? snap.d.rate.toFixed(2) + '%' : '—'} · cash to close ${'$' + Number(snap.d.cashToClose).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · liquidity to show ${'$' + Number(snap.d.liquidity).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
               : ''}
           </p>
         )}
