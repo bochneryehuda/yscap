@@ -338,5 +338,58 @@ globalThis.__x = { React, renderToString, LtPricer, PricerScreen, LtCombinedPric
   }
 }
 
+console.log('\nI. the answer comes back FIRST — only what decides whether the board is safe to read sits above it');
+{
+  /**
+   * OWNER-REPORTED 2026-09-03: *"I don't like the way you put it on the search page right after the
+   * search instead of coming back right results."* Four panels sat between pressing Price and the
+   * prices, and one of them — the live side-by-side that reconciles two spellings of one investor —
+   * is not about the answer at all. It changes how the NEXT board is joined.
+   *
+   * This is the SAME finding the comparison area got on 2026-09-01, when it was measured at
+   * 1440x1000 pushing the first rate row to y=810: an officer saw ONE rate on the screen whose whole
+   * job is the board.
+   *
+   * ⛔ A SOURCE GUARD, AND SAID SO. Proving the order by RENDERING would need a priced board, and
+   * this suite deliberately stubs the price door with a never-resolving promise, so the screen it
+   * draws has no answer and therefore no slots at all. What is pinned instead is the wiring: which
+   * slot each panel is mounted in, and where in the shared screen each slot draws. Both are exact,
+   * and moving the panel back is precisely what they catch.
+   */
+  const g = codeOf(general);
+  const c = codeOf(combined);
+
+  const strip = g.indexOf('slots.afterStrip({');
+  /* ⛔ THE BOARD'S OWN CONDITIONAL, not the first mention of `view === 'priced'` — that one is the
+     TAB BUTTON far above, so anchoring on the bare phrase made I1 compare the slot against a
+     button and fail on correct code. Matched on the ternary that opens the board (one occurrence,
+     asserted), which is the thing the slots are ordered around. */
+  const BOARD_ANCHOR = "view === 'priced' ? (";
+  ok(g.split(BOARD_ANCHOR).length - 1 === 1, 'I0a the board opens with exactly one such ternary, so the anchor is the board');
+  const board = g.indexOf(BOARD_ANCHOR);
+  const after = g.indexOf('slots.afterBoard({');
+  ok(strip > 0 && board > 0 && after > 0, 'I0 (located the two slots and the board)');
+  ok(strip < board, 'I1 the above-the-board slot draws BEFORE the answer');
+  ok(after > board, 'I2 …and the after-the-board slot draws AFTER it — which is the whole fix');
+
+  /* The panel the owner was looking at, in the slot that draws after the answer. Matched on the
+     MOUNT rather than on the import, because the file imports it either way. */
+  const inStrip = c.slice(c.indexOf('afterStrip:'), c.indexOf('afterBoard:'));
+  const inBoard = c.slice(c.indexOf('afterBoard:'));
+  ok(!/<LtInvestorLinks/.test(inStrip),
+    'I3 the live side-by-side is NOT mounted above the board any more');
+  ok(/<LtInvestorLinks/.test(inBoard),
+    'I4 …it is mounted below it');
+
+  /* What may STAY above, and why each one earns it — a guard that only banned one panel would let
+     the next one land there without a reason. */
+  ok(/<ShortBoardNotice/.test(inStrip),
+    'I5 "some of your prices are missing" stays above — a person reading a short board without knowing it is short may act on it');
+  ok(/<CombinedPanel/.test(inStrip),
+    'I6 …and so does the accounting of what is not on the board, which is the other half of that warning');
+  ok(/<NearTierFlag/.test(inStrip),
+    'I7 …and an offer to CHANGE THE SEARCH belongs beside the search, not under the answer it would replace');
+}
+
 console.log(bad ? `\nFAILURES: ${bad}` : '\nOFFLINE: all passed');
 process.exit(bad ? 1 : 0);

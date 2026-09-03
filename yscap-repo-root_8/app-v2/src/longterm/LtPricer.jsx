@@ -1839,8 +1839,13 @@ export function IneligibleView({ dq, onAsk, loanAmount, initialOpen, comp, invSe
  * copy nobody can diff.
  *
  * `slots` are the panels only ONE board has, handed in by that board rather than flagged here:
- * a screen that lists its own exceptions is a copy with extra steps. Each is given what it needs
- * from this screen's state and nothing else.
+ * a screen that lists its own exceptions is a copy with extra steps. There are TWO of them and the
+ * difference is WHERE they draw, never what they may know — both are handed the same bag:
+ *
+ *   · `afterStrip` — between the search and the board. ONLY for something that decides whether the
+ *     answer below is safe to read at all, or that changes the search. Anything else here is a
+ *     panel between somebody pressing Price and the prices.
+ *   · `afterBoard`  — after the answer. Everything else, and the default for a new panel.
  */
 /**
  * WHAT THE PRODUCT ANSWERS TOOK OFF THE BOARD, in one plain sentence — or nothing at all.
@@ -2918,6 +2923,24 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
             ) : (
               <IneligibleView dq={dq} onAsk={askDisqualified} loanAmount={loanAmount} comp={comp} invSel={invSel} />
             )}
+            {/* ⛔ AND WHATEVER BELONGS *AFTER* THE ANSWER — owner-reported 2026-09-03: *"I don't
+                like the way you put it on the search page right after the search instead of
+                coming back right results."* A panel that is about reconciling names, not about
+                whether this board is safe to read, sits between somebody pressing Price and the
+                prices. It is the same finding the comparison area got on 2026-09-01, one panel
+                further up: the work happens in the order price → read → tidy up, so anything that
+                is not about THIS answer waits until after it.
+
+                It is INSIDE `{res && stack && …}` on purpose — unlike the cart below, which spans
+                searches and must survive an empty board. A slot here describes the answer that
+                just came back, so with no answer there is nothing for it to describe.
+
+                The bag is the SAME one `afterStrip` gets. Two slots on one screen handing out two
+                different sets of state is two contracts to keep in step, and the difference between
+                them is WHERE they draw, never WHAT they may know. */}
+            {typeof slots.afterBoard === 'function' && slots.afterBoard({
+              res, busy, reveal, setReveal, reprice: run, setForm: setF,
+            })}
           </>
         )}
 
