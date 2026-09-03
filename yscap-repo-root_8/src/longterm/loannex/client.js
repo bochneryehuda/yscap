@@ -384,7 +384,22 @@ async function evidence(sc, quote, opts = {}) {
     data: {
       productId: quote.productId, investorId: quote.lenderId,
       selectedPriceData: {
-        price: quote.price, rate: quote.rate, priceHashKey: quote.priceHashKey,
+        /**
+         * ⛔ THE SHEET'S OWN PRICE, NOT THE ROUNDED ONE. MEASURED LIVE, 2026-09-03.
+         *
+         * LoanNEX looks a quote up by matching this price against its sheet EXACTLY. Our parser
+         * rounds to three decimals for display; 269 of 4,396 rungs on one live board need a
+         * fourth. Sent rounded, the sheet found no quote and answered `{"status":"Success"}` with
+         * no body — which the panel reported as "the rate sheet accepted the question and returned
+         * no breakdown", blaming the vendor for our own rounding. Proven on one quote, everything
+         * else held identical: 104.1762 answered, 104.176 came back empty.
+         *
+         * `priceExact` is the vendor's number carried untouched from the parse (never held back —
+         * see `vendor-margin`). `price` remains the fallback for a caller that has only the
+         * rounded figure, so an older row still asks the question it asked yesterday.
+         */
+        price: quote.priceExact != null ? quote.priceExact : quote.price,
+        rate: quote.rate, priceHashKey: quote.priceHashKey,
         lockDays: quote.lockDays, includeAdminFee: false,
       },
       nexApp: scenario.buildNexApp(sc, registry, { countyKey: county.countyKey }),

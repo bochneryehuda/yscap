@@ -180,6 +180,13 @@ function searchIdentity(quote, body) {
  *
  * A holdback of zero, an unreadable one, or a quote with no price returns the quote itself, so a
  * Lender Price row and an ordinary board are byte-identical to what they were.
+ *
+ * ⛔ THIS IS THE FALLBACK NOW, NOT THE MAIN ROUTE. A LoanNEX handle also carries `priceExact` —
+ * the sheet's own price to the last decimal — and `loannex/client.evidence` prefers it, because
+ * adding 0.25 back onto a figure already rounded to three decimals does NOT reproduce a price with
+ * a fourth (104.1762 → 104.176 → 103.926 → 104.176), and the sheet matches exactly. Adding it back
+ * here still matters for a row shaped before that field existed, and `priceExact` rides through
+ * this function untouched — it is the vendor's number and our margin is not on their sheet.
  */
 function vendorQuote(quote, points) {
   const pts = Number(points);

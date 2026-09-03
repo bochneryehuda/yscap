@@ -325,6 +325,13 @@ function applyToBoard(board, source, opts) {
       // board somebody will spend an afternoon on. A holdback moves the price
       // down and the points up by exactly the same amount, so shift.
       const points = nn(r.points) ? r3(Number(r.points) + pts) : r3(100 - price);
+      /**
+       * ⛔ `priceExact` RIDES THROUGH UNSHIFTED, AND THAT IS DELIBERATE. It is the vendor's own
+       * price to the last decimal, kept for one purpose only: asking that vendor to itemise a
+       * quote it can still recognise (`loannex/parse` has the measurement). Our holdback is not
+       * on its sheet, so a held-back `priceExact` would be a price the sheet has never quoted —
+       * which is the exact failure the field was added to end. Spread through, never touched.
+       */
       return { ...r, vendorPrice: r3(vendorPrice), price, points, marginHoldback: pts };
     }),
     // ⛔ AND THE ITEMIZED OPTIONS BESIDE THEM, OR THE BOARD AND ITS OWN DETAILS TABLE QUOTE TWO

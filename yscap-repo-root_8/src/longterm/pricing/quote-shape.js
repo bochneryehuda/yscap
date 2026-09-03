@@ -498,6 +498,21 @@ function explainHandle(r, p, price, opts = {}) {
     priceHashKey: r.priceHashKey,
     rate: round3(r.rate),
     price,
+    /**
+     * ⛔ AND THE VENDOR'S OWN PRICE, UNROUNDED, BESIDE THE ONE THE SCREEN SHOWS.
+     *
+     * The sheet matches a quote on the price we hand back, to the decimal. `price` above has been
+     * rounded to three for display and then had our holdback taken out of it, so it is OUR number,
+     * not the sheet's — handed back, the sheet finds nothing and answers with an empty body, and
+     * the panel says the rate sheet returned no breakdown. `loannex/parse` carries the measurement
+     * that proved it. This is the number the explain door actually sends; `price` stays because
+     * the panel prints it and because it is what somebody quotes.
+     *
+     * Absent on a Lender Price row — that vendor publishes its itemisation with the quote and is
+     * never asked a second question — so the key is omitted rather than set to null.
+     */
+    priceExact: r.priceExact != null ? Number(r.priceExact)
+      : (r.vendorPrice != null ? Number(r.vendorPrice) : undefined),
     lockDays: r.lockDays,
     productId: p.productId,
     // BOTH ids, on the ordinary board too. The vendor addresses a quote by product AND investor
@@ -508,6 +523,7 @@ function explainHandle(r, p, price, opts = {}) {
     lenderId: p.lenderId != null ? p.lenderId : (p[EXPLAIN_LENDER_ID] != null ? p[EXPLAIN_LENDER_ID] : undefined),
   };
   if (h.lenderId === undefined) delete h.lenderId;
+  if (h.priceExact === undefined) delete h.priceExact;
   // Omitted rather than sent as null: a null would read as "asked and there was none",
   // and the route falls back to the request body only when the key is genuinely absent.
   if (opts.transactionId != null) h.transactionId = opts.transactionId;

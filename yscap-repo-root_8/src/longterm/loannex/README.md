@@ -713,3 +713,56 @@ A fifth recording — the investor portals, with pricing — settled several thi
   field; it is a product the answer returns.
 - **The scenario defaults and the button names are now shared** with Lender Price
   (`../pricing/scenario-defaults.js`) — before that the two programs were priced on different loans.
+
+## Update, 2026-09-03 — why some rows showed no LLPAs at all, and it was ours
+
+The owner reported rows on **NQM, Acra and E-Resi** that drew no itemised adjustments, no base price
+and no final price — the Details panel saying *"the rate sheet accepted the question and returned no
+breakdown for this quote"*. That sentence blamed the vendor. The vendor was answering our question
+correctly; the question was wrong.
+
+**The finding.** LoanNEX locates the quote to itemise by matching the **price** we send back against
+its own sheet **exactly**. Our parser rounds every price to three decimals for display. On one live
+board (Hartford County CT, 500k value / 375k loan, 760 FICO, DSCR 1.30, 60-month prepay — 263
+programmes, 14 investors, 4,396 priced rungs) **269 rungs carry a fourth decimal**: 104.1762,
+100.7605, 103.8855, 96.6756. Sent back rounded, the sheet found no quote and answered
+`{"status":"Success"}` with no body.
+
+Proven both ways on one quote with everything else held identical — productId 38068, investorId
+7233, hash `38068-1382-33114-5316`, rate 6.875, 30-day lock:
+
+| price sent | vendor's answer |
+| --- | --- |
+| `104.1762` (the sheet's own) | a full breakdown |
+| `104.176` (ours, rounded) | `{"status":"Success"}`, no body |
+
+Across the board, one quote per investor that needed a fourth decimal: **8 of 8 answer with the
+exact price, 0 of 8 answered with the rounded one.** The four investors carrying fourth-decimal
+prices were **Acra, E-Resi, NQM and Ellington** — three of them exactly the ones reported.
+
+**Why adding the holdback back did not rescue it.** The explain door already added our 0.25 back on
+before asking, so the vendor is asked about its own number. But that arithmetic runs on a figure
+that has already lost its fourth decimal: `104.1762 → 104.176 → 103.926 → 104.176`. The holdback was
+never the problem; the rounding is, and it happens two steps earlier.
+
+**The fix.** Every rung now carries `priceExact` — the vendor's own number, untouched — beside the
+rounded `price` a screen shows.
+
+- `parse.js` keeps it (`priceExact: price`, no rounding).
+- `../pricing/vendor-margin.js` spreads it through **unshifted**: our margin is not on their sheet,
+  so a held-back `priceExact` would be a price the sheet has never quoted.
+- `../pricing/quote-shape.js` puts it on the explain handle, and it is on the ADDRESS allowlist in
+  `test-lt-loannex-parity-pure` (BOARD-8b) as an address key, because it is one.
+- `client.js` `evidence()` sends it, falling back to `price` for a row shaped before this existed.
+
+Nothing on a screen reads `priceExact`. The board, the comparison, the holdback and the panel all
+keep working on the rounded `price`, and price + points on a row still sum to 100.
+
+**Guard:** `scripts/test-lt-explain-exact-price-pure.js` — 30 checks across the parser, the holdback,
+the handle and, in section D, the **outgoing request body itself**. That last part matters: the
+defect was invisible from outside `evidence()`, which returned a well-formed "the sheet had nothing"
+answer that every layer above it handled correctly. The only place the mistake existed was the
+number in the request, so the test replaces `global.fetch` and reads it.
+
+**What this does not change.** `vendor_returned_no_evidence` stays a real answer with a real message
+— a sheet genuinely can have nothing for a quote. It should now be rare rather than routine.

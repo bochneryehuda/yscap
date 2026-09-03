@@ -98,6 +98,22 @@ function parse(raw) {
       p.rungs.push({
         rate,
         price: round3(price),
+        /**
+         * ⛔ THE VENDOR'S OWN NUMBER, TO THE LAST DECIMAL — AND WHY IT CANNOT BE THE ROUNDED ONE.
+         *
+         * Measured live on 2026-09-03: LoanNEX finds a quote to itemise by matching the price we
+         * send back against its own sheet EXACTLY. 269 of 4,396 rungs on one board carry a fourth
+         * decimal (104.1762, 100.7605, 103.8855). Rounded to three for display and sent back that
+         * way, the sheet found nothing and answered `{"status":"Success"}` with no body — and the
+         * Details panel then said "the rate sheet accepted the question and returned no breakdown",
+         * blaming the vendor for a price of our own making. Proven both ways on the same quote:
+         * 104.1762 answered, 104.176 came back empty, everything else identical.
+         *
+         * So the rung carries BOTH. `price` is what a screen shows and what every comparison and
+         * every holdback works on; `priceExact` is what goes back to the vendor when we ask it to
+         * explain itself, and nothing else ever reads it.
+         */
+        priceExact: price,
         points: round3(100 - price),
         pointsDerived: true,
         lockDays: lt.lockDays == null ? null : Number(lt.lockDays),

@@ -868,7 +868,16 @@ console.log('Two programs, one loan — parity');
   ok(!/"source"|lenderId|investorOrganizationGuid/.test(bodies),
     'BOARD-8 no row BODY on the ordinary board names a vendor — the one-system rule reaches the copied screen too');
   const handles = progs.flatMap((p) => (p.options || []).map((o) => o.explain).filter(Boolean));
-  const ADDRESS_KEYS = ['vendor', 'priceHashKey', 'rate', 'price', 'lockDays', 'productId', 'lenderId', 'transactionId', 'portal'];
+  /**
+   * `priceExact` JOINED THIS LIST ON 2026-09-03, AND IT IS AN ADDRESS KEY IN THE STRICTEST SENSE:
+   * the sheet finds the quote by matching this price EXACTLY. Our `price` above is rounded to three
+   * decimals for the screen and then has the holdback taken out of it, so it addresses nothing —
+   * measured live, 269 of 4,396 rungs on one board need a fourth decimal, and every one of them
+   * came back `{"status":"Success"}` with no body. It carries no vendor tell: it is a number, and
+   * a Lender Price row has no explain handle at all. `test-lt-explain-exact-price-pure` holds the
+   * measurement and pins what goes on the wire.
+   */
+  const ADDRESS_KEYS = ['vendor', 'priceHashKey', 'rate', 'price', 'priceExact', 'lockDays', 'productId', 'lenderId', 'transactionId', 'portal'];
   ok(handles.length > 0 && handles.every((h) => Object.keys(h).every((k) => ADDRESS_KEYS.includes(k))),
     `BOARD-8b …and the explain ADDRESS carries only the keys that address a quote, nothing more (${handles.length} handles, offending keys: ${JSON.stringify([...new Set(handles.flatMap((h) => Object.keys(h)).filter((k) => !ADDRESS_KEYS.includes(k)))])})`);
   ok(handles.every((h) => h.lenderId != null),
