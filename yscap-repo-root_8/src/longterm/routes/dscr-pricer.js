@@ -183,7 +183,11 @@ function rejectInvalidRequest(sc, res) {
   // at this hop would leave every door reading `undefined` and the officer told
   // nothing — the number changed behind them, which is the one thing the clamp was
   // not allowed to do.
-  return { rejected: false, scenario: v.scenario || sc, countyEnrichment: v.countyEnrichment || null, dscrClamped: v.dscrClamped || null };
+  /* ⛔ AND SO DOES THE STATIC REQUEST BUILD. `wantFrom` mirrors the body Lender Price was
+     actually sent to narrow the LoanNEX board on interest-only and the rate lock; the WIRE
+     body wins, and this is the fallback for a search where Lender Price never answered.
+     Dropping it here left the board with nothing to fall back to. */
+  return { rejected: false, scenario: v.scenario || sc, countyEnrichment: v.countyEnrichment || null, dscrClamped: v.dscrClamped || null, request: v.request || null };
 }
 
 // Cash-out amount ("cash in hand") transparency — so it is never SILENTLY handled either way. It is
@@ -341,6 +345,8 @@ async function priceBrackets(req, res) {
   const cfg = await generalBoard.loadConfig({
     routes: body.routes, links: body.links, marginHoldback: body.marginHoldback,
   });
+  // The static Lender Price build, as the narrowing's fallback (see `rejectInvalidRequest`).
+  cfg.staticRequest = chk.request || null;
 
   /* WHAT EACH SHEET ACTUALLY PRODUCED, AND WHO THE SECOND SHEET DID NOT CARRY, ACROSS THE
      WHOLE SEARCH. One search asks the sheets once per DSCR band, and an investor that answers
@@ -469,6 +475,7 @@ async function price(req, res) {
        owner's call, not a silent side effect of this change. */
     const cfg = await generalBoard.loadConfig({ routes: body.routes, links: body.links, marginHoldback: body.marginHoldback });
     cfg.debug = !!body.debug; cfg.raw = !!body.raw; // dev diagnostics, parity with the summary door
+    cfg.staticRequest = chk.request || null; // the narrowing's fallback (see `rejectInvalidRequest`)
     const board = await generalBoard.boardForScenario(sc, { lp, nex, investorPrograms }, cfg);
     if (!board.ok) return res.status((board.http && board.http >= 500) ? 502 : 400).json(priceErrorBody(board));
     if (rejectInvalidValues(board.request, res)) return; // a supported field carried an unrecognized value

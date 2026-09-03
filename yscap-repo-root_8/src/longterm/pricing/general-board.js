@@ -44,6 +44,12 @@ const vendorMargin = require('./vendor-margin');
 const productFilter = require('./product-filter');
 const investorConfig = require('./investor-config');
 const investorLinks = require('./investor-links');
+/* ⛔ THE SEARCH MODEL IS REQUIRED, NEVER READ OFF THE INJECTED CLIENT. `wantFrom` mirrors the
+   Lender Price request through `mapAmortization` and `resolveSearchTerms`, which live on the
+   search MODEL. Reading them off `deps.lp` would silently answer `{}` for every caller that
+   injects a stub — including every test — so the narrowing would quietly do nothing in exactly
+   the place it is supposed to be proven. Same module, same functions, as the combined engine. */
+const lpModel = require('../lenderprice/search-model');
 
 /** The reason a vendor call did not produce a board, in one short phrase. */
 function reasonOf(e) {
@@ -191,22 +197,68 @@ async function boardForScenario(sc, deps, opts = {}) {
   const deco = investorPrograms.decorate(lpParsed.programs);
   const lpBoard = { source: 'lenderprice', programs: deco.programs };
 
-  // ── The LoanNEX half, shaped by the SAME code the combined engine uses ─────
-  // Fixed only (see the header). `wantFrom` is deliberately not consulted for the
-  // amortization: this screen has no ARM chooser, so there is no officer answer to
-  // read and "fixed" is the standing rule rather than a preference.
+  /* ── The LoanNEX half, shaped by the SAME code the combined engine uses ─────
+     ⛔ ALL FOUR DIMENSIONS, NOT ONLY THE ARM ONE (owner-reported 2026-09-03: *"LoanNEX was
+     perfect, including filtering out the wrong programs by term and by interest-only and by
+     ARM… I told you to copy it from here"*). This board narrowed on the amortization ALONE,
+     so an officer's own interest-only answer, their term and their rate lock did nothing to
+     the LoanNEX half while Lender Price had already been asked for exactly those — the two
+     sheets answering two different questions on one screen. MEASURED on the recorded board:
+     38 programmes reached this board against the combined engine's 13, 19 of them
+     interest-only on a search that asked for none, 15 at 40 years on a 30-year search, and
+     about 69% of the rungs at a lock nobody asked for (mean spread 0.206 points, max 0.500 —
+     twice the whole margin holdback).
+
+     `productFilter.wantFrom` is the ONE definition of what a search is asking for, and it
+     MIRRORS the request rather than re-deciding it: interest-only and the rate lock are read
+     off the body Lender Price was ACTUALLY sent, the term set comes from `resolveSearchTerms`
+     (the one place that owns "an interest-only search also covers 40 years"). Re-deriving any
+     of it here would mean a change to that rule narrowed one vendor's board and not the
+     other's, on the same search, silently.
+
+     ⛔ WHICH REQUEST, and the fallback is not decoration: the client builds the body it POSTs
+     on the tenant's LIVE foundation, so the wire body and the static build can genuinely
+     disagree about `criteria.interestOnly`. The wire body wins; the static build is the
+     fallback for a caller with none to hand.
+
+     ⛔ AND THE AMORTIZATION IS STILL FORCED TO FIXED, AFTER. Owner-directed: *"In the general
+     engine, don't enable the ARM feature."* `amortization` is not a supported field on this
+     door — a caller sending one is 422'd — so `wantFrom` already falls back to fixed; forcing
+     it is belt-and-braces against the day that field is accepted, and it is applied AFTER so
+     it can only ever narrow, never widen. */
   let nxBoard = null;
   let nxMeta = null;
   const nxOk = nxRes.status === 'fulfilled' && nxRes.value && nxRes.value.board;
   if (nxOk) {
-    const narrowed = productFilter.narrowBoard(nxRes.value.board, { amortization: 'fixed' });
+    const wire = lpAnswer.request && typeof lpAnswer.request === 'object' ? lpAnswer.request : null;
+    const staticReq = opts.staticRequest && typeof opts.staticRequest === 'object' ? opts.staticRequest : null;
+    const lpRequest = wire || staticReq;
+    const lpCriteria = (wire && wire.criteria && typeof wire.criteria === 'object')
+      ? wire.criteria
+      : (staticReq && staticReq.criteria && typeof staticReq.criteria === 'object' ? staticReq.criteria : null);
+    const want = Object.assign(
+      productFilter.wantFrom(sc, lpModel._internals, { lpCriteria, lpRequest }),
+      { amortization: 'fixed' },
+    );
+    const narrowed = productFilter.narrowBoard(nxRes.value.board, want);
     nxBoard = vendorMargin.applyToBoard(narrowed.board, 'loannex', {
       saved: opts.heldSetting, extraFor: opts.extraFor,
     });
     nxMeta = {
       transactionId: nxRes.value.transactionId || null,
       portal: nxRes.value.portal || null,
+      /* WHAT THE NARROWING ACTUALLY DROPPED, PER DIMENSION — reported rather than
+         silent, because "209 programmes became 41" with no reason is the same
+         silence this filter replaces. `want` rides along so a screen can say what
+         the search was read as asking for, not only what fell out of it. */
+      want,
       droppedArm: (narrowed.dropped && narrowed.dropped.amortization) || 0,
+      droppedIo: (narrowed.dropped && narrowed.dropped.interestOnly) || 0,
+      droppedTerm: (narrowed.dropped && narrowed.dropped.term) || 0,
+      droppedLock: (narrowed.dropped && narrowed.dropped.lock) || 0,
+      droppedLockRungs: (narrowed.droppedRungs && narrowed.droppedRungs.lock) || 0,
+      unclassified: narrowed.unclassified || 0,
+      kept: narrowed.kept || 0,
       // What the sheet published twice, and what it published twice that no longer
       // prices alike — carried out so the board can account for every programme.
       duplicates: narrowed.duplicates || [],

@@ -24,6 +24,7 @@ const nexParse = require(path.join(ROOT, 'src/longterm/loannex/parse.js'));
 const investorPrograms = require(path.join(ROOT, 'src/longterm/lenderprice/investor-programs.js'));
 
 let pass = 0; let fail = 0;
+const eqA = (a, b, m) => ok(JSON.stringify(a) === JSON.stringify(b), `${m} — got ${JSON.stringify(a)}, want ${JSON.stringify(b)}`);
 const ok = (c, m) => { if (c) { pass++; console.log(`  ok   ${m}`); } else { fail++; console.log(`  FAIL ${m}`); } };
 
 const RECORDED = nexParse.parse(require(path.join(ROOT, 'src/longterm/loannex/capture/quick-prices.json')).response);
@@ -118,9 +119,21 @@ const byInvestor = (programs) => {
   /* ⛔ THE DUPLICATE IS THE FAILURE THIS EXISTS FOR. Both sheets quote NQM and Acra.
      Routing must take each investor from ONE sheet, so the count has to equal the
      LoanNEX count alone — not the two added together. */
-  const nxOnly = NX_BOARD.programs.filter((p) => /NQM Funding/i.test(String(p.investor || p.lender)) && p.amortizationType === 'Fixed').length;
-  ok(nxOnly > 0 && by.get('nqm') === nxOnly,
-    `GEN-5 NQM appears ONCE per programme, from LoanNEX only (${by.get('nqm')} = the ${nxOnly} fixed LoanNEX programmes, not those plus Lender Price's)`);
+  /* ⛔ THE EXPECTATION IS DERIVED THROUGH THE BOARD'S OWN NARROWING, never re-typed as
+     "the fixed ones". This guard's subject is the DUPLICATE — that routing takes an
+     investor from ONE sheet — and re-stating the narrowing rule here would make it fail
+     every time that rule legitimately tightens (it did, the day interest-only, the term
+     and the rate lock joined the amortization), which reads as "you broke the routing"
+     when the truth is "the filter got stricter". The board REPORTS what it read the
+     search as asking for (`nx.want`), so the expectation follows it. */
+  const pf5 = require(path.join(ROOT, 'src/longterm/pricing/product-filter.js'));
+  const nxNarrowed = pf5.narrowBoard(NX_BOARD, out.nx.want).board.programs
+    .filter((p) => /NQM Funding/i.test(String(p.investor || p.lender))).length;
+  const lpNqm = LP_RAW.results.qualifiedNonQMData.childs
+    .filter((c) => /NQM Funding/i.test(String(c.keyLabel))).length;
+  ok(lpNqm > 0, `GEN-5a CONTROL: Lender Price DOES quote NQM (${lpNqm}), so there is a duplicate to avoid`);
+  ok(nxNarrowed > 0 && by.get('nqm') === nxNarrowed,
+    `GEN-5 NQM appears ONCE per programme, from LoanNEX only (${by.get('nqm')} = the ${nxNarrowed} LoanNEX programmes this search narrows to, not those plus Lender Price's)`);
 
   console.log('\n── NO ARM ON THIS SCREEN ──');
   const armOnBoard = out.programs.filter((p) => /ARM/i.test(String(p.amortizationType || p.product || p.program || ''))).length;
@@ -384,6 +397,86 @@ const byInvestor = (programs) => {
     const out3 = await run(lpUnknown, strangeNx, { wantLoanNex: true });
     ok(!(out3.programs || []).some((p) => String(p.lender || '') === 'Someone Nobody Named'),
       'LPU-7 an unnameable LOANNEX row is still left off — the restoration is the Lender Price half only');
+  }
+
+
+  /* ── THE LOANNEX HALF IS NARROWED ON ALL FOUR DIMENSIONS ─────────────────
+     The owner: *"LoanNEX was perfect, including filtering out the wrong programs by term
+     and by interest-only and by ARM… I told you to copy it from here"* (2026-09-03). This
+     board narrowed on the AMORTIZATION alone, so an officer's own interest-only answer,
+     their term and their rate lock did nothing to the LoanNEX half while Lender Price had
+     already been asked for exactly those — the two sheets answering two different questions
+     on one screen.
+
+     ⛔ THE CONTROL IS THE OLD RULE ITSELF, run over the same recorded board: `narrowBoard`
+     with `{ amortization: 'fixed' }` IS what this file used to pass, so the before-picture
+     is produced rather than remembered. */
+  console.log('\n── THE LOANNEX BOARD IS NARROWED TO WHAT THE SEARCH ASKED FOR ──');
+  {
+    const pfF = require(path.join(ROOT, 'src/longterm/pricing/product-filter.js'));
+    const smF = require(path.join(ROOT, 'src/longterm/lenderprice/search-model.js'));
+    // An ordinary officer search: 30 years, NOT interest-only, a 30-day lock.
+    const SCF = { ...SC, termYears: 30, lockDays: 30, propertyType: 'SingleFamily', state: 'NJ' };
+    const vF = smF.validateScenario(SCF);
+    ok(vF.ok === true, 'FIL-0 CONTROL: the search is a valid one, so what follows is about the filter');
+
+    const ctrl = pfF.narrowBoard(RECORDED, { amortization: 'fixed' }); // the rule that was here
+    const io = (b) => b.programs.filter((p) => p.isInterestOnly === true).length;
+    const terms = (b) => [...new Set(b.programs.map((p) => p.termInMonths))].sort((a, c) => a - c);
+    const locks = (b) => [...new Set(b.programs.flatMap((p) => (p.rungs || [])
+      .flatMap((r) => (r.lockDays == null ? [] : [r.lockDays]))))].sort((a, c) => a - c);
+    ok(io(ctrl.board) > 0, `FIL-1 CONTROL: the old rule left ${io(ctrl.board)} interest-only programmes on a search that asked for none`);
+    ok(terms(ctrl.board).length > 1, `FIL-2 CONTROL: …and terms it never asked for (${terms(ctrl.board).join('/')} months on a 30-year search)`);
+    ok(locks(ctrl.board).length > 1, `FIL-3 CONTROL: …at ${locks(ctrl.board).length} different rate locks, when Lender Price answers at one`);
+
+    const want = Object.assign(
+      pfF.wantFrom(SCF, smF._internals, { lpCriteria: vF.request.criteria, lpRequest: vF.request }),
+      { amortization: 'fixed' },
+    );
+    const fixed = pfF.narrowBoard(RECORDED, want);
+    eqA(io(fixed.board), 0, 'FIL-4 with the fix, NOT ONE interest-only programme survives a non-interest-only search');
+    eqA(terms(fixed.board), [360], 'FIL-5 …only the 30-year term the search asked for');
+    eqA(locks(fixed.board), [30], 'FIL-6 …and only the lock it asked for');
+    ok(fixed.board.programs.length < ctrl.board.programs.length,
+      `FIL-7 …so the board is narrower than the old rule left it (${fixed.board.programs.length} against ${ctrl.board.programs.length})`);
+
+    /* AND THE BOARD ITSELF RUNS THAT NARROWING — a filter nothing calls is not a fix. */
+    const lpF = { price: async () => ({ ok: true, raw: LP_RAW, searchKey: 'k1', request: vF.request, provenance: null }), parseFull: lpModel.parseFull };
+    const nexF = { price: async () => ({ board: RECORDED, transactionId: 't1', portal: null }) };
+    const outF = await gb.boardForScenario(SCF, { lp: lpF, nex: nexF, investorPrograms }, { staticRequest: vF.request });
+    eqA(outF.nx.want, want, 'FIL-8 the board reads the search exactly as the filter does — one definition, not two');
+    ok(outF.nx.droppedIo > 0 && outF.nx.droppedTerm > 0 && outF.nx.droppedLockRungs > 0,
+      `FIL-9 …and REPORTS what each dimension dropped (io ${outF.nx.droppedIo}, term ${outF.nx.droppedTerm}, lock ${outF.nx.droppedLockRungs} rungs) rather than shrinking the board in silence`);
+    ok(!(outF.programs || []).some((p) => p.interestOnly === true || p.isInterestOnly === true),
+      'FIL-10 …so no interest-only row reaches the screen on a search that asked for none');
+
+    /* ⛔ THE ARM RULE IS STILL ABSOLUTE ON THIS SCREEN (owner: *"don't enable the ARM
+       feature"*), even if a caller ever manages to state one. Asserted THROUGH THE BOARD
+       rather than through `wantFrom` alone, so it pins the ORDER: forcing fixed BEFORE the
+       search is read would let a stated ARM win, and an assertion on `wantFrom`'s own answer
+       could never see that. `amortization` is not a supported field on this door today — a
+       caller sending one is 422'd upstream — so this is a guard against the day it is
+       accepted, and it is written so that day cannot pass unnoticed. */
+    const armOut = await gb.boardForScenario({ ...SCF, amortization: 'ARM' },
+      { lp: lpF, nex: nexF, investorPrograms }, { staticRequest: vF.request });
+    eqA(armOut.nx.want.amortization, 'fixed',
+      'FIL-11 an ARM answer cannot widen this board — fixed is forced AFTER the search is read');
+    ok(!(armOut.programs || []).some((p) => /arm/i.test(String(p.amortizationType || ''))),
+      'FIL-11b …and no ARM row reaches the screen even then');
+
+    /* ⛔ THE WIRE BODY WINS OVER THE STATIC BUILD, and the two really can disagree: the
+       client builds what it POSTs on the tenant's LIVE foundation and copies same-typed
+       scalars — `criteria.interestOnly` included — off the live defaultSearch. So a live
+       default of `true` would have Lender Price answering an interest-only board while the
+       static build said otherwise. Mirroring the wrong one is silent. */
+    const wireIo = JSON.parse(JSON.stringify(vF.request));
+    wireIo.criteria.interestOnly = true;
+    const lpWire = { price: async () => ({ ok: true, raw: LP_RAW, searchKey: 'k1', request: wireIo, provenance: null }), parseFull: lpModel.parseFull };
+    const outWire = await gb.boardForScenario(SCF, { lp: lpWire, nex: nexF, investorPrograms }, { staticRequest: vF.request });
+    ok(vF.request.criteria.interestOnly !== true,
+      'FIL-12a CONTROL: the static build says this is NOT an interest-only search, so the two disagree');
+    eqA(outWire.nx.want.io, true,
+      'FIL-12 the board mirrors the body Lender Price was ACTUALLY sent, not the static build');
   }
 
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);
