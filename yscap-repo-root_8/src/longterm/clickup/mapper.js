@@ -160,15 +160,30 @@ function channelLabel(raw) {
 }
 
 /** FR0115 (+ FR0116 payment) -> 'Primary Housing'. Own with a payment is a
- * mortgage; own with none is free and clear. */
+ * mortgage; own with none is free and clear.
+ *
+ * LIVE-VERIFIED 2026-09-03 against the list's own field definition (GET
+ * /list/{id}/field, read-only): the dropdown's options are exactly
+ * 'Rent' / 'Mortgage' / 'Free' / 'Own Free & Clear' / 'Rent Free'. Two
+ * corrections came out of that read:
+ *   - the label for an owner with no payment was 'own free and clear', which
+ *     matches NO live option (the resolver compares whole lowercased names, so
+ *     "and" vs "&" is a miss) — the dropdown silently stayed blank for every
+ *     free-and-clear owner. It is now the live spelling.
+ *   - FR0115's live vocabulary on this tenant is Rent / Own /
+ *     NoPrimaryHousingExpense (3 of the 12 most recent loans carry the third;
+ *     the URLA-2020 word for "lives rent free"), which reached no branch here
+ *     and left the dropdown blank. It is 'Rent Free', the same answer the
+ *     payment twin below gives it. */
 function housingLabel(fr0115, paymentRaw) {
   const v = norm(fr0115);
   if (!v) return null;
-  if (v.includes('rentfree') || v.includes('rent free') || v.includes('liverentfree') || v.includes('live rent free')) return 'Rent Free';
+  if (v.includes('rentfree') || v.includes('rent free') || v.includes('liverentfree') || v.includes('live rent free')
+      || v.includes('noprimaryhousingexpense') || v.includes('no primary housing expense')) return 'Rent Free';
   if (v.includes('rent')) return 'Rent';
   if (v.includes('own')) {
     const pay = T.parseMoney(paymentRaw);
-    return pay != null && pay > 0 ? 'Mortgage' : 'own free and clear';
+    return pay != null && pay > 0 ? 'Mortgage' : 'Own Free & Clear';
   }
   return null;
 }

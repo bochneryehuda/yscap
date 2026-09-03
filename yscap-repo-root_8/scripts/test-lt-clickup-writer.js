@@ -95,7 +95,10 @@ function optionsFor(mapper) {
   const mk = (labels) => labels.map((name, i) => ({ id: `opt-${name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, name, orderindex: i }));
   return {
     [CU.channel]: mk(['Non Del Correspondent ', 'Wholesale ', 'Delegate Correspondent', 'Table funding ', 'Evolve Underwriting']),
-    [CU.primaryHousing]: mk(['Rent', 'Mortgage', 'Free', 'own free and clear', 'Rent Free']),
+    // The LIVE option list, read off the list's field definition 2026-09-03 — the
+    // fixture used to say 'own free and clear', a spelling the live dropdown does
+    // not have, which is how a label that never resolved looked resolved here.
+    [CU.primaryHousing]: mk(['Rent', 'Mortgage', 'Free', 'Own Free & Clear', 'Rent Free']),
     [CU.vesting]: mk(['Individual', 'LLC / Corp', 'Trust', 'Need Transfer At Closing']),
     [CU.maritalStatus]: mk(['YES', 'NO']),
     [CU.coBorrowerFlag]: mk(['YES', 'NO']),
@@ -210,8 +213,17 @@ async function pureHalf() {
   eq(I.lenderLabel('Fidelis Investors LLC'), 'Fidelis Investors LLC', 'Fidelis maps to its own option');
   eq(I.housingLabel('Rent', ''), 'Rent', 'FR0115 Rent → Rent');
   eq(I.housingLabel('Own', '1,200'), 'Mortgage', 'Own + a payment → Mortgage');
-  eq(I.housingLabel('Own', ''), 'own free and clear', 'Own + no payment → own free and clear');
+  eq(I.housingLabel('Own', ''), 'Own Free & Clear', 'Own + no payment → Own Free & Clear (the LIVE option spelling — "and" never matched "&")');
   eq(I.housingLabel('LiveRentFree', ''), 'Rent Free', 'LiveRentFree → Rent Free');
+  eq(I.housingLabel('NoPrimaryHousingExpense', ''), 'Rent Free', "NoPrimaryHousingExpense (FR0115's live URLA-2020 word, 3 of 12 recent loans) → Rent Free");
+  {
+    const opts = [{ id: 'o1', name: 'Rent' }, { id: 'o2', name: 'Mortgage' }, { id: 'o3', name: 'Free' }, { id: 'o4', name: 'Own Free & Clear' }, { id: 'o5', name: 'Rent Free' }];
+    for (const w of ['Rent', 'Own', 'NoPrimaryHousingExpense', 'LiveRentFree']) {
+      const label = I.housingLabel(w, w === 'Own' ? '' : '');
+      ok(!!T.dropdownLabelToId(opts, label), `every housing label the mapper can produce resolves against the live option list (${w} → ${label})`);
+    }
+    ok(!!T.dropdownLabelToId(opts, I.housingLabel('Own', '2,100.00')), 'and so does Own + payment → Mortgage');
+  }
   eq(I.ltvText('35.000'), '35', 'LTV 35.000 reads 35');
   eq(I.ltvText('67.500'), '67.5', 'LTV 67.500 reads 67.5');
   eq(I.yearsAtResidenceText('17', '0', null), '17 years', 'FR0112/FR0124 17y 0m');
