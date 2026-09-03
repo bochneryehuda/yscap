@@ -84,6 +84,32 @@ const LINKS = [1, 2, 3, 4].map((u) => ({
   eq('A10b and reads as "inspecting", never "approved $0"', m.approval_stage, 'inspecting');
 }
 {
+  // THE ZERO THE INSPECTOR NEVER WROTE (owner-reported 2026-09-03, 69 Bassett St Draw #2):
+  // Sitewire sends approved_cents:0 — not null — on every line of a freshly submitted draw.
+  const zeros = REQUESTS.map((r) => ({ ...r, approved_cents: 0 }));
+  const m = APPROVAL.drawMoney({ draw: { ...DRAW, status: 'inspecting' }, requests: zeros, findingLines: [] });
+  eq('A11 an all-zero mirror on an `inspecting` draw is NOT an inspector answer', m.has_inspector_amounts, false);
+  eq('A11b so the desk reads "inspecting", never "approved $0"', m.approval_stage, 'inspecting');
+  eq('A11c and the approved figure is still 0 — nothing is invented', m.approved_cents, 0);
+  for (const st of ['drafting', 'pending_borrower']) {
+    const d = APPROVAL.drawMoney({ draw: { ...DRAW, status: st }, requests: zeros, findingLines: [] });
+    ok(`A11d the same on a draft (${st})`, d.has_inspector_amounts === false && d.approval_stage !== 'inspector_approved');
+  }
+  // THE DOCTRINE STAYS: once the inspection is done, an explicit $0 IS the answer.
+  const done = APPROVAL.drawMoney({ draw: { ...DRAW, status: 'pending' }, requests: zeros, findingLines: [] });
+  eq('A12 the same all-zero mirror on a `pending` draw IS the inspector\'s explicit $0', done.has_inspector_amounts, true);
+  eq('A12b and it reads as inspector-approved (at $0)', done.approval_stage, 'inspector_approved');
+  // A single positive line is an answer whatever the status (a coordinator's own write).
+  const one = zeros.map((r, i) => (i === 0 ? { ...r, approved_cents: 625000 } : r));
+  const partial = APPROVAL.drawMoney({ draw: { ...DRAW, status: 'inspecting' }, requests: one, findingLines: [] });
+  ok('A13 one positive line on an `inspecting` draw is still an answer', partial.has_inspector_amounts === true && partial.approved_cents === 625000);
+  // The delivered-findings snapshot is PILOT's own tri-state and is never gated.
+  const flZero = FINDING_LINES.map((l) => ({ ...l, approved_cents: 0 }));
+  const viaFindings = APPROVAL.drawMoney({ draw: { ...DRAW, status: 'inspecting' }, requests: zeros, findingLines: flZero });
+  ok('A14 an explicit $0 in the delivered findings is an answer even on `inspecting`',
+    viaFindings.has_inspector_amounts === true && viaFindings.inspector_approved_source === 'findings');
+}
+{
   // partial approval — the borrower asked $25,000, the inspector approved $18,000
   const partial = REQUESTS.map((r, i) => ({ ...r, approved_cents: i < 3 ? 600000 : 0 }));
   const m = APPROVAL.drawMoney({ draw: DRAW, requests: partial, findingLines: [], feeCents: 29900 });
