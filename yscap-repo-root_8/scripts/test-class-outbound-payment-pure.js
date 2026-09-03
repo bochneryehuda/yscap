@@ -224,6 +224,11 @@ const orderBuild = require(path.join(ROOT, 'src/class/order-build'));
     eq(plink.extractLink('no links here', '<p>none</p>'), null, 'and with no link there is no guess');
     eq(plink.realEmail('Ada@Example.com '), 'ada@example.com', 'an address is normalised');
     eq(plink.realEmail('noemail+123@clickup.local'), null, 'a sync shadow address is not a mailbox');
+    eq(plink.looksLikePaymentLink({ subject: 'Payment for your appraisal', text: 'x', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, 'an email carrying the link is the link');
+    eq(plink.looksLikePaymentLink({ subject: 'Reminder', text: 'Your appraisal payment is due.', html: '', link: null }), true, 'a reminder that talks about paying is forwarded too');
+    eq(plink.looksLikePaymentLink({ subject: 'Receipt for your payment', text: 'Thank you, paid', html: '', link: 'https://pay.classvaluation.com/r/1' }), false, 'a receipt is never told to the borrower as "how to pay"');
+    eq(plink.looksLikePaymentLink({ subject: 'Your appraisal is scheduled', text: 'The inspection is Tuesday.', html: '', link: null }), false, 'a status note is not a payment link');
+    eq(plink.extractLink('', '<a href="https://www.classvaluation.com">Class</a> <a href="https://secure.processor.test/pay/9">Pay</a>'), 'https://secure.processor.test/pay/9', 'a footer link to their home page never beats the pay link');
 
     // The forward itself over a stubbed db + mailer: one email, borrower To, team Cc.
     const outbox = [];
@@ -248,6 +253,15 @@ const orderBuild = require(path.join(ROOT, 'src/class/order-build'));
     eq(outbox[0].replyTo, `file+${appId}@reply.test`, 'replies come back to the file mailbox');
     ok(writes[0] && /payment_link_forwarded_at = now\(\)/.test(writes[0].sql), 'the forward is recorded on the order');
     ok(writes[0] && JSON.parse(writes[0].params[1]).inboundId === 'em-1', 'keyed on the delivery id');
+    const noBorrower = { query: async (sql, params) => {
+      if (/FROM class_orders/.test(sql)) return { rows: [{ id: 9, class_order_id: '555', payment_recipient_email: params[1], payment_link_forwarded_to: null }] };
+      if (/FROM applications a/.test(sql)) return { rows: [{ b_email: 'noemail+1@clickup.local', c_email: null, lo_email: 'lo@ys.test', pr_email: null, lo_active: true, lo_ext: false }] };
+      return { rows: [] };
+    } };
+    const nb = await plink.handleInbound({ applicationId: appId, fromEmail: 'noreply@classvaluation.com', subject: 'Payment', text: 'pay https://pay.classvaluation.com/p/z', html: '', inboundId: 'em-3' }, { db: noBorrower, mailer });
+    eq(nb.handled === false && nb.reason, 'no_borrower_email', 'with no borrower address the borrower-voiced email is not sent to the team instead');
+    const receipt = await plink.handleInbound({ applicationId: appId, fromEmail: 'noreply@classvaluation.com', subject: 'Receipt for your payment', text: 'Thank you for your payment', html: '', inboundId: 'em-4' }, { db: dbh, mailer });
+    eq(receipt.handled === false && receipt.reason, 'not_a_payment_link', 'a receipt from Class is left to the ordinary file forward');
     const notVendor = await plink.handleInbound({ applicationId: appId, fromEmail: 'ada@example.com', subject: 's', text: 't', html: '', inboundId: 'em-2' }, { db: dbh, mailer });
     eq(notVendor.handled, false, 'an ordinary reply on the same mailbox is left to the file forward');
     eq(outbox.length, 1, 'and sends nothing here');

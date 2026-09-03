@@ -53,16 +53,33 @@ function isVendorSender(fromEmail) {
   return vendorDomains().some((d) => dom === d || dom.endsWith('.' + d));
 }
 
-// The payment page, out of the text Class sent. Prefer a link on their own domain
-// or one that says "pay"; else the first link at all; else nothing — never a guess.
+// The payment page, out of the text Class sent. Best first: a link that says "pay"
+// on their own domain, then any "pay" link (their card processor may host the page),
+// then any link on their domain, then the first link at all; never a guess — no link
+// means no button. An unsubscribe link is never the payment page, and neither is a
+// footer link to their home page when a "pay" link is present.
 function extractLink(text, html) {
   const urls = [];
   const push = (u) => { const v = String(u || '').replace(/[)>.,;'"]+$/, ''); if (/^https?:\/\//i.test(v) && !urls.includes(v)) urls.push(v); };
   String(html || '').replace(/href\s*=\s*["']([^"']+)["']/gi, (_, u) => { push(u); return ''; });
   String(text || '').replace(/https?:\/\/[^\s<>"')]+/gi, (u) => { push(u); return ''; });
-  const own = urls.find((u) => /classvaluation\.com/i.test(u) && !/unsubscribe/i.test(u));
-  const pay = urls.find((u) => /pay/i.test(u) && !/unsubscribe/i.test(u));
-  return own || pay || urls.find((u) => !/unsubscribe/i.test(u)) || null;
+  const live = urls.filter((u) => !/unsubscribe/i.test(u));
+  const own = (u) => /classvaluation\.com/i.test(u);
+  const pay = (u) => /pay/i.test(u);
+  return live.find((u) => own(u) && pay(u)) || live.find(pay) || live.find(own) || live[0] || null;
+}
+
+// Is THIS email the payment link (or a reminder of it), as opposed to anything else
+// Class might send to the same address — a receipt, a status note? The subject or the
+// body has to talk about paying, a receipt-shaped subject is never a link, and the
+// order must still be unpaid. Better to let the ordinary team forward carry an
+// unrecognised vendor email than to tell a borrower "here is how to pay" about a
+// payment they already made (pre-merge audit round 2).
+function looksLikePaymentLink({ subject, text, html, link }) {
+  const subj = String(subject || '');
+  if (/receipt|payment received|paid in full|thank you for your payment|confirmation of payment/i.test(subj)) return false;
+  const body = `${subj}\n${String(text || '')}\n${String(html || '').replace(/<[^>]+>/g, ' ')}`;
+  return !!link || /\bpay(ment|able)?\b/i.test(body);
 }
 
 // The live payment-link order on this file whose recipient IS the file mailbox, if any.
@@ -75,6 +92,8 @@ async function orderExpectingLink(q, applicationId) {
       WHERE application_id = $1 AND payment_method = 'PaymentLink'
         AND lower(payment_recipient_email) = lower($2)
         AND status NOT IN ('cancelled', 'dryrun')
+        AND paid_at IS NULL
+        AND (outstanding_cents IS NULL OR outstanding_cents > 0)
       ORDER BY created_at DESC LIMIT 1`, [applicationId, mailbox]);
   return r.rows[0] || null;
 }
@@ -133,11 +152,16 @@ async function handleInbound({ applicationId, fromEmail, subject, text, html, in
     && order.payment_link_forwarded_to.inboundId === String(inboundId);
   if (already) return { handled: true, duplicate: true, to: order.payment_link_forwarded_to.to || [], cc: order.payment_link_forwarded_to.cc || [], link: null };
 
-  const { to, cc, staffIds } = await recipientsFor(q, applicationId);
-  if (!to.length && !cc.length) return { handled: false, reason: 'no_recipients' };
-
   const plain = String(text || '').trim() || require('../lib/file-inbox').htmlToText(html || '');
   const link = extractLink(text, html);
+  if (!looksLikePaymentLink({ subject, text, html, link })) return { handled: false, reason: 'not_a_payment_link' };
+  const { to, cc, staffIds } = await recipientsFor(q, applicationId);
+  // No borrower address means the borrower-voiced email has nobody to go to; the team
+  // still learns of it through the ordinary file forward, in the staff voice.
+  if (!to.length) {
+    console.warn(`[class-payment-link] file ${applicationId} has no borrower email — the link stays with the team forward`);
+    return { handled: false, reason: 'no_borrower_email' };
+  }
   const ctx = await notify.fileContext(applicationId).catch(() => null);
   const addr = ctx && ctx.addr ? ctx.addr : 'your property';
   const lines = borrowerSafe.scrubText(plain).split(/\r?\n/).map((l) => l.trimEnd()).filter((l, i, arr) => l || (i && arr[i - 1])).slice(0, 60);
@@ -156,8 +180,8 @@ async function handleInbound({ applicationId, fromEmail, subject, text, html, in
       'This payment page is run by the appraisal company; YS Capital does not hold your card details.',
   }, 'borrower');
   const r = await mailer.sendMail({
-    to: to.length ? to : cc,
-    cc: to.length && cc.length ? cc : undefined,
+    to,
+    cc: cc.length ? cc : undefined,
     subject: built.subject, text: built.text, html: built.html,
     replyTo: fileAddress.fileReplyTo(applicationId) || cfg.replyToDefault || undefined,
   });
@@ -182,4 +206,4 @@ async function handleInbound({ applicationId, fromEmail, subject, text, html, in
   return { handled: true, to, cc, link: link || null };
 }
 
-module.exports = { handleInbound, isVendorSender, extractLink, recipientsFor, orderExpectingLink, realEmail, vendorDomains };
+module.exports = { handleInbound, isVendorSender, extractLink, looksLikePaymentLink, recipientsFor, orderExpectingLink, realEmail, vendorDomains };

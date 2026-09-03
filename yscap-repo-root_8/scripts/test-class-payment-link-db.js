@@ -11,6 +11,7 @@
  */
 if (!process.env.DATABASE_URL) { console.log('test-class-payment-link-db: SKIP (no DATABASE_URL)'); process.exit(0); }
 process.env.CHAT_REPLY_DOMAIN = process.env.CHAT_REPLY_DOMAIN || 'reply.test';
+process.env.RESEND_INBOUND_API_KEY = process.env.RESEND_INBOUND_API_KEY || 'test-inbound-key';   // makes the inbound retrieval reachable (stubbed below)
 process.env.CLASS_ENABLED = '1';
 process.env.CLASS_OUTBOUND_ENABLED = '1';
 delete process.env.CLASS_DRYRUN;
@@ -77,17 +78,11 @@ async function main() {
   const realSend = mailer.sendMail;
   mailer.sendMail = async (m) => { outbox.push(m); return { ok: true, id: 'test' }; };
   try {
-    const fileInbox = require('../src/lib/file-inbox');
-    // Drive the REAL inbound path with the retrieval stubbed (the webhook carries metadata only).
-    const realRetrieve = fileInbox.retrieveInboundEmail;
     const emailId = 'em-' + tag;
     const full = { from: 'Class Valuation <noreply@classvaluation.com>', subject: 'Payment for your appraisal',
       text: 'Please pay for the appraisal here: https://pay.classvaluation.com/p/' + tag, html: '', attachments: [] };
-    // retrieveInboundEmail is called by name inside the module, so stub through the module's own binding.
-    const inboundMod = require.cache[require.resolve('../src/lib/file-inbox')];
-    void inboundMod; void realRetrieve;
-    // Call the forward directly (the same function the inbound loop calls), then prove the
-    // loop's skip-on-redelivery via the recorded delivery id.
+    // First the forward on its own (the function the inbound loop calls); the REAL
+    // inbound path is driven further down.
     const r = await plink.handleInbound({ applicationId: appId, fromEmail: 'noreply@classvaluation.com', subject: full.subject, text: full.text, html: full.html, inboundId: emailId });
     ok(r.handled === true, 'the vendor email on the mailbox is handled');
     ok(outbox.length === 1, 'exactly ONE email goes out');
@@ -106,6 +101,47 @@ async function main() {
     ok(again.handled && again.duplicate && outbox.length === 1, 'a redelivered webhook sends nothing twice');
     const other = await plink.handleInbound({ applicationId: appId, fromEmail: `ada.${tag}@example.com`, subject: 'hi', text: 'a reply', html: '', inboundId: 'em2-' + tag });
     ok(other.handled === false && outbox.length === 1, 'a borrower\'s own reply on the mailbox is not a payment link');
+
+    // ========================================================================
+    console.log('\n--- the REAL inbound path: a machine-stamped Class email on the mailbox still forwards ---');
+    // A second, unpaid order so the forward has somewhere to record; the first order
+    // above already carries a forward for its delivery.
+    await db.query(`UPDATE class_orders SET payment_link_forwarded_at = NULL, payment_link_forwarded_to = NULL WHERE id=$1`, [orderRow]);
+    const fileInbox = require('../src/lib/file-inbox');
+    let canned = null;
+    const realFetch = global.fetch;
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes('/emails/receiving/')) return { ok: true, status: 200, json: async () => canned };
+      return { ok: false, status: 404, json: async () => ({}), text: async () => '' };
+    };
+    try {
+      const evt = (emailId) => ({ type: 'email.received', data: { email_id: emailId, to: [mailbox] } });
+      // Precedence: bulk is exactly what an auto-reply gate drops — the vendor's link must not be.
+      canned = { from: 'Class Valuation <noreply@classvaluation.com>', subject: 'Payment for your appraisal', to: [mailbox],
+        text: 'Please pay here: https://pay.classvaluation.com/p/real-' + tag, html: '', attachments: [],
+        headers: { precedence: 'bulk', 'auto-submitted': 'auto-generated' } };
+      const rid1 = 'plink-real-' + tag;
+      const r1 = await fileInbox.processReceivedEvent(evt(rid1));
+      ok(r1 && r1.status === 'forwarded', `the delivery is forwarded (${r1 && r1.status})`);
+      const mine = outbox.filter((m) => new RegExp('real-' + tag).test(String(m.html)));
+      ok(mine.length === 1, 'exactly one email carries the link');
+      ok(mine[0] && mine[0].to[0] === `ada.${tag}@example.com` && (mine[0].cc || []).includes(`lo-${tag}@example.test`) && (mine[0].cc || []).includes(`pr-${tag}@example.test`),
+         'to the borrower, copying the officer and the processor');
+      ok(!outbox.some((m) => /New reply on a loan file/.test(String(m.subject))), 'and no staff-voiced "new reply" forward goes out beside it');
+      const row = (await db.query(`SELECT status, application_id, app_results FROM inbound_file_emails WHERE resend_email_id=$1`, [rid1])).rows[0];
+      ok(row && row.status === 'forwarded' && row.application_id === appId, 'the inbound row is stamped with the file (the activity feed reads that column)');
+      ok(row && row.app_results && row.app_results[appId] === 'payment_link_forwarded', 'and records why');
+      const before = outbox.length;
+      const r1b = await fileInbox.processReceivedEvent(evt(rid1));
+      ok(r1b && r1b.status !== 'in_flight' && outbox.length === before, 'a redelivery of the same email sends nothing again');
+      // A receipt from the same sender is NOT told to the borrower as "how to pay".
+      canned = { from: 'Class Valuation <noreply@classvaluation.com>', subject: 'Receipt for your payment', to: [mailbox],
+        text: 'Thank you for your payment of $550.', html: '', attachments: [], headers: {} };
+      const before2 = outbox.length;
+      const r2 = await fileInbox.processReceivedEvent(evt('plink-receipt-' + tag));
+      ok(!outbox.slice(before2).some((m) => /How to pay for the appraisal/.test(String(m.subject))), `a receipt is never forwarded as "how to pay" (${r2 && r2.status})`);
+    } finally { global.fetch = realFetch; }
   } finally { mailer.sendMail = realSend; }
 
   // ==========================================================================
