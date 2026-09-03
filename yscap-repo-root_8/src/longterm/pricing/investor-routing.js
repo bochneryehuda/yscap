@@ -34,6 +34,7 @@
  */
 
 const settingsOf = require('./investor-settings');
+const sources = require('./sources');
 
 /** A route is now simply the investor's SOURCE. Kept as its own word because a
  *  board talks about routing and a settings screen talks about a source. */
@@ -333,7 +334,7 @@ function bestOfMany(list) {
   return best;
 }
 
-function label(src) { return src === 'loannex' ? 'LoanNEX' : src === 'lenderprice' ? 'Lender Price' : src; }
+const label = sources.sourceLabel;   // ONE definition, shared with the merge
 
 /**
  * "WHAT DOES THIS ROW'S OWN INVESTOR ADD TO THE HOLDBACK?" — as a function of a

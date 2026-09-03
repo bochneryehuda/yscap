@@ -107,10 +107,28 @@ function closeWs(ws, code, reason) {
 }
 
 /**
- * Re-verify a query-parameter token exactly as the SSE endpoint does. Returns
- * { kind, id } or null. Never throws.
+ * ⛔ "CANNOT TELL" IS NOT "NOT ALLOWED", AND THE DIFFERENCE HAS TO BE A RETURN
+ * VALUE — not something a caller guesses at afterwards.
+ *
+ * The first version of the heartbeat's re-check guessed: it ran a `SELECT 1`
+ * probe first, and skipped the whole tick if that threw. That reads well and is
+ * wrong, because total unreachability is the LEAST likely way a pooled Postgres
+ * fails. A `statement_timeout`, an exhausted pool, or a lagging replica all
+ * leave `SELECT 1` answering happily while the real `staff_users` lookup throws
+ * — and this function used to swallow that and answer `null`, which the
+ * heartbeat read as "revoked". The pre-merge audit demonstrated it: with every
+ * query but `SELECT 1` rejecting, ONE beat closed every live co-browse in the
+ * process.
+ *
+ * So the database half now has three answers, and the guess is gone.
  */
-async function actorFromToken(token) {
+const AUTH_UNKNOWN = Symbol('cobrowse:auth-unknown');
+
+/**
+ * The CLAIMS half — signature, shape and kind. No database, so it cannot be
+ * "unknown": a token either says who it is or it does not.
+ */
+function claimsFromToken(token) {
   try {
     const claims = C.verifyJwt(String(token || ''));
     if (!claims || claims.mfa) return null;
@@ -120,6 +138,21 @@ async function actorFromToken(token) {
     if (require('../condition-link').readGuest(claims)) return null;
     if (require('../borrower-assistant').readAssistant(claims)) return null;
     if (claims.kind !== 'staff' && claims.kind !== 'borrower') return null;   // never a broker
+    return claims;
+  } catch (_) { return null; }
+}
+
+/**
+ * The DATABASE half — is this identity still live?
+ *
+ * Returns `{ kind, id }` when allowed, `null` when DENIED (the row is gone, the
+ * account is inactive or external, the token version moved, the session id was
+ * revoked), and `AUTH_UNKNOWN` when a query threw and the question genuinely
+ * could not be answered.
+ */
+async function stillAllowed(claims) {
+  if (!claims) return null;
+  try {
     if (claims.kind === 'staff') {
       const r = await db.query(`SELECT token_version, is_active, is_external FROM staff_users WHERE id = $1::uuid`, [claims.sub]);
       const row = r.rows[0];
@@ -130,14 +163,48 @@ async function actorFromToken(token) {
       const row = r.rows[0];
       if (!row || (row.token_version || 0) !== (claims.tv || 0)) return null;
     }
-    if (claims.sid) {
-      try {
-        const rv = await db.query(`SELECT 1 FROM revoked_sessions WHERE sid = $1`, [claims.sid]);
-        if (rv.rows.length) return null;
-      } catch (_) { /* revocation table unavailable — token_version still applied */ }
+  } catch (_) {
+    return AUTH_UNKNOWN;   // the pool, not the person — say so rather than hanging up
+  }
+  if (claims.sid) {
+    try {
+      const rv = await db.query(`SELECT 1 FROM revoked_sessions WHERE sid = $1`, [claims.sid]);
+      if (rv.rows.length) return null;
+    } catch (_) {
+      // ⛔ ALSO UNKNOWN, NOT ALLOWED — and this makes co-browse the ONE surface that
+      // fails closed on this table. `src/auth/index.js` latches `_sidRevocationReady`
+      // false process-wide, and `src/routes/events.js` does the same for SSE, both
+      // deliberately, so a migration hiccup is not a total outage. Co-browse differs
+      // only at CONNECT (an UNKNOWN maps to null there); live sockets survive, because
+      // the beat leaves an UNKNOWN alone. Refusing to START a screen-share while HTTP
+      // and SSE stay up is the right side of that trade for a feature that shows one
+      // person another's screen — but it IS a difference, and it is named here.
+      //
+      // This `catch` used to fall through to
+      // "allowed" — a deliberate choice back when the only answers were yes and
+      // no, and `token_version` still applied. With a third answer available that
+      // is simply the wrong one: a per-device sign-out fails OPEN whenever this
+      // one table is the thing that is unwell, at connect and on every beat, and
+      // the doc-comment above now promises otherwise (pre-merge audit).
+      return AUTH_UNKNOWN;
     }
-    return { kind: claims.kind, id: String(claims.sub) };
-  } catch (_) { return null; }
+  }
+  return { kind: claims.kind, id: String(claims.sub) };
+}
+
+/**
+ * Re-verify a query-parameter token exactly as the SSE endpoint does. Returns
+ * { kind, id } or null. Never throws.
+ *
+ * AT CONNECT TIME, "cannot tell" IS "no" — a door that opens when the database
+ * is unreachable is not a door. It is only the re-check of an ALREADY-OPEN
+ * socket that must tell the two apart, and that calls `stillAllowed` directly.
+ */
+async function actorFromToken(token) {
+  const claims = claimsFromToken(token);
+  if (!claims) return null;
+  const out = await stillAllowed(claims);
+  return out === AUTH_UNKNOWN ? null : out;
 }
 
 function broadcastViewers(r, payload) {
@@ -231,7 +298,8 @@ async function onConnection(ws, req) {
   const token = url.searchParams.get('token');
   const sessionId = String(url.searchParams.get('session') || '');
   const role = String(url.searchParams.get('role') || '');
-  const actor = await actorFromToken(token);
+  const claims = claimsFromToken(token);
+  const actor = claims ? await actorFromToken(token) : null;
   if (!actor) { closeWs(ws, 4401, 'unauthenticated'); return; }
   if (!/^[0-9a-f-]{36}$/i.test(sessionId) || (role !== 'guest' && role !== 'viewer')) { closeWs(ws, 4400, 'bad request'); return; }
   const S = sessions();
@@ -245,6 +313,18 @@ async function onConnection(ws, req) {
   // must not remember a grant the row no longer holds, nor forget one it does.
   r.control = String(row.control_status || 'none');
   ws.isAlive = true;
+  // Kept so the heartbeat can ask again whether this person is still allowed to be
+  // here. A socket authenticated only at connect outlives every revocation — see
+  // the note on `heartbeat` above.
+  // THE VERIFIED CLAIMS, NEVER THE TOKEN. The beat only needs to re-ask the
+  // DATABASE half; the signature and expiry were checked at connect and cannot
+  // change. Keeping the raw JWT on a live object for up to four hours put a
+  // thirty-day bearer credential into every heap dump and crash report that
+  // reaches a socket, for no benefit (pre-merge audit, 2026-09-02).
+  ws.cbClaims = { kind: claims.kind, sub: claims.sub, tv: claims.tv, sid: claims.sid };
+  ws.cbActor = { kind: actor.kind, id: actor.id };
+  ws.cbSession = sessionId;
+  ws.cbRole = role;
   ws.on('pong', () => { ws.isAlive = true; });
 
   if (role === 'guest') {
@@ -296,12 +376,160 @@ function close(sessionId, reason) {
   return true;
 }
 
-function heartbeat() {
+/**
+ * The keep-alive ping AND the re-check of who is still allowed to be here.
+ *
+ * ⛔ A SOCKET IS NOT AUTHENTICATED ONCE. It used to be: the check ran at connect
+ * and never again, so every HTTP request from a deactivated staffer died at the
+ * next call while their ALREADY-OPEN viewer socket kept receiving the borrower's
+ * live screen — until the socket happened to drop, the guest pressed Stop, or
+ * the four-hour cap fired. Same for a borrower who resets their password
+ * expecting the watching to stop (post-merge audit, 2026-09-02).
+ *
+ * WHAT THIS COVERS, EXACTLY — stated narrowly, because the first version of this
+ * comment claimed "every revocation this product has" and the pre-merge audit
+ * showed that was false:
+ *   · IDENTITY. Everything `stillAllowed` asks: a cleared `is_active`, a bumped
+ *     `token_version`, a revoked `sid`, a staffer turned external.
+ *   · PARTY. That this person is still the viewer or the watched person ON THIS
+ *     SESSION's row — so a session ended or handed elsewhere hangs up too.
+ * WHAT IT DOES NOT COVER: a change to a staffer's ROLE, PERMISSIONS or
+ * VISIBLE OFFICERS. Those move what `sessions.mayWatch` would allow without
+ * touching `token_version`, so this check still resolves them and the socket
+ * stays open. That gap is closed at the source instead — `PATCH /api/admin/
+ * staff/:id` ends the sessions outright when any of those three change (see
+ * `src/routes/admin.js`) and wherever else the scope moves — because re-deriving a
+ * permission scope here would mean teaching the hub the whole permission model.
+ *
+ * THE PATHS THAT END A SESSION OUTRIGHT, so this is a backstop and not the whole
+ * answer, named rather than gestured at: signing out (`POST /auth/logout`);
+ * deactivating a staffer or submitting their role / permissions / visible officers
+ * (`PATCH /api/admin/staff/:id`); an admin resetting a staffer's password; a loan
+ * officer setting a borrower's password; and REASSIGNING A BORROWER to another
+ * officer (`PATCH /api/staff/borrowers/:id`, `primaryOfficerId`) — that last one
+ * moves `visibleBorrowerSql` out from under the watcher and was missed when the
+ * other scope changes were wired.
+ *
+ * WHAT THE BEAT BOUNDS, AND WHAT NOTHING BOUNDS — the distinction is `token_version`,
+ * and an earlier draft of this comment got it wrong in the direction that matters.
+ *   · BOUNDED BY ONE BEAT: anything that bumps `token_version` — a person changing
+ *     their own password, a reset-by-token, the TPO firm-wide bump. `stillAllowed`
+ *     sees those.
+ *   · BOUNDED BY NOTHING: a SCOPE change that leaves `token_version` alone and is not
+ *     wired above. The beat's party check is `isViewer`/`isWatched`, a pure id
+ *     comparison — `mayWatch` is never called from here — so a `borrower_officers`
+ *     row written elsewhere, or an application's `loan_officer_id`/`processor_id`
+ *     moving, revokes the right to watch and closes NOTHING. That is an open gap,
+ *     written down as one. Closing it means calling `mayWatch` for borrower-targeted
+ *     sessions on every beat, at one more query per such session.
+ * There is no borrower-deactivation endpoint in this product at all; an earlier draft
+ * of this comment said there was.
+ *
+ * NOT RE-ENTRANT, AND THE WHOLE BEAT IS INSIDE THE GUARD — including the ping
+ * loop, which is the half that actually kills. `setInterval` fires regardless of
+ * whether the previous beat finished, and an overlapping beat terminates HEALTHY
+ * sockets: the first beat clears `isAlive`, and the pong that would set it again
+ * has not been processed yet, so the second beat sees `isAlive === false` and
+ * calls `terminate()`. It is a positive feedback loop — whatever makes a beat
+ * slow (a busy event loop, a slow database) is the same thing that stops the
+ * pongs landing.
+ *
+ * THE FIRST VERSION OF THIS GUARD PUT THE FLAG BELOW THE PING LOOP, so it
+ * serialised only the database re-check and left the terminating half exactly as
+ * re-entrant as it had been — while this paragraph claimed the opposite. The
+ * pre-merge audit ran it and watched a healthy socket die. Skipping a keep-alive
+ * round because the previous beat is still working is the right trade: a missed
+ * ping costs one interval of liveness detection, a wrong `terminate()` costs a
+ * live session.
+ *
+ * WHAT A BEAT COSTS, stated rather than implied: `2U + S` queries, where U is the
+ * number of distinct identities holding sockets and S the number of distinct
+ * sessions. Co-browse's ordinary shape is one identity per socket, so the
+ * per-identity cache saves nothing there and the `loadRaw` per session is new —
+ * at 40 sockets that is 100 queries against the 81 this replaced. It buys the
+ * party re-check (see above) and it collapses the case that would actually hurt,
+ * one person holding many viewer tabs.
+ */
+/**
+ * A BEAT THAT NEVER SETTLES WOULD LEAVE `beating` TRUE FOR THE LIFE OF THE PROCESS,
+ * silently disabling the pings, the reaping AND the revocation re-check — so a
+ * revoked staffer would keep receiving the guest's screen indefinitely. That is the
+ * price of any "only one at a time" flag and it has to be paid deliberately.
+ *
+ * ⛔ AN EARLIER VERSION OF THIS NOTE WAVED IT AWAY as "bounded by the pool's own
+ * `connectionTimeoutMillis`, so it is a hang in `pg` rather than a plausible failure
+ * here". That is false: `connectionTimeoutMillis` bounds ACQUIRING a client, not
+ * running a query, and `src/db.js` sets neither `statement_timeout` nor
+ * `query_timeout` — the pre-merge audit measured a `pg_sleep(8)` returning after 8
+ * seconds with a 1-second connection timeout. A lock wait behind a migration, or a
+ * half-open socket, hangs the beat forever.
+ *
+ * So the bound is made real here rather than assumed: every await in the beat runs
+ * against a deadline, and a query that misses it is treated exactly like a query
+ * that threw — UNKNOWN, which leaves the socket alone and asks again next beat.
+ */
+const BEAT_DEADLINE_MS = Number(process.env.COBROWSE_BEAT_DEADLINE_MS || 5000);
+
+/** `p`, or a rejection once the deadline passes. The timer never holds the process open. */
+function withDeadline(p, ms = BEAT_DEADLINE_MS) {
+  return Promise.race([p, new Promise((_, reject) => {
+    const t = setTimeout(() => reject(new Error('cobrowse beat deadline')), ms);
+    if (t.unref) t.unref();
+  })]);
+}
+
+let beating = false;
+async function heartbeat() {
   if (!wss) return;
-  for (const ws of wss.clients) {
-    if (ws.isAlive === false) { try { ws.terminate(); } catch (_) { /* gone */ } continue; }
-    ws.isAlive = false;
-    try { ws.ping(); } catch (_) { /* closes on its own */ }
+  if (beating) return;           // a slow beat must never be joined by the next one
+  beating = true;
+  try {
+    for (const ws of wss.clients) {
+      if (ws.isAlive === false) { try { ws.terminate(); } catch (_) { /* gone */ } continue; }
+      ws.isAlive = false;
+      try { ws.ping(); } catch (_) { /* closes on its own */ }
+    }
+    const answers = new Map();   // one identity -> one answer, for this beat only
+    const rowsById = new Map();  // one session -> one row, for this beat only
+    for (const ws of wss.clients) {
+      if (!ws.cbClaims) continue;
+      const c = ws.cbClaims;
+      const key = `${c.kind}:${c.sub}:${c.tv || 0}:${c.sid || ''}`;
+      if (!answers.has(key)) {
+        // A missed deadline is "cannot tell", never "not allowed" — same as a throw.
+        answers.set(key, await withDeadline(stillAllowed(c)).catch(() => AUTH_UNKNOWN));
+      }
+      const still = answers.get(key);
+      // "Cannot tell" leaves the socket alone: a degraded pool is not a
+      // revocation, and the next beat asks again.
+      if (still === AUTH_UNKNOWN) continue;
+      if (!still || still.kind !== ws.cbActor.kind || still.id !== ws.cbActor.id) {
+        // THIS socket learns WHY, first and deterministically: 4401 is terminal on
+        // the guest side, so their banner comes down instead of reconnecting.
+        closeWs(ws, 4401, 'no longer authorised');
+        // THEN the session ends, and ends as `revoked`. Leaving it to the socket's
+        // own close handler would file it as `guest_left` — "the watched person
+        // walked away" — which is the register mis-filing `END_REASONS` in
+        // sessions.js was just made to warn about. A co-browse one of whose parties
+        // has been revoked is over; the other party is told rather than left
+        // watching a screen nobody is allowed to show them.
+        if (ws.cbSession) endFromHub(ws.cbSession, 'revoked');
+        continue;
+      }
+      // STILL A PARTY TO THIS SESSION? A row that ended, or whose viewer changed,
+      // must not keep a socket fed.
+      if (!ws.cbSession) continue;
+      if (!rowsById.has(ws.cbSession)) {
+        try { rowsById.set(ws.cbSession, await withDeadline(sessions().loadRaw(ws.cbSession))); } catch (_) { rowsById.set(ws.cbSession, AUTH_UNKNOWN); }
+      }
+      const row = rowsById.get(ws.cbSession);
+      if (row === AUTH_UNKNOWN || !row) continue;   // cannot tell, or the sweep will take it
+      const S = sessions();
+      const party = ws.cbRole === 'guest' ? S.isWatched(row, still) : S.isViewer(row, still);
+      if (!party) closeWs(ws, 4403, 'no longer a party to this session');
+    }
+  } finally {
+    beating = false;
   }
 }
 
@@ -319,7 +547,8 @@ function attach(server) {
     if (pathname !== PATH) { socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, (ws) => { onConnection(ws, req).catch(() => closeWs(ws, 1011, 'server error')); });
   });
-  const hb = setInterval(heartbeat, HEARTBEAT_MS); if (hb.unref) hb.unref();
+  const hb = setInterval(() => { heartbeat().catch(() => { /* never take the process down */ }); }, HEARTBEAT_MS);
+  if (hb.unref) hb.unref();
   // RESTART RECOVERY (Phase C): a fresh process has no rooms, so every 'active'
   // row whose guest has gone quiet is an orphan of the previous process. Close
   // them now rather than in 30 s; a guest still there reconnects and re-creates
@@ -339,5 +568,8 @@ function stats() {
 module.exports = {
   PATH, MAX_MESSAGE_BYTES, GUEST_GRACE_MS, VIEWER_GRACE_MS, MAX_INPUT_BYTES, INPUT_RATE_PER_SEC, INPUT_KINDS,
   attach, close, stats, setControl,
-  _internals: { rooms, actorFromToken, onConnection, http },
+  // `heartbeat` is exported so a test can run one on demand rather than waiting
+  // out HEARTBEAT_MS — the re-authorisation it performs is a security property and
+  // has to be proven by a socket actually closing, not by reading the source.
+  _internals: { rooms, actorFromToken, claimsFromToken, stillAllowed, AUTH_UNKNOWN, onConnection, http, heartbeat },
 };

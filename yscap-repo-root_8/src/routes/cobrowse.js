@@ -79,7 +79,25 @@ router.post('/:id/control/respond', notInsideAView, async (req, res) => {
   if (!out.ok) return refuse(res, out);
   res.json({ ok: true, session: out.session });
 });
-/** Either party takes control back. { reason?: 'guest_moved' | 'guest_stop' | 'viewer_release' } */
+/**
+ * Either party takes control back. { reason?: 'guest_moved' | 'guest_stop' | 'viewer_release' }
+ *
+ * ⛔ THE ONE DOOR HERE WITHOUT `notInsideAView`, AND THAT IS DELIBERATE. The rule
+ * this router opens with is that nobody inside a view-as may ask for a co-browse or
+ * answer one — a view is not the person, and consent given to a view is not consent.
+ * Releasing is the exception because it only ever takes something AWAY: it reads
+ * nothing, drives nothing, and its worst outcome is that a live control grant ends a
+ * moment early. Blocking it would be the harmful direction — a staffer who steps into
+ * a borrower view while control is out would lose the ability to hand it back, and a
+ * grant that cannot be ended is precisely what this feature must never produce.
+ *
+ * `test-cobrowse-pure` asserts the other two control doors carry the middleware AND
+ * that this one does not, so the omission is tested as a decision rather than left to
+ * look like an oversight. The first version of this comment claimed that and it was
+ * not true — the only assertion checked the route existed, so adding the middleware
+ * (the exact well-meant fix this paragraph exists to prevent) passed both suites
+ * (pre-merge audit, 2026-09-02). The assertion is real now.
+ */
 router.post('/:id/control/release', async (req, res) => {
   const out = await S.releaseControl({ actor: req.actor, sessionId: req.params.id, reason: req.body && req.body.reason, req });
   if (!out.ok) return refuse(res, out);
