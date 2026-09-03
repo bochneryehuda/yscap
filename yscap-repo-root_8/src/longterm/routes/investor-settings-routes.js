@@ -40,9 +40,34 @@ const investorConfig = require('./../pricing/investor-config');
 const sightings = require('./../pricing/investor-sightings');
 const investorSettings = require('./../pricing/investor-settings');
 const sourceMisses = require('./../pricing/source-misses');
+const sheetConnection = require('./../pricing/sheet-connection');
 const { whiteLabelOf } = require('../lenderprice/investor-programs');
 
 const reasonOf = (e) => String((e && e.message) || e || 'unknown').slice(0, 300);
+
+/**
+ * IS EACH RATE SHEET SIGNED IN — asked of the client that owns the answer.
+ *
+ * ⛔ LAZY AND CAUGHT, both deliberately. This file is otherwise pure of the
+ * pricing engines, and a settings screen must never fail to draw because a
+ * vendor module would not load. An unreadable answer becomes `null`, which
+ * `sheet-connection` reads as UNKNOWN and says so — never as "connected".
+ *
+ * `configured()` is an environment read on both clients: no network, no vendor
+ * call, nothing spent.
+ */
+function sheetConfigured() {
+  /* PLAIN STRING REQUIRES, ONE PER SHEET — never a computed path. A dynamic
+     require() is the one import shape the product-separation gate cannot follow,
+     and it refuses the file outright (it caught exactly this on the first cut).
+     The repetition is the point: every module this file can reach is readable. */
+  const call = (fn) => { try { return typeof fn === 'function' ? fn() : null; } catch (_) { return null; } };
+  let lenderprice = null;
+  let loannex = null;
+  try { lenderprice = call(require('./../lenderprice/client').configured); } catch (_) { lenderprice = null; }
+  try { loannex = call(require('./../loannex/client').configured); } catch (_) { loannex = null; }
+  return { lenderprice, loannex };
+}
 
 /* The four stored reads, through the ONE module that owns their key strings. */
 const settingsRaw = () => investorConfig.investorsRaw();
@@ -156,9 +181,22 @@ function attach(router) {
     const shown = investorsWithAvailability.filter(
       (r) => investorSettings.belongsOnSettingsList(r, r.availability),
     );
+    /**
+     * WHY AN INVESTOR SET TO A RATE SHEET MIGHT NOT REACH THE BOARD AT ALL.
+     *
+     * The pricing page stays silent about a missing investor by the owner's own
+     * direction; this is the screen where that silence is answerable. Counted
+     * over the rows ACTUALLY SHOWN so the sentence and the list agree — a
+     * message reading "6 investors" above five countable rows is the same
+     * self-contradiction the summary block above was fixed for.
+     */
+    const connections = sheetConnection.connectionsFor(
+      sheetConfigured(), sheetConnection.routedCounts(shown),
+    );
     res.json({
       ok: true, ...d,
       investors: shown,
+      connections,
       /* THE COUNTS DESCRIBE WHAT IS ON SCREEN. `describeSettings` totals the whole roster,
          so spreading it unchanged beside a narrowed list would print "43" above 26 rows and
          make the screen contradict itself. */

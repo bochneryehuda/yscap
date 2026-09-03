@@ -277,6 +277,24 @@ export default function LtInvestorSources() {
   const sight = (data && data.sightings) || null;
   const coldRegister = sight && !sight.boards.lenderprice && !sight.boards.loannex;
 
+  /**
+   * A RATE SHEET NOBODY CAN SIGN IN TO — the reason an investor set to it never
+   * reaches the board (owner-reported 2026-09-03: *"It still does not come up in
+   * any of the new five. It's not pulling on the ink from loannex yet."*).
+   *
+   * ⛔ THE SERVER DECIDES WHETHER TO SPEAK, NOT THIS SCREEN. `speak` already
+   * accounts for whether anybody is actually routed there, and the wording is
+   * the server's one definition — re-deriving either here would be a second copy
+   * of the rule, free to disagree with the board about the same fact.
+   */
+  const sheetTrouble = useMemo(() => {
+    const c = (data && data.connections) || null;
+    if (!c) return [];
+    return ['loannex', 'lenderprice']
+      .map((k) => c[k])
+      .filter((x) => x && x.speak && x.message);
+  }, [data]);
+
   return (
     <div style={{ ...card, borderColor: `${GOLD}55` }}>
       <div style={eyebrow}>Investors — where each one is priced from</div>
@@ -299,6 +317,24 @@ export default function LtInvestorSources() {
           button stays available until a search tells us otherwise.
         </div>
       )}
+
+      {/* Above the list and above the search box on purpose: this is the answer to
+          "I set five investors to LoanNEX and nothing came up", and it is worth
+          nothing if somebody has to scroll to it. */}
+      {sheetTrouble.map((c) => (
+        <div
+          key={c.source}
+          style={{
+            border: `1px solid ${DANGER}55`, background: '#FDF4F3', borderRadius: 10,
+            padding: '10px 12px', marginBottom: 10,
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 800, color: DANGER, letterSpacing: '.04em', textTransform: 'uppercase' }}>
+            {c.label} is not connected
+          </div>
+          <div style={{ fontSize: 13, color: INK, marginTop: 4, lineHeight: 1.6 }}>{c.message}</div>
+        </div>
+      ))}
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
         <input
