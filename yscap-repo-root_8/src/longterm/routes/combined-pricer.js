@@ -75,6 +75,7 @@ const nex = require('../loannex/client');
 const mergeMod = require('../pricing/merge');
 const { merge } = mergeMod;
 const routing = require('../pricing/investor-routing');
+const investorConfig = require('../pricing/investor-config');
 const investorLinks = require('../pricing/investor-links');
 // The canonical investor roster and the client-safe names, both read-only here —
 // the pick-list a person chooses from is DERIVED from the one registry, never a
@@ -115,14 +116,12 @@ const EMPTY_SPLIT = { lenderprice: [], loannex: [] };
  * with it, so it falls back to the environment (and then to the pre-fills) and
  * REPORTS the problem rather than swallowing it.
  */
-async function settingsRaw() {
-  try {
-    const stored = await settingsStore.get('pricing.combinedInvestors', 'company');
-    return routing.resolveRaw({ stored });
-  } catch (e) {
-    return { ...routing.resolveRaw({ stored: null }), problem: reasonOf(e) };
-  }
-}
+/* ⛔ ONE DEFINITION, in `pricing/investor-config.js`. The General Pricing Engine reads
+   these same four settings now (owner-directed 2026-09-03), and the settings are
+   addressed by KEY STRINGS — two engines each holding their own copy of
+   'pricing.combinedInvestors' is one rename away from a screen saving to a key the
+   other never reads, which would look like an investor that will not turn off. */
+const settingsRaw = () => investorConfig.investorsRaw();
 
 /**
  * THE SAVED MARGIN HOLDBACK, or nothing if nobody has set one.
@@ -133,13 +132,7 @@ async function settingsRaw() {
  * the holdback ON. A settings outage that quietly stopped holding it back would
  * hand every borrower 0.25 of better execution nobody decided to give them.
  */
-async function holdbackRaw() {
-  try {
-    return await settingsStore.get('pricing.combinedMarginHoldback', 'company');
-  } catch (_) {
-    return undefined;
-  }
-}
+const holdbackRaw = () => investorConfig.holdbackRaw();
 
 /**
  * ONE EXPLAINED OPTION WITH OUR OWN MARGIN'S TRAIL REMOVED — never its price.
@@ -271,14 +264,7 @@ function namesOf(board) {
  * unreadable store yields NO links, which is the behaviour this engine had
  * before links existed — a broken setting can cost the links, never the board.
  */
-async function linksRaw() {
-  try {
-    const stored = await settingsStore.get(investorLinks.SETTING_KEY, 'company');
-    return { raw: stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {}, problem: null };
-  } catch (e) {
-    return { raw: {}, problem: reasonOf(e) };
-  }
-}
+const linksRaw = () => investorConfig.linksRaw();
 
 /**
  * THE INVESTORS SOMEBODY ADDED BY HAND, as a Map every roster reader takes.
@@ -290,9 +276,7 @@ async function linksRaw() {
  * answer says why, so the screen can tell somebody instead of showing a shorter
  * list as though that were the truth.
  */
-async function customRaw() {
-  return rosterContext.loadCustom();
-}
+const customRaw = () => investorConfig.customRaw();
 
 /**
  * The kill switch. DEFAULT ON — the owner asked for this engine to be live on the
