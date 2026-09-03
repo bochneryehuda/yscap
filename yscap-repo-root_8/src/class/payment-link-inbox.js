@@ -75,15 +75,40 @@ function extractLink(text, html) {
 // order must still be unpaid. Better to let the ordinary team forward carry an
 // unrecognised vendor email than to tell a borrower "here is how to pay" about a
 // payment they already made (pre-merge audit round 2).
+// Receipt-shaped wording: Class's "payment successful" email can land BEFORE the
+// OrderPaid callback marks the order paid, so "the order is still unpaid" is not
+// enough on its own (post-merge audit 2026-09-03).
+const RECEIPT_RE = /receipt|payment (was |has been )?(received|successful|processed|complete[d]?|confirmed)|paid in full|thank you for (your |the )?payment|confirmation of (your |the )?payment|payment confirmation/i;
+// The same, for the BODY: a bare "receipt" there is as often forward-looking ("a receipt
+// will be emailed once payment is complete") as it is a receipt, so only the phrasings a
+// receipt actually uses count (re-audit 2026-09-03).
+const BODY_RECEIPT_RE = /your receipt|view (your |the )?receipt|receipt (for|of) (your |the |this )?payment|payment (was |has been )?(received|successful|processed|confirmed)|paid in full|thank you for (your |the )?payment|confirmation of (your |the )?payment|payment confirmation/i;
+// Wording that ASKS for a payment, as opposed to mentioning one. Decided FIRST, so a link
+// email that also mentions a receipt is still the link.
+const ASK_RE = /pay now|pay here|pay online|payment link|make (a |your |the )?payment|payment (is |will be )?(due|required|requested|needed|owed)|requires payment|balance due|amount due|due on receipt|to pay\b|pay for|please pay|complete (your |the )?payment|payment (page|portal|request)|submit (your |the )?payment|proceed (to|with) (the |your )?payment/i;
 function looksLikePaymentLink({ subject, text, html, link }) {
   const subj = String(subject || '');
-  if (/receipt|payment received|paid in full|thank you for your payment|confirmation of payment/i.test(subj)) return false;
+  if (RECEIPT_RE.test(subj)) return false;
   const body = `${subj}\n${String(text || '')}\n${String(html || '').replace(/<[^>]+>/g, ' ')}`;
-  return !!link || /\bpay(ment|able)?\b/i.test(body);
+  if (ASK_RE.test(body)) return true;
+  // Nothing asks for a payment: a body that reads as a receipt is a receipt, whatever
+  // link it carries ("view your receipt" is a link too).
+  if (BODY_RECEIPT_RE.test(body)) return false;
+  // A link on its own is not a payment link — the wording has to talk about paying.
+  void link;
+  return /\bpay(ment|able)?\b/i.test(body);
 }
 
 // The live payment-link order on this file whose recipient IS the file mailbox, if any.
-async function orderExpectingLink(q, applicationId) {
+// Two live orders on one file (a main report and a supplemental, say) both name the
+// same mailbox, so when the email names an order — Class's order number or our
+// reference — that one wins; otherwise the newest (post-merge audit 2026-09-03).
+function namesOrder(hay, key) {
+  const k = String(key || '').trim();
+  if (k.length < 3) return false;
+  return new RegExp('(^|[^0-9A-Za-z])' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '([^0-9A-Za-z]|$)', 'i').test(hay);
+}
+async function orderExpectingLink(q, applicationId, hint = null) {
   const mailbox = fileAddress.fileReplyTo(applicationId);
   if (!mailbox) return null;
   const r = await q.query(
@@ -94,8 +119,15 @@ async function orderExpectingLink(q, applicationId) {
         AND status NOT IN ('cancelled', 'dryrun')
         AND paid_at IS NULL
         AND (outstanding_cents IS NULL OR outstanding_cents > 0)
-      ORDER BY created_at DESC LIMIT 1`, [applicationId, mailbox]);
-  return r.rows[0] || null;
+      ORDER BY created_at DESC`, [applicationId, mailbox]);
+  const rows = r.rows;
+  if (!rows.length) return null;
+  if (rows.length > 1 && hint) {
+    const hay = `${hint.subject || ''}\n${hint.text || ''}\n${String(hint.html || '').replace(/<[^>]+>/g, ' ')}`;
+    const named = rows.find((o) => namesOrder(hay, o.class_order_id) || namesOrder(hay, o.reference_number));
+    if (named) return named;
+  }
+  return rows[0];
 }
 
 // Who gets it. The borrower and co-borrower as To; the loan officer and processor —
@@ -110,6 +142,7 @@ function realEmail(e) {
 async function recipientsFor(q, applicationId) {
   const a = (await q.query(
     `SELECT b.email AS b_email, cb.email AS c_email, lo.email AS lo_email, pr.email AS pr_email,
+            lo.id AS lo_id, pr.id AS pr_id,
             lo.is_active AS lo_active, pr.is_active AS pr_active, lo.is_external AS lo_ext, pr.is_external AS pr_ext
        FROM applications a
        LEFT JOIN borrowers b ON b.id = a.borrower_id
@@ -130,8 +163,14 @@ async function recipientsFor(q, applicationId) {
       WHERE aa.application_id = $1 AND aa.removed_at IS NULL
         AND aa.role IN ('loan_officer', 'processor', 'loan_officer_assistant')
         AND su.is_active = true AND su.is_external = false`, [applicationId]);
+  // The in-app trace goes to the same people the Cc does: the file's own officer and
+  // processor pointers as well as the assignee rows (an officer set only by pointer
+  // was copied on the email but had no portal row — post-merge audit 2026-09-03).
   const staffIds = [];
-  for (const r of team.rows) { addStaff(r.email, true, false); if (r.staff_id && !staffIds.includes(r.staff_id)) staffIds.push(r.staff_id); }
+  const addStaffId = (id, active, ext) => { if (id && active !== false && ext !== true && !staffIds.includes(id)) staffIds.push(id); };
+  addStaffId(a.lo_id, a.lo_active, a.lo_ext);
+  addStaffId(a.pr_id, a.pr_active, a.pr_ext);
+  for (const r of team.rows) { addStaff(r.email, true, false); addStaffId(r.staff_id, true, false); }
   return { to, cc, staffIds };
 }
 
@@ -145,7 +184,7 @@ async function handleInbound({ applicationId, fromEmail, subject, text, html, in
   const q = deps.db || db;
   const mailer = deps.mailer || email;
   if (!isVendorSender(fromEmail)) return { handled: false, reason: 'not_vendor' };
-  const order = await orderExpectingLink(q, applicationId);
+  const order = await orderExpectingLink(q, applicationId, { subject, text, html });
   if (!order) return { handled: false, reason: 'no_link_order' };
   // Once per delivery: a webhook redelivery must not send three people the same email twice.
   const already = order.payment_link_forwarded_to && inboundId
@@ -206,4 +245,4 @@ async function handleInbound({ applicationId, fromEmail, subject, text, html, in
   return { handled: true, to, cc, link: link || null };
 }
 
-module.exports = { handleInbound, isVendorSender, extractLink, looksLikePaymentLink, recipientsFor, orderExpectingLink, realEmail, vendorDomains };
+module.exports = { handleInbound, isVendorSender, extractLink, looksLikePaymentLink, recipientsFor, orderExpectingLink, namesOrder, realEmail, vendorDomains };
