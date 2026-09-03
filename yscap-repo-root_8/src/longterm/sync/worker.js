@@ -9,10 +9,19 @@
  * which is the same "built but never triggered" failure as a mirror with no
  * writer, one level up: every writer existed and nothing ever called them.
  *
- * OFF BY DEFAULT, and it says so. `LT_SYNC_ENABLED=1` turns it on, exactly as
- * `ENCOMPASS_ENABLED` and `CLICKUP_OUTBOUND_ENABLED` gate their own workers. With
- * the switch off this module schedules nothing, reads nothing and costs nothing —
- * so it can ship to every deployment as it stands and change none of them.
+ * ⛔ THIS PARAGRAPH SAID "OFF BY DEFAULT, and it says so" AND WAS FALSE FROM
+ * 2026-08-23, when the default flipped — see the owner-directed note further down
+ * this same file, and `enabled()` below, which returns TRUE when the variable is
+ * unset. Two other files quoted this sentence as their authority and were corrected
+ * on 2026-09-03; the file that owns the default kept it a day longer, which is the
+ * more dangerous half: a reader who checks the source of a claim found the claim
+ * repeated.
+ *
+ * ON BY DEFAULT. `LT_SYNC_ENABLED=0` turns it off — the reverse of
+ * `ENCOMPASS_ENABLED` and `CLICKUP_OUTBOUND_ENABLED`, which still gate their own
+ * workers the ordinary way, so do not read across from them. With the switch off
+ * this module schedules nothing, reads nothing and costs nothing; with it ON but no
+ * Encompass credentials, a pass costs one refused call (see below).
  *
  * IT IS BOUNDED BY THE PASSES IT CALLS, NOT BY A LIMIT OF ITS OWN. `loans.syncOnce`
  * reads at most its own budget of loans per pass and `conditions.syncOnce` its

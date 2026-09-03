@@ -20,7 +20,27 @@ const fs = require('fs');
 const path = require('path');
 const root = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
-const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+// ⛔ THE SHARED STRIPPER, WHICH THIS FILE SHOULD HAVE BEEN USING ALL ALONG.
+// It kept its own copy of the two-line regex idiom — `.replace(/\/\*[\s\S]*?\*\//g,
+// '')` — while `scripts/lib/strip-comments.js` had already existed since 2026-08-30,
+// written because that idiom is silently wrong in BOTH directions and had bitten for
+// real. Fourteen other suites had adopted it; this one had not, and nothing pointed
+// that out because a stripper that eats too much makes a "must not appear" assertion
+// PASS.
+//
+// A post-merge audit then walked straight through it: the exact defect these guards
+// exist to catch — a cumulative-travel `pointermove` listener calling
+// `releaseFromGuest` in `CobrowseHost.jsx` — placed between `const A = '/*';` and
+// `const B = '*\/';` and this suite reported 282 passed, 0 failed. The regex saw a
+// comment open in the first string and close in the second and deleted the defect
+// before any assertion read it. Every "must not appear" rule below runs on stripped
+// source, so that one line was a skeleton key to all of them.
+//
+// The shared module is a left-to-right state machine that knows a string from a
+// comment from a regex literal, which is the only way to answer the question. Same
+// exploit against it now: 279 passed, 3 failed.
+const { stripComments } = require('./lib/strip-comments.js');
+const strip = (s) => stripComments(s).replace(/\{\s*\}/g, '{}');
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log('PASS', m); } else { fail++; console.log('FAIL', m); } };
 
@@ -269,8 +289,13 @@ const RELEASE_SCOPE = (() => {
       const rel = dir + '/' + e.name;
       if (e.isDirectory()) { walk(rel); continue; }
       if (!/\.(js|jsx)$/.test(e.name)) continue;
-      const text = read(rel);
-      if (/\breleaseFromGuest\b/.test(text)) out.push({ rel, src: strip(text) });
+      // SELECTED ON THE STRIPPED TEXT, not the raw. Selecting on raw put any file
+      // that merely NAMES the function in a comment into the scope with zero real
+      // mentions — where `mentions === calls` passes trivially at 0 === 0 and the
+      // listener inventory then hard-fails it for not being in the list. Writing a
+      // doc comment turned the suite red.
+      const src = strip(read(rel));
+      if (/\breleaseFromGuest\b/.test(src)) out.push({ rel, src });
     }
   };
   walk('app-v2/src');
@@ -305,7 +330,17 @@ for (const f of RELEASE_SCOPE) {
   // below; here the rule is that no mention is ever anything but a call — except the
   // `import { ... }` line, which names it without calling it and is how the other files
   // legitimately reach it.
-  const mentions = (f.src.replace(/^import[\s\S]*?from\s*'[^']*';$/gm, '').match(/\breleaseFromGuest\b/g) || []).length;
+  // THE IMPORT LINES ARE REMOVED BEFORE COUNTING, and the pattern for them is
+  // fussier than it looks. The first version was /^import[\s\S]*?from\s*'[^']*';$/gm:
+  //   · it knew only SINGLE quotes, so `from "…"` counted as a non-import mention and
+  //     accused the author of aliasing — a false failure;
+  //   · and `[\s\S]*?` crossed statements, so a bare `import './x.css';` (no `from`)
+  //     swallowed everything down to the next `from '…';` — taking a real
+  //     `const giveBack = releaseFromGuest;` with it. A false PASS, on the exact
+  //     defect this rule exists to catch.
+  // `[^;]*?` cannot cross a semicolon, so a side-effect import ends at its own; and
+  // ['"] admits both quotes. Both proven by the audit that found them.
+  const mentions = (f.src.replace(/\bimport\b[^;]*?\bfrom\s*['"][^'"]*['"]\s*;/g, '').match(/\breleaseFromGuest\b/g) || []).length;
   const calls = (f.src.match(/\breleaseFromGuest\(/g) || []).length;
   ok(mentions === calls, `releaseFromGuest is only ever CALLED in ${f.rel} (${mentions} non-import mentions, ${calls} calls)`);
 }
@@ -320,8 +355,12 @@ const KNOWN_LISTENERS = {
 for (const f of RELEASE_SCOPE) {
   const literals = [...f.src.matchAll(/addEventListener\(\s*'([^']+)'/g)].map((m) => m[1]).sort();
   const known = KNOWN_LISTENERS[f.rel];
+  // The message says what it EXPECTED and where to change it. The first version
+  // printed only what it found, so an author who legitimately added a listener was
+  // told they had broken a rule without being told which list to update.
   ok(Array.isArray(known) && JSON.stringify(literals) === JSON.stringify(known),
-    `${f.rel} registers only the known named listeners (found ${JSON.stringify(literals)}${known ? '' : ' — and the file is not in the inventory at all'})`);
+    `${f.rel} registers only the known named listeners (found ${JSON.stringify(literals)}, expected ${known ? JSON.stringify(known) : 'NOTHING — this file is not in KNOWN_LISTENERS at all'}`
+    + ' — if the new listener is genuinely not a take-back, add it to KNOWN_LISTENERS in this file)');
   const computed = (f.src.match(/addEventListener\(\s*(?!')/g) || []).length;
   if (f.rel === 'app-v2/src/lib/cobrowse.js') {
     ok(computed === 1 && /for \(const \w+ of TAKEBACK_EVENTS\) window\.addEventListener\(\w+, takeBack, true\);/.test(f.src),

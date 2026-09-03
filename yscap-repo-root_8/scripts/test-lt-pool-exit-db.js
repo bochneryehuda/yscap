@@ -103,6 +103,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { stripComments } = require('./lib/strip-comments.js');
 const { spawn } = require('child_process');
 const { skipUnlessDb } = require('./lib/db-gate');
 
@@ -216,20 +217,59 @@ function runChild(body, budgetMs) {
         }
         return out;
       };
-      const sites = walk('src').filter((f) => /new Pool\(/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
-      ok(sites.length >= 3, `every pool in src/ is found and checked (${sites.length}: ${sites.join(', ')})`);
-      for (const f of sites) {
-        const src = fs.readFileSync(path.join(ROOT, f), 'utf8')
-          .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-        const guarded = /allowExitOnIdle\s*:\s*true/.test(src);
-        const excused = Object.prototype.hasOwnProperty.call(POOL_EXCEPTIONS, f);
+      // ⛔ PER CONSTRUCTION SITE, AND SPELLED HOW A POOL IS ACTUALLY SPELLED.
+      // The first cut of this check did neither, and the post-merge audit walked
+      // through both holes with a pool that really did hold a process for 30.07 s:
+      //   · it matched the literal `new Pool(` only, so `new pg.Pool({…})` — the
+      //     ordinary spelling when nobody destructures the import — was invisible,
+      //     while the assertion printed "every pool in src/ is found and checked"
+      //     and named three files;
+      //   · it tested `allowExitOnIdle` ONCE PER FILE, so a second, unguarded pool
+      //     added to a file that already had a guarded one was excused by its
+      //     neighbour.
+      // Both are the finding this suite's own commit was written to fix — "named as
+      // covered and was not" — reintroduced inside the correction. So: every `new`
+      // expression whose constructor ENDS in `Pool` is a site, each site's own
+      // options object is what is read, and a construction the scanner cannot read
+      // is a FAILURE rather than a silent pass.
+      const NEW_POOL = /\bnew\s+(?:[A-Za-z_$][\w$]*\s*\.\s*)*Pool\s*\(/g;
+      // `new (expr)(…)` — `new (require('pg').Pool)({…})`. Undecidable here, so it is
+      // refused by name: construct the pool plainly and the guard can read it.
+      const NEW_COMPUTED = /\bnew\s*\(/;
+      const files = walk('src');
+      const sites = [];
+      let unreadable = [];
+      for (const f of files) {
+        const raw = fs.readFileSync(path.join(ROOT, f), 'utf8');
+        const src = stripComments(raw);
+        if (NEW_COMPUTED.test(src) && /\bPool\b/.test(src)) unreadable.push(f);
+        NEW_POOL.lastIndex = 0;
+        let m;
+        while ((m = NEW_POOL.exec(src))) {
+          // The site's OWN argument list: balance from the `(` this match ends on.
+          let depth = 0, k = m.index + m[0].length - 1, end = k;
+          for (; k < src.length; k += 1) {
+            if (src[k] === '(') depth += 1;
+            else if (src[k] === ')') { depth -= 1; if (depth === 0) { end = k; break; } }
+          }
+          sites.push({ file: f, args: src.slice(m.index, end + 1) });
+        }
+      }
+      const byFile = [...new Set(sites.map((x) => x.file))];
+      ok(sites.length >= 3 && byFile.length >= 3,
+        `every pool CONSTRUCTION SITE in src/ is found and read on its own (${sites.length} site(s) in ${byFile.length} file(s): ${byFile.join(', ')})`);
+      ok(unreadable.length === 0,
+        `no pool is built through an expression this guard cannot read (${unreadable.length ? unreadable.join(', ') + ' — construct it as `new Pool({…})` so its options can be checked' : 'none'})`);
+      for (const site of sites) {
+        const guarded = /allowExitOnIdle\s*:\s*true/.test(site.args);
+        const excused = Object.prototype.hasOwnProperty.call(POOL_EXCEPTIONS, site.file);
         ok(guarded || excused,
-          `${f} either releases the process when idle, or is a NAMED exception with its reason written down`);
+          `the pool at ${site.file} either releases the process when idle, or its file is a NAMED exception with its reason written down`);
         ok(!(guarded && excused),
-          `${f} is not both guarded and excused — an exception that no longer applies is a stale reason somebody will trust`);
+          `${site.file} is not both guarded and excused — an exception that no longer applies is a stale reason somebody will trust`);
       }
       for (const f of Object.keys(POOL_EXCEPTIONS)) {
-        ok(sites.includes(f), `the named exception ${f} still creates a pool — a stale entry would excuse a file that moved`);
+        ok(byFile.includes(f), `the named exception ${f} still creates a pool — a stale entry would excuse a file that moved`);
       }
     }
 
