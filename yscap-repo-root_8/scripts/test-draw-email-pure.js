@@ -236,11 +236,24 @@ console.log('\nH · A DRAW JUST SUBMITTED FOR REVIEW leads with the REQUEST — 
     ],
     feeCents: FEE,
   });
-  // The trap, pinned so nobody "fixes" the composer by hiding it: the staged band DOES read this
-  // as a $0 answer, which is exactly why the submission notice must not ask for the staged band.
+  // The ladder now reads an all-zero mirror on an `inspecting` draw as "not answered yet"
+  // (approval.inspectorApproved), so even the staged band leads with the request here — the desk
+  // screen reads off the same money. The submission notice still asks for its own band below, so
+  // the email never depends on that gate alone.
+  ok(justSubmitted.has_inspector_amounts === false && justSubmitted.approval_stage === 'inspecting',
+    'the ladder does not read Sitewire\'s not-null zeros on an `inspecting` draw as an answer');
   const staged = de.drawFigures(justSubmitted);
-  ok(staged.primary.label === 'Approved on this draw' && staged.primary.value === '$0',
-    'the staged band reads Sitewire\'s not-null zeros as "$0 approved" — the trap: ' + staged.primary.label + ' ' + staged.primary.value);
+  ok(staged.primary.label === 'Requested' && staged.primary.value === '$42,250',
+    'so the staged band (what the desk and every other email read) leads with the request: ' + staged.primary.label + ' ' + staged.primary.value);
+  // …and the SAME mirror on a `pending` draw — inspection done — is still the explicit $0 answer.
+  const inspectedZero = A.drawMoney({
+    draw: { total_requested_cents: SUBMITTED_REQ, status: 'pending', total_approved_cents: 0 },
+    requests: [{ requested_cents: 2500000, approved_cents: 0 }, { requested_cents: 1725000, approved_cents: 0 }],
+    feeCents: FEE,
+  });
+  const stagedZero = de.drawFigures(inspectedZero);
+  ok(stagedZero.primary.label === 'Approved on this draw' && stagedZero.primary.value === '$0',
+    'while an inspected draw at $0 still states $0 — the 2026-08-10 doctrine is untouched');
 
   const sub = de.submittedFigures(justSubmitted);
   ok(sub.primary.label === 'Requested' && sub.primary.value === '$42,250',
