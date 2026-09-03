@@ -5,7 +5,7 @@ import LtSourceMisses from './LtSourceMisses.jsx';
 import { keyFromLabel, parseAliases } from './customInvestors.js';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, card, eyebrow, sub, input, label, LINE, WASH } from './ppeStyles.js';
 import { sourceLabel } from './sourceLabel.js';
-import { choiceOf, rowPatch, carriesSetting, resetRequested } from './investorSourcePatch.js';
+import { choiceOf, carriesSetting, resetRequested, mapForSave, staysWithoutSetting } from './investorSourcePatch.js';
 
 /**
  * THE SIDE-BY-SIDE INVESTOR LIST — the ONE new section in the General Pricing Engine's settings.
@@ -296,23 +296,18 @@ export default function LtInvestorSources() {
    * defeated the regex guarding it twice, each time restoring the defect in full with
    * every check still passing: a regex over a caller can only ever pin a spelling.
    */
-  const patchOf = (r) => rowPatch(r, edits[r.key]);
-
   async function save() {
     if (busy || !data) return;
     if (!dirty) { setSaved('Nothing has changed since this was last saved.'); return; }
     setBusy(true); setErr(null); setSaved(null);
     try {
-      const map = {};
-      let reset = 0;
-      for (const r of rows) {
-        /* Counted from the SAME question the save turns on, not from the edits: a reset
-           on a row that carried no setting removes nothing, and saying it did would be a
-           confident wrong answer about what just happened to the list. */
-        if (resetRequested(edits[r.key]) && carriesSetting(r)) reset += 1;
-        const p = patchOf(r);
-        if (p) map[r.key] = p;
-      }
+      /* ⛔ THE LOOP LIVES IN `investorSourcePatch.mapForSave`, NOT HERE. The pre-merge
+         audit of 2026-09-03 restored the owner's own defect — a row that asked for the
+         pre-fill put straight back into the map — with one added line beside an
+         untouched `rowPatch` call, and every screen suite stayed green, because a regex
+         over this file can only ever pin how the loop is SPELLED. Its test hands the
+         real function real rows and reads the real map back. */
+      const { map, reset } = mapForSave(rows, edits);
       const out = await ltApi.sourceSaveInvestors(map);
       /**
        * ⛔ RE-READ, NEVER INSTALL THE WRITE'S OWN ANSWER. The PUT answers `describeSettings` — the
@@ -540,7 +535,7 @@ export default function LtInvestorSources() {
                 {resetting && (
                   <div style={{ marginTop: 6 }}>
                     <div style={{ fontSize: 11, color: GOLD_TEXT, fontWeight: 650, lineHeight: 1.45 }}>
-                      Going back to the pre-fill when you save{r.whiteLabel ? '' : ' — and leaving this list'}.
+                      Going back to the pre-fill when you save{staysWithoutSetting(r) ? '' : ' — and leaving this list'}.
                     </div>
                     <button
                       type="button"

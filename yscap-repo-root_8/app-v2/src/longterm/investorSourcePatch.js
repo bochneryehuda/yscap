@@ -134,3 +134,63 @@ export function rowPatch(row, edit) {
   }
   return out;
 }
+
+/**
+ * THE WHOLE SAVE, AS A MAP — every row's answer, plus how many settings this save
+ * actually removes.
+ *
+ * ⛔ IT LIVES HERE FOR THE REASON AT THE TOP OF THIS FILE, AND THE PRE-MERGE AUDIT OF
+ * 2026-09-03 PROVED THE POINT A SECOND TIME. Moving `rowPatch` out of the screen made
+ * the RULE testable; the screen's own LOOP was still guarded only by a regex over its
+ * source, and the audit defeated that regex while fully restoring the owner's defect —
+ * one added line beside an untouched `patchOf` call put a row that had asked for the
+ * pre-fill straight back into the map, so "use the pre-fill" became a button that does
+ * nothing, with all three screen suites green and the bundle rebuilt. A regex can pin
+ * how a caller is SPELLED; only running the loop can pin what the SAVE SENDS.
+ *
+ * ⛔ THE COUNT IS TAKEN FROM THE SAME QUESTION THE SAVE TURNS ON, never from the edits:
+ * a reset on a row that carried no setting removes nothing, and saying it did would be
+ * a confident wrong answer about what just happened to the list.
+ */
+export function mapForSave(rows, edits) {
+  const list = Array.isArray(rows) ? rows : [];
+  const e = edits || {};
+  const map = {};
+  let reset = 0;
+  for (const r of list) {
+    if (!r || !r.key) continue;
+    if (resetRequested(e[r.key]) && carriesSetting(r)) reset += 1;
+    const p = rowPatch(r, e[r.key]);
+    if (p) map[r.key] = p;
+  }
+  return { map, reset };
+}
+
+/**
+ * WOULD THIS ROW STILL BE ON THE LIST WITH NO SETTING OF ITS OWN — the question the
+ * "use the pre-fill" warning answers, and the one it used to guess at.
+ *
+ * ⛔ IT IS THE SERVER'S `belongsOnSettingsList` WITH THE SETTING TAKEN AWAY, and it was
+ * a SECOND, INCOMPLETE COPY of that rule: the screen tested `r.whiteLabel`, which is the
+ * name the row is showing NOW — the setting's own name when a setting supplied it — so
+ * it was wrong in both directions at once (measured, pre-merge audit 2026-09-03). A row a
+ * rate sheet has actually produced was promised it would leave and STAYED, which is the
+ * expensive direction and reads as a button that does not work; a row whose only name
+ * came from the setting was promised nothing and LEFT, taking the typed name with it,
+ * unannounced.
+ *
+ * The three reasons a row is kept are the server's: a white label off the RATE SHEET
+ * (`prefill.whiteLabel`, which is what survives the removal), a sheet having actually
+ * produced it, or a setting of its own — and it is that third one this question removes.
+ * A browser twin is unavoidable (a screen cannot require server code, the `lib/payoff.js`
+ * arrangement), so `test-lt-investor-sources-pure` runs this and the server's rule over
+ * one battery and fails the moment they disagree.
+ */
+export function staysWithoutSetting(row) {
+  const r = row || {};
+  const pf = r.prefill || {};
+  if (pf.whiteLabel) return true;
+  const a = r.availability || {};
+  for (const k of Object.keys(a)) if (a[k] && a[k].state === 'seen') return true;
+  return false;
+}

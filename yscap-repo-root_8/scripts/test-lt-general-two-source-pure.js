@@ -615,6 +615,69 @@ const byInvestor = (programs) => {
       'HOLD-4 the Lender Price half is built through the shared holdback door, same as the LoanNEX half');
   }
 
+  /* ═══════════════════════════════════════════════════════════════════════════
+     SEAM · WHAT THE BOARD PRODUCES IS WHAT THE REGISTER READS.
+
+     ⛔ THE GAP THE PRE-MERGE AUDIT OF 2026-09-03 FOUND, and it is the sharpest kind:
+     `search-record.collector().observe()` discards a sheet whose entry is not
+     `answered`, and `general-board` is the only thing that sets that word. Flipping
+     ONE token — `lenderprice: { answered: true` → `false` — silences every Lender
+     Price sighting on BOTH doors for ever: the settings screen's "available on"
+     column never fills and no button is ever locked. The audit swept all TWELVE
+     suites that mention sightings, search-record or general-board and every one of
+     them stayed green.
+
+     The reason is structural: `test-lt-search-record-wired-pure` stubs BOTH sides of
+     this seam (the board AND the register), so it proves the CALL HAPPENS and can
+     never prove the call CARRIES USABLE EVIDENCE. Its own fixture proved the gap —
+     it carried no `answered` key at all, which the real collector would have thrown
+     away entirely.
+
+     So this runs the REAL collector over the REAL board, with only the two WRITERS
+     stubbed. It belongs here, not there, because this is the suite that has a real
+     `boardForScenario` in its hands. */
+  {
+    const searchRecord = require(path.join(ROOT, 'src/longterm/pricing/search-record.js'));
+    const board = await run(lpOk, nexOk);
+    ok(board.ok && board.programs.length > 0,
+      'SEAM-0 CONTROL: the board under test priced something, so the assertions below mean something');
+
+    let sighted = null; let missed = null;
+    const col = searchRecord.collector({
+      recordSightings: async (s) => { sighted = s; return { ok: true }; },
+      recordMisses: async (m) => { missed = m; return { ok: true }; },
+    });
+    col.observe(board);
+    await col.flush({ scenario: SC, searchKey: board.searchKey, door: 'immediate' });
+
+    ok(sighted && sighted.lenderprice && Array.isArray(sighted.lenderprice.keys) && sighted.lenderprice.keys.length > 0,
+      `⛔ SEAM-1 THE ONE THAT MATTERS: the register is handed real Lender Price sightings off a real board (${sighted && sighted.lenderprice ? sighted.lenderprice.keys.length : 'none'})`);
+    ok(sighted && sighted.loannex && Array.isArray(sighted.loannex.keys) && sighted.loannex.keys.length > 0,
+      `SEAM-2 …and real LoanNEX sightings too (${sighted && sighted.loannex ? sighted.loannex.keys.length : 'none'})`);
+
+    /* Every sheet the register knows about must be described by the board, or the one
+       nobody described is silently unrecordable — exactly the shape of the defect. */
+    const REG = require(path.join(ROOT, 'src/longterm/pricing/investor-sightings.js'));
+    ok(REG.SOURCES.every((sname) => board.sightings && board.sightings[sname]
+      && typeof board.sightings[sname].answered === 'boolean'
+      && Array.isArray(board.sightings[sname].keys)),
+      `SEAM-3 …and the board describes every sheet the register knows about (${REG.SOURCES.join(', ')}), each with an ANSWERED flag`);
+
+    /* A sheet that genuinely refused says nothing — the property the `answered` flag is
+       FOR. This is the control that stops SEAM-1 being satisfiable by ignoring the flag. */
+    const lpDown = { price: async () => ({ ok: false, error: 'down' }), parseFull: lpModel.parseFull };
+    const downBoard = await run(lpDown, nexOk);
+    let sightedDown = null;
+    const col2 = searchRecord.collector({
+      recordSightings: async (s) => { sightedDown = s; return { ok: true }; },
+      recordMisses: async () => ({ ok: true }),
+    });
+    col2.observe(downBoard);
+    await col2.flush({ scenario: SC, searchKey: 'k-down', door: 'immediate' });
+    ok(!sightedDown || !sightedDown.lenderprice || sightedDown.lenderprice.keys.length === 0,
+      'SEAM-4 CONTROL: a sheet that refused records no sighting at all, which is what the flag is for');
+  }
+
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('THREW', (e && e.stack) || e); process.exit(1); });

@@ -70,7 +70,16 @@ const BOARD = {
   programs: [],
   investors: [],
   parsed: { programs: [], pricedAt: '2026-09-03T00:00:00.000Z' },
-  sightings: { lenderprice: { keys: ['nqm'] }, loannex: { keys: [] } },
+  /* ⛔ `answered` IS PART OF THE SHAPE, and leaving it off is how this fixture lied.
+     The real `search-record` collector discards a sheet whose entry is not `answered`,
+     so the first cut of this fixture — `{ lenderprice: { keys: ['nqm'] } }` — described a
+     board the real collector would have thrown away entirely, while the stubbed one here
+     accepted it. That is what let the audit silence the register at `general-board.js`
+     with one token and keep all twelve related suites green. The SEAM itself (this shape
+     against what the collector reads) is proved on a REAL board in
+     `test-lt-general-two-source-pure` — SEAM-1..SEAM-4; what is proved HERE is only that
+     both doors call the recorder, which is all a stubbed recorder can honestly hold. */
+  sightings: { lenderprice: { answered: true, keys: ['nqm'] }, loannex: { answered: true, keys: [] } },
   request: {},
   searchKey: 'sk',
   provenance: null,
@@ -78,12 +87,27 @@ const BOARD = {
   sources: { lenderprice: true, loannex: true },
   investorPairing: null,
 };
+/* MUTABLE so a section can put the door in a shop that has switched NOBODY over —
+   see section D, which is what stops this whole suite being silenced by a condition
+   that the one fixture here happens to satisfy. */
+const cfg = { wantLoanNex: true };
 stub('src/longterm/pricing/general-board.js', {
   loadConfig: async () => ({
     routes: {}, custom: new Map(), links: {}, heldSetting: 0.25,
-    extraFor: () => 0, settings: {}, wantLoanNex: true,
+    extraFor: () => 0, settings: {}, wantLoanNex: cfg.wantLoanNex,
   }),
-  boardForScenario: async () => BOARD,
+  /* ⛔ THE BOARD FOLLOWS THE CONFIG, as the real one does. With nobody routed to
+     LoanNEX the real `boardForScenario` makes no second vendor call at all, so it
+     answers `source: 'lenderprice'` with that sheet unanswered. A stub that returned
+     the two-source board regardless would leave section D unable to see a gate written
+     on the BOARD (`if (board.source === 'both')`) rather than on the config — and the
+     audit defeated the suite both ways. */
+  boardForScenario: async () => (cfg.wantLoanNex ? BOARD : {
+    ...BOARD,
+    source: 'lenderprice',
+    sources: { lenderprice: true, loannex: false },
+    sightings: { lenderprice: { answered: true, keys: ['nqm'] }, loannex: { answered: false, keys: [] } },
+  }),
   pickerRoster: () => [],
 });
 /* The bands door's own runner. It hands each band back through `priceOne`, which is
@@ -180,6 +204,52 @@ const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.
       `C2 CONTROL: a scenario refused by validation asks no sheet (${res2.code}, ${calls.observe} observed)`);
     ok(calls.flush.length === 0,
       `C3 …and records nothing — a search that never happened is not a search (${calls.flush.length})`);
+  }
+
+  console.log('\n── D. THE RECORDING IS NOT CONDITIONAL ON ANYTHING THIS FIXTURE HAPPENS TO BE ──');
+  {
+    /* ⛔ WHY THIS SECTION EXISTS. Sections A–C each exercise ONE board shape, so ANY
+       condition that shape happens to satisfy silences the register everywhere else and
+       leaves this suite green. The pre-merge audit of 2026-09-03 proved it with a single
+       token on the immediate door:
+
+           if (cfg.wantLoanNex) searchRecord.later(() => searchRecord.recordOne(board, {…}))
+
+       The stub above returns `wantLoanNex: true`, so A1 passed — while in production a shop
+       that has switched NOBODY to LoanNEX would record nothing at all and the side-by-side
+       list would stay permanently empty. That is the owner's *"it's not actually connected"*,
+       restored, with every suite reporting green.
+
+       A rate sheet nobody is routed to is exactly the state a shop starts in, and it is
+       still a search: Lender Price answered, and whether it did is what the register is for.
+       So the door is run in that shop and must record just the same. */
+    reset();
+    cfg.wantLoanNex = false;
+    const res = mkRes();
+    await route.handlers.price({ body: { ...SCENARIO, full: true }, actor: { id: 'staff-5' } }, res);
+    cfg.wantLoanNex = true;
+    ok(res.body && res.body.ok === true,
+      `D0 CONTROL: the door still answers a board when nobody is routed to LoanNEX (${res.code || 200})`);
+    ok(calls.recordOne.length === 1,
+      `⛔ D1 THE ONE THAT MATTERS: it records the search anyway — the register is not gated on the second sheet (${calls.recordOne.length})`);
+
+    /* The bands door, same shop, same rule. Guarding one door and not the other is what
+       let the immediate door stay silent in the first place. */
+    reset();
+    cfg.wantLoanNex = false;
+    const res2 = mkRes();
+    await route.handlers.priceBrackets({ body: { ...SCENARIO }, actor: { id: 'staff-6' } }, res2);
+    cfg.wantLoanNex = true;
+    ok(res2.body && res2.body.ok === true, `D2 CONTROL: the bands door answers too (${res2.code || 200})`);
+    ok(calls.flush.length === 1,
+      `⛔ D3 …and it flushes the register just the same (${calls.flush.length})`);
+
+    /* And the fixture is held to the shape the real board produces, so a board that
+       described a sheet WITHOUT saying whether it answered could not sit here unnoticed —
+       the omission that made the real seam invisible to this suite. */
+    const REG = require(path.join(ROOT, 'src/longterm/pricing/investor-sightings.js'));
+    ok(REG.SOURCES.every((src) => BOARD.sightings[src] && typeof BOARD.sightings[src].answered === 'boolean'),
+      `D4 …and this suite's own board carries an ANSWERED flag for every sheet the register knows (${REG.SOURCES.join(', ')})`);
   }
 
   console.log(`\n${pass} passed, ${fail} failed\n`);

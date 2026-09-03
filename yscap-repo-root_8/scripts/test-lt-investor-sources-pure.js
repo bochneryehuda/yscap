@@ -357,18 +357,28 @@ console.log('\nI · an investor may restate its OWN client-safe name');
 console.log('\nJ · the settings screen sends what it was shown, and shows what was saved');
 {
   const src = strip(read('app-v2/src/longterm/LtInvestorSources.jsx'));
-  /* ⛔ J1 IS A DELEGATION CHECK, NOT A PROOF OF THE RULE. It used to be a regex over this
-     screen's own source, and the pre-merge audit of 2026-09-03 DEFEATED IT TWICE while fully
-     restoring the `both` defect — `(!e && r.source && false) ? …`, and a hoisted
-     `const _keep = !e && r.source;` beside the old expression — with this suite reporting all
-     88 checks passed. A second alternative in the pattern made the first one dead.
-     The rule now lives in `investorSourcePatch.js` and is RUN in section K. All this asserts
-     is that the screen still asks it rather than growing a second copy. */
-  ok(/from '\.\/investorSourcePatch\.js'/.test(src) && /const patchOf = \(r\) => rowPatch\(r, edits\[r\.key\]\);/.test(src),
-    'J1 the row that is sent is built by the shared rule — not by a copy inside the screen');
+  /* ⛔ J1 IS A DELEGATION CHECK, NOT A PROOF OF ANYTHING IT NAMES, and it has now been
+     defeated THREE times — which is why less and less of the save is left in this file.
+     The audit of 2026-09-03 first beat it twice on the ROW rule (`(!e && r.source && false)
+     ? …`, and a hoisted `const _keep = !e && r.source;`), so that rule moved into
+     `investorSourcePatch.js` and is RUN in section K. It then beat the same guard on the
+     LOOP — one added line beside an untouched `rowPatch(r, edits[r.key])` call put a reset
+     row back into the map, with every screen suite green and the bundle rebuilt — so the
+     loop moved too, and is RUN in section L (L13..L17).
+     What is left here is the only thing a regex can honestly hold: that the screen asks the
+     shared module for the WHOLE save and keeps no second expression of its own. */
+  ok(/from '\.\/investorSourcePatch\.js'/.test(src)
+    && /const \{ map, reset \} = mapForSave\(rows, edits\);/.test(src),
+    'J1 the whole save is built by the shared rule — not by a loop inside the screen');
+  ok(!/rowPatch\(/.test(src) && !/map\[r\.key\] =/.test(src),
+    '⛔ J1a …and the screen builds no part of that map itself — the third defeat is what this closes');
   ok(!/const sourceAnswered =/.test(src) && !/choice === 'off' \? \(r\.source === 'loannex'/.test(src)
     && !/Origin === 'setting'\s*\|\|/.test(src),
     'J1b …and no copy of that rule — the source answer, or the four-origin test — has grown back here');
+  /* The "and leaving this list" warning was a second, incomplete copy of the server's
+     `belongsOnSettingsList`; it asks the shared twin now, which L18..L20 hold to the server. */
+  ok(/staysWithoutSetting\(r\)/.test(src) && !/r\.whiteLabel \? '' :/.test(src),
+    'J1c …and the warning about leaving the list asks the shared rule, not the name the row shows now');
   ok(/setEdits\(\{\}\);\s*load\(\);/.test(src),
     'J2 after saving, the screen RE-READS the server rather than believing its own patch');
   /* Scoped to the FILTER, not the file: `sourceOrigin === 'setting'` is also read by
@@ -443,7 +453,7 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
      every save, so OMITTING a row is the removal; this is the rule that omits it.
      ═════════════════════════════════════════════════════════════════════════ */
   console.log('\nL · a row goes back to the pre-fill');
-  const { rowPatch, carriesSetting, resetRequested } = await import('../app-v2/src/longterm/investorSourcePatch.js');
+  const { rowPatch, carriesSetting, resetRequested, mapForSave, staysWithoutSetting } = await import('../app-v2/src/longterm/investorSourcePatch.js');
   const settings = require('../src/longterm/pricing/investor-settings');
 
   /* The owner's own rows: on the list for no reason but a setting somebody saved. */
@@ -457,8 +467,12 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
   ok(rowPatch(stale, { reset: true }) === null,
     'L2 …asked for the pre-fill, it sends NOTHING, so the door drops the setting and the row leaves the list');
 
-  /* Asked FIRST is the whole shape of it: asking makes the row touched, so a "was this
-     touched?" test reached before it would re-state the very setting being removed. */
+  /* HONEST NOTE, MEASURED rather than claimed (pre-merge audit 2026-09-03): asking for the
+     pre-fill FIRST reads as the shape of the rule, and swapping it with the untouched test
+     changes no answer — the untouched test is guarded on `!e`, and a reset always carries an
+     edit, so it can never reach a reset row anyway. The order is CLARITY, not correctness,
+     and this file says so rather than implying a guard that does not bite. What IS
+     load-bearing is that a reset outranks every other pending edit, which L4 pins. */
   ok(rowPatch({ key: 'x', source: 'loannex', enabled: true, carriesSetting: false }, { reset: true }) === null,
     'L3 …and it outranks a row nobody had a setting for — removing nothing removes nothing');
   ok(rowPatch(stale, { reset: true, whiteLabel: 'Typed', holdback: 3, choice: 'loannex' }) === null,
@@ -510,6 +524,20 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
   ok(agree === shapes.length,
     'L10 the browser and the server agree, on every shape a row can have, about whether it carries a setting');
 
+  /* ⛔ AND THE BROWSER READS THE SERVER'S ANSWER RATHER THAN JUDGING FOR ITSELF — the
+     property L10 cannot see, because on every shape above the two AGREE, so a browser that
+     had quietly gone back to deriving its own would pass it. Deleting the server-answer
+     branch left every suite in the repo green (pre-merge audit 2026-09-03). The module
+     header says why it matters: a browser judging for itself could offer to remove a setting
+     the server does not think is there, or hide the control on a row whose setting is the
+     only reason it is on screen. So the two are made to DISAGREE and the row must win. */
+  ok(carriesSetting({ sourceOrigin: 'default', enabledOrigin: 'default', whiteLabelOrigin: 'sheet', holdbackOrigin: 'default', carriesSetting: true }) === true,
+    '⛔ L10b the row saying YES beats four origins that say no — the server owns the answer');
+  ok(carriesSetting({ sourceOrigin: 'setting', carriesSetting: false }) === false,
+    '⛔ L10c …and the row saying NO beats an origin that says yes, which is the same rule the other way');
+  ok(carriesSetting({ sourceOrigin: 'setting' }) === true,
+    'L10d …and with NO answer on the row the fallback still reads the origins, so a cached bundle against a newer server is never wrong-by-silence');
+
   /* And the rule the LIST turns on is the SAME function, not a second copy of it — a row
      kept only by a setting must stop being kept the moment that setting goes. */
   ok(settings.belongsOnSettingsList({ whiteLabel: null, holdbackOrigin: 'setting' }, {}) === true
@@ -518,6 +546,61 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
   ok(settings.belongsOnSettingsList({ whiteLabel: 'Ruby' }, {}) === true
     && settings.belongsOnSettingsList({ whiteLabel: null }, { loannex: { state: 'seen' } }) === true,
     'L12 …while a named investor, and one a rate sheet has produced, are kept whatever their settings say');
+
+  /* ⛔ THE SAVE ITSELF IS RUN — L1..L9 pin the RULE, and the pre-merge audit of 2026-09-03
+     showed that is not the same thing as pinning the SAVE. One added line beside an
+     untouched `rowPatch(r, edits[r.key])` call put a row that had asked for the pre-fill
+     straight back into the map, the bundle was rebuilt, and all three screen suites plus
+     every gate stayed green: "use the pre-fill" became a button that does nothing, which
+     is the owner's own defect restored in full. A regex over the screen can only ever pin
+     how the loop is SPELLED. So the loop lives in the module and is HANDED REAL ROWS. */
+  const SAVE_ROWS = [
+    stale,                                                                              // asked to reset
+    { key: 'nqm', source: 'loannex', enabled: true, whiteLabel: 'Ruby', carriesSetting: true },  // untouched, has a setting
+    { key: 'fresh', source: 'lenderprice', enabled: true, carriesSetting: false },       // untouched, no setting
+    { key: 'edited', source: 'lenderprice', enabled: true, carriesSetting: false },      // touched
+  ];
+  const SAVE_EDITS = { broadview: { reset: true }, edited: { choice: 'loannex' } };
+  const built = mapForSave(SAVE_ROWS, SAVE_EDITS);
+  ok(!('broadview' in built.map),
+    '⛔ L13 THE ONE THAT MATTERS: the row that asked for the pre-fill is ABSENT from the map the save sends');
+  ok(!('fresh' in built.map),
+    'L14 …an untouched row carrying no setting is absent too, so today’s pre-fill is never pinned on for ever');
+  ok(built.map.nqm && built.map.nqm.source === 'loannex' && built.map.edited && built.map.edited.source === 'loannex',
+    'L15 …while a row with a setting and a row somebody edited both send what they hold');
+  ok(built.reset === 1,
+    'L16 …and the count of settings actually removed is 1 — the reset on a row that had none is not counted');
+  eq(mapForSave(null, null), { map: {}, reset: 0 }, 'L17 …and nothing to save is an empty map, never a throw');
+
+  /* ⛔ THE WARNING THE SCREEN SHOWS IS THE SERVER'S RULE WITH THE SETTING TAKEN AWAY, and it
+     was a SECOND, INCOMPLETE COPY of it — the screen asked `r.whiteLabel`, the name the row is
+     showing NOW, which on a row whose name came FROM the setting is the very thing about to be
+     dropped. Measured wrong in both directions (pre-merge audit): a row a rate sheet had
+     produced was promised it would leave and STAYED, and a row named only by its setting was
+     promised nothing and LEFT with the typed name. A browser twin is unavoidable, so the two
+     are run over one battery and any disagreement fails here. */
+  const STAY_CASES = [
+    { prefill: { whiteLabel: 'Ruby' }, availability: {} },                                  // named by the sheet
+    { prefill: { whiteLabel: null }, availability: { lenderprice: { state: 'seen' } } },     // a sheet produced it
+    { prefill: { whiteLabel: null }, availability: { loannex: { state: 'seen' } } },
+    { prefill: { whiteLabel: null }, availability: { lenderprice: { state: 'never' }, loannex: { state: 'unknown' } } },
+    { prefill: { whiteLabel: null }, availability: {} },
+    { prefill: {}, availability: undefined },
+    {},
+  ];
+  let stayAgree = 0;
+  for (const c of STAY_CASES) {
+    /* The SERVER's answer about the row as it would be with no setting of its own: the white
+       label is the sheet's (what survives the removal) and `carriesOwnSetting` is false. */
+    const afterRemoval = { whiteLabel: (c.prefill || {}).whiteLabel || null };
+    if (staysWithoutSetting(c) === settings.belongsOnSettingsList(afterRemoval, c.availability || {})) stayAgree += 1;
+  }
+  ok(stayAgree === STAY_CASES.length,
+    'L18 the screen’s "and leaving this list" warning agrees with the server’s own rule on every shape');
+  ok(staysWithoutSetting({ whiteLabel: 'FromTheSetting', prefill: { whiteLabel: null }, availability: {} }) === false,
+    '⛔ L19 …and a row named ONLY by its setting is told it will leave — the name goes with the setting');
+  ok(staysWithoutSetting({ whiteLabel: null, prefill: {}, availability: { lenderprice: { state: 'seen' } } }) === true,
+    '⛔ L20 …while a row a rate sheet has produced is NOT promised it will leave, because it will not');
 
   /* ═════════════════════════════════════════════════════════════════════════
      M · A REGISTER WRITTEN BEFORE A KEY EXISTED IS STILL READABLE.
@@ -558,21 +641,48 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
     && !tot(() => sightings.availabilityFor('nqm', [])).threw,
     'M5 …and nothing at all, a string or an array still answers rather than throwing');
 
+  /* ⛔ THE SHORTCUT ASKS WHETHER THE KEY IS USABLE, NOT MERELY PRESENT — the SECOND half of
+     the same class, found by the pre-merge audit of 2026-09-03. `=== undefined` is passed by
+     an explicit `null`, so a register carrying `searches: null` was taken as already-read and
+     the next line threw on `cur.searches[s]`. `validate()` stores all three of these shapes
+     happily, and a throw here takes down `GET /investors` — the whole settings screen — in the
+     one place the module's own header promises it never will. */
+  let survived = 0;
+  const NULLED = [
+    { boards: {}, searches: null, investors: {} },
+    { boards: null, searches: {}, investors: {} },
+    { boards: {}, searches: {}, investors: null },
+    { boards: {}, searches: {}, investors: [] },
+    { boards: [], searches: {}, investors: {} },
+  ];
+  for (const blob of NULLED) {
+    try {
+      sightings.availabilityFor('nqm', blob);
+      sightings.lockedOutFor('nqm', blob, 'lenderprice');
+      sightings.keysSeen(blob);
+      survived += 1;
+    } catch (_) { /* counted by not incrementing */ }
+  }
+  ok(survived === NULLED.length,
+    `⛔ M6 a register with a NULL where an object should be still answers rather than throwing (${survived}/${NULLED.length})`);
+  ok(NULLED.every((b) => sightings.validate(b).ok),
+    'M7 …and the settings door would have stored every one of them, which is why M6 is not hypothetical');
+
   /* The three wirings no run of the rule can see: the list must ASK the shared function
      rather than keep a fourth copy of the four-clause test, the route must put its answer
      ON the row (or the browser silently falls back to deriving it for ever), and the
      control must be offered only where there is a setting to remove. */
   const settingsSrc = strip(read('src/longterm/pricing/investor-settings.js'));
   ok(/function belongsOnSettingsList[\s\S]{0,400}?return carriesOwnSetting\(row\);/.test(settingsSrc),
-    'L13 the list rule DELEGATES to the shared one — it does not keep its own copy of the four origins');
+    'L21 the list rule DELEGATES to the shared one — it does not keep its own copy of the four origins');
   ok(/carriesSetting: investorSettings\.carriesOwnSetting\(r\)/.test(strip(read('src/longterm/routes/investor-settings-routes.js'))),
-    'L14 …and the route answers it on every row, so the browser reads it rather than re-deriving it');
+    'L22 …and the route answers it on every row, so the browser reads it rather than re-deriving it');
   const screen = strip(read('app-v2/src/longterm/LtInvestorSources.jsx'));
   ok(/\{carriesSetting\(r\) && !resetting && \(/.test(screen),
-    'L15 …and the control is offered only on a row that HAS a setting to remove');
+    'L23 …and the control is offered only on a row that HAS a setting to remove');
   ok(/onClick=\{\(\) => edit\(r\.key, \{ reset: true \}\)\}/.test(screen)
     && /onClick=\{\(\) => undoReset\(r\.key\)\}/.test(screen),
-    'L16 …with a one-click undo beside it, so a mis-press never costs a setting');
+    'L24 …with a one-click undo beside it, so a mis-press never costs a setting');
 
   console.log('\n' + pass + ' checks passed\n');
 })();

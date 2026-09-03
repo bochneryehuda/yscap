@@ -204,10 +204,22 @@ function record(stored, { source, keys, at, answered = true } = {}) {
  * without an HTTP door, and every fixture in its own suite is a `record()` output,
  * which is exactly the shape that CANNOT catch it. Deriving the key list means the
  * next key added to `EMPTY` cannot re-open it.
+ *
+ * ⛔ AND IT ASKS WHETHER THE KEY IS USABLE, NOT MERELY PRESENT. The first cut tested
+ * `=== undefined`, which an explicit `null` passes — so a register carrying
+ * `searches: null` was taken as already-read and the next line threw on
+ * `cur.searches[s]`. `validate()` stores all three of those shapes happily, and a
+ * throw here takes down `GET /investors` — the whole settings screen — in the one
+ * place this module's own header promises it never will (*"a register that cannot be
+ * parsed costs the 'available on' column, never a board"*). `read()` is total, so
+ * handing it anything unusable is always the right answer.
  */
 function normalized(stored) {
   if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return read(stored);
-  for (const k of Object.keys(EMPTY)) if (stored[k] === undefined) return read(stored);
+  for (const k of Object.keys(EMPTY)) {
+    const v = stored[k];
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return read(stored);
+  }
   return stored;
 }
 

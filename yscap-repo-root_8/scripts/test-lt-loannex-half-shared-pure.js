@@ -34,6 +34,30 @@ const ok = (c, m) => { if (c) { pass++; console.log(`  ok   ${m}`); } else { fai
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 /* Comments necessarily NAME what they explain, so a "must not appear" check that
    reads them fails on its own explanation — strip them first. */
+/**
+ * THE SECOND ARGUMENT OF A CALL, as written — balanced-paren, top-level commas only.
+ *
+ * ⛔ A REGEX CANNOT ANSWER THIS QUESTION. The first cut of D4b was
+ * `/narrowAndHold\(\s*[^;]*?,\s*want,/`, which `Object.assign({}, want, { io: null })`
+ * satisfies perfectly — the mutation it was written to catch sailed through both
+ * engines. What has to be asserted is that the argument IS the identifier, not that the
+ * identifier appears somewhere inside it, and that means reading the argument.
+ */
+function secondArgOf(src, call) {
+  const at = src.indexOf(call);
+  if (at < 0) return null;
+  let i = at + call.length - 1; let depth = 0; const args = []; let cur = '';
+  for (; i < src.length; i += 1) {
+    const c = src[i];
+    if (c === '(' || c === '[' || c === '{') { depth += 1; if (depth === 1) continue; }
+    else if (c === ')' || c === ']' || c === '}') { depth -= 1; if (depth === 0) { args.push(cur); break; } }
+    else if (c === ',' && depth === 1) { args.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  const a = args[1];
+  return a == null ? null : a.replace(/\/\*[\s\S]*?\*\//g, '').trim();
+}
+
 const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 console.log('\n── A. WHICH REQUEST IS MIRRORED ──');
@@ -171,6 +195,18 @@ console.log('\n── D. BOTH ENGINES ASK IT — NEITHER KEEPS A COPY ──');
        the preamble that feeds the rule, the narrowing itself, and the LoanNEX holdback. */
     ok(!/wantFrom\(/.test(src), `D3 ${name} keeps no copy of the preamble that feeds the rule`);
     ok(!/narrowBoard\(/.test(src), `D4 ${name} keeps no copy of the narrowing`);
+    /* ⛔ WHAT IT PASSES, NOT ONLY THAT IT CALLS. D1..D4 hold that each engine ASKS the
+       shared door and keeps no copy — and the pre-merge audit of 2026-09-03 showed that
+       is not the same as the two engines narrowing ALIKE. Wrapping the answer on the way
+       in — `narrowAndHold(board, Object.assign({}, want, { io: null, locks: null }), …)`
+       — leaves every one of those four green while one engine quietly drops two
+       dimensions of the filter. The chain does catch it elsewhere (the general side in
+       `test-lt-general-two-source-pure` FIL-8..12, the combined side in
+       `test-lt-loannex-same-loan-pure`), but this suite claims the property in its own
+       header, so it holds it here too: the rule's answer goes in UNTOUCHED. */
+    const arg2 = secondArgOf(src, 'loannexHalf.narrowAndHold(');
+    ok(arg2 === 'want',
+      `D4b ${name} hands the rule's own answer straight to the door, untouched — the second argument is \`want\` and nothing else (got \`${arg2}\`)`);
   }
   /* ⛔ THE HOLDBACK IS COUNTED, NOT FORBIDDEN, AND THE COUNT IS PER FILE — because
      `vendor-margin`'s own header depends on being called ONCE PER BOARD PER VENDOR (the
