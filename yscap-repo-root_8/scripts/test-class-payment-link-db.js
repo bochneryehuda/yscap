@@ -33,7 +33,11 @@ let pass = 0, fail = 0;
 const ok = (c, l) => { if (c) { pass++; console.log('PASS ' + l); } else { fail++; console.error('FAIL ' + l); } };
 const rid = () => Math.random().toString(36).slice(2, 10);
 
+let cleanupFn = null;
+async function cleanup() { if (cleanupFn) { const f = cleanupFn; cleanupFn = null; await f(); } }
+
 async function main() {
+  let app2 = null, officer2 = null;   // the pointer-only officer case below; cleaned up by cleanupFn
   const { ensureSchema } = require('../src/migrate-boot');
   await ensureSchema();
   const tag = rid();
@@ -56,6 +60,17 @@ async function main() {
   await db.query(`INSERT INTO application_assignees (application_id, staff_id, role) VALUES ($1,$2,'loan_officer') ON CONFLICT DO NOTHING`, [appId, officer]);
   await db.query(`INSERT INTO application_assignees (application_id, staff_id, role) VALUES ($1,$2,'processor') ON CONFLICT DO NOTHING`, [appId, processor]);
   const mailbox = `file+${appId}@reply.test`;
+  // Registered as soon as the fixtures exist, so an aborted run leaves nothing behind
+  // (a leftover row with the same order number breaks the next run).
+  cleanupFn = async () => {
+    const apps = [appId, app2].filter(Boolean);
+    await db.query('DELETE FROM notifications WHERE application_id = ANY($1::uuid[])', [apps]);
+    await db.query('DELETE FROM class_orders WHERE application_id = ANY($1::uuid[])', [apps]);
+    await db.query('DELETE FROM inbound_file_emails WHERE application_id = ANY($1::uuid[])', [apps]);
+    await db.query('DELETE FROM applications WHERE id = ANY($1::uuid[])', [apps]);
+    await db.query('DELETE FROM borrowers WHERE id=$1', [borrowerId]);
+    await db.query('DELETE FROM staff_users WHERE id = ANY($1::uuid[])', [[officer, processor, officer2].filter(Boolean)]);
+  };
 
   // ==========================================================================
   console.log('\n--- the order defaults to the payment link, addressed to the file mailbox ---');
@@ -74,7 +89,6 @@ async function main() {
   const orderRow = (await db.query(
     `INSERT INTO class_orders (application_id, class_order_id, reference_number, api_version, uad, status, payment_method, payment_recipient_email)
      VALUES ($1,'555',$2,'v1','2.6','ordered','PaymentLink',$3) RETURNING id`, [appId, 'YSCAP' + tag, mailbox])).rows[0].id;
-  let app2 = null, officer2 = null;   // the pointer-only officer case below; cleaned up at the end
   const outbox = [];
   const realSend = mailer.sendMail;
   mailer.sendMail = async (m) => { outbox.push(m); return { ok: true, id: 'test' }; };
@@ -250,15 +264,10 @@ async function main() {
   }
 
   // ---- cleanup ------------------------------------------------------------
-  const apps = [appId, app2].filter(Boolean);
-  await db.query('DELETE FROM notifications WHERE application_id = ANY($1::uuid[])', [apps]);
-  await db.query('DELETE FROM class_orders WHERE application_id = ANY($1::uuid[])', [apps]);
-  await db.query('DELETE FROM applications WHERE id = ANY($1::uuid[])', [apps]);
-  await db.query('DELETE FROM borrowers WHERE id=$1', [borrowerId]);
-  await db.query('DELETE FROM staff_users WHERE id = ANY($1::uuid[])', [[officer, processor, officer2].filter(Boolean)]);
+  await cleanup();
   console.log(`\ntest-class-payment-link-db: ${pass} passed, ${fail} failed`);
   await db.pool.end().catch(() => {});
   process.exit(fail ? 1 : 0);
 }
 
-main().catch(async (e) => { console.error('FAILED', e); try { await db.pool.end(); } catch (_) {} process.exit(1); });
+main().catch(async (e) => { console.error('FAILED', e); try { await cleanup(); } catch (_) {} try { await db.pool.end(); } catch (_) {} process.exit(1); });

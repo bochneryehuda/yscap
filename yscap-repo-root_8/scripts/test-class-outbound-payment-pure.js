@@ -240,6 +240,9 @@ const orderBuild = require(path.join(ROOT, 'src/class/order-build'));
     eq(plink.looksLikePaymentLink({ subject: 'Payment Required for Order #12345', text: 'Payment is required before the appraisal can be scheduled. Click the button below. A receipt will be emailed once payment is complete. https://pay.classvaluation.com/p/1', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, '"payment is required … a receipt will be emailed" is the link');
     eq(plink.looksLikePaymentLink({ subject: 'Invoice 123', text: 'Amount: $550. Due on receipt. https://pay.classvaluation.com/p/1', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, 'an invoice-worded email carrying the pay link, "due on receipt", is the link');
     eq(plink.looksLikePaymentLink({ subject: 'Order #12345', text: 'Your payment has been processed. Receipt: https://pay.classvaluation.com/r/1', html: '', link: 'https://pay.classvaluation.com/r/1' }), false, 'while "your payment has been processed" is still a receipt');
+    // Post-merge audit of #1431: receipts whose SUBJECT is only the order number.
+    eq(plink.looksLikePaymentLink({ subject: 'Order 555', text: 'We have received your payment of $550.', html: '', link: null }), false, '"we have received your payment" under a neutral subject is a receipt');
+    eq(plink.looksLikePaymentLink({ subject: 'Order 555', text: 'Your payment has been completed. https://pay.classvaluation.com/r/1', html: '', link: 'https://pay.classvaluation.com/r/1' }), false, 'and so is "your payment has been completed"');
     eq(plink.namesOrder('Payment link for order 555 (ref YSCAP-abc)', '555'), true, 'an order number in the subject names the order');
     eq(plink.namesOrder('Your payment of $5550 is due', '555'), false, 'but a digit run inside another number does not');
     eq(plink.namesOrder('ref YSCAP-abc', 'YSCAP-abc'), true, 'and our reference names it too');
