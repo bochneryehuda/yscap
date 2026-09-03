@@ -90,10 +90,31 @@ function authed(req) {
   const at = decoded.indexOf(':');
   if (at < 0) return false;
   // BOTH halves are compared, and both comparisons always run — an early return on
-  // the username would leak, by timing, whether the username was right.
+  // the username would leak, by timing, whether the username was right. During a
+  // password rotation (their API is delete-and-recreate, so there is a window in
+  // which Class still sends the old password) the PREVIOUS password is accepted too
+  // — only while CLASS_CALLBACK_PASSWORD_PREVIOUS is set, and compared the same way.
+  const pw = decoded.slice(at + 1);
   const userOk = sameSecret(decoded.slice(0, at), c.callbackUser);
-  const passOk = sameSecret(decoded.slice(at + 1), c.callbackPassword);
-  return userOk && passOk;
+  const passOk = sameSecret(pw, c.callbackPassword);
+  const prevOk = c.callbackPasswordPrevious ? sameSecret(pw, c.callbackPasswordPrevious) : false;
+  return userOk && (passOk || prevOk);
+}
+
+// THEIR DELIVERY IDENTITY. Their self-registration guide states the contract in so
+// many words: deliveries are at-least-once, "deduplicate on orderId + eventName +
+// created". A retry is NOT guaranteed byte-identical (the `sent` stamp moves), so a
+// payload hash alone would file a retry as a second event and process it twice. When
+// the envelope carries both an order id and a parseable `created`, the dedupe key is
+// exactly theirs; otherwise (a malformed or partial body, a marker) it falls back to
+// the payload bytes + the day, which still collapses a verbatim retry.
+function deliveryKey(env, p, payload, day) {
+  const createdRaw = p && (p.created != null ? p.created : p.Created);
+  const createdMs = createdRaw == null || createdRaw === '' ? NaN : Date.parse(String(createdRaw));
+  if (env.classOrderId && Number.isFinite(createdMs)) {
+    return { keyed: true, material: `k|${env.eventName}|${env.classOrderId}|${new Date(createdMs).toISOString()}` };
+  }
+  return { keyed: false, material: `${env.eventName}|${day}|${payload}` };
 }
 
 // Their events all carry the same envelope; these are the only fields we index on.
@@ -165,11 +186,12 @@ async function receive(req, res) {
       payload = marker(`unserializable: ${(e && e.message) || 'error'}`.slice(0, 200));
     }
 
-    // Dedupe. Their retries repeat a delivery verbatim, so the same bytes on the same
-    // day collapse; the day is inside the hash because a byte-identical legitimate
-    // event weeks later is a real second event, not a retry.
+    // Dedupe — on THEIR identity (orderId + eventName + created) when the envelope
+    // carries it, see deliveryKey(); else the same bytes on the same day collapse. The
+    // day is inside the fallback hash because a byte-identical legitimate event weeks
+    // later is a real second event, not a retry.
     const day = new Date().toISOString().slice(0, 10);
-    const hash = crypto.createHash('sha256').update(`${env.eventName}|${day}|${payload}`).digest('hex');
+    const hash = crypto.createHash('sha256').update(deliveryKey(env, p, payload, day).material).digest('hex');
 
     await db.query(
       `INSERT INTO class_callback_events (event_name, class_order_id, reference_number, payload, payload_hash)
@@ -195,3 +217,4 @@ router.post('/', receive);
 router.post('/:event', receive);
 
 module.exports = router;
+module.exports._internals = { authed, deliveryKey, envelope, sameSecret };

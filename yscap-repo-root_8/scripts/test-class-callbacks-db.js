@@ -99,6 +99,22 @@ async function main() {
   ok(blankBasic.status === 401, 'and empty credentials never match empty config');
   liveCfg.callbackUser = keepUser; liveCfg.callbackPassword = keepPw;
 
+  // A ROTATION WINDOW. Their API has no update, so a new password is registered by
+  // delete-and-recreate and their guide asks the endpoint to accept BOTH the old and
+  // the new password during the swap. The previous password counts only while it is
+  // configured, and only with the right username.
+  liveCfg.callbackPasswordPrevious = 'old-' + tag;
+  const withOld = await post(envelope(`PrevPw-${tag}`, `prevpw-${tag}`, null, { note: 'rotation' }),
+    { Authorization: 'Basic ' + Buffer.from(`${process.env.CLASS_CALLBACK_USER}:old-${tag}`).toString('base64') });
+  ok(withOld.status === 200, 'during a rotation the previous password is still accepted');
+  const withOldWrongUser = await post(envelope(`PrevPw-${tag}`, `prevpw-${tag}`, null, { note: 'rotation' }),
+    { Authorization: 'Basic ' + Buffer.from(`someone-else:old-${tag}`).toString('base64') });
+  ok(withOldWrongUser.status === 401, 'but never with the wrong username');
+  liveCfg.callbackPasswordPrevious = null;
+  const afterRotation = await post(envelope(`PrevPw-${tag}`, `prevpw-${tag}`, null, { note: 'rotation over' }),
+    { Authorization: 'Basic ' + Buffer.from(`${process.env.CLASS_CALLBACK_USER}:old-${tag}`).toString('base64') });
+  ok(afterRotation.status === 401, 'and once the window is closed the old password is dead');
+
   // =========================================================================
   console.log('\n--- a delivery is stored, answered fast, and a retry collapses ---');
   const body1 = envelope('StatusChanged', `cls26-${tag}`, 'YSCAP' + tag, { StatusName: 'Active', Reason: 'Order accepted' });
@@ -109,6 +125,19 @@ async function main() {
   ok(again.status === 200, 'their retry is accepted too (never a non-2xx, or they stop retrying)');
   const n1 = await db.query('SELECT count(*)::int n FROM class_callback_events WHERE class_order_id = $1', [`cls26-${tag}`]);
   ok(n1.rows[0].n === 1, 'but the identical retry collapsed to ONE stored event');
+
+  // THEIR CONTRACT (self-registration guide, 2026-09-03): at-least-once delivery,
+  // "deduplicate on orderId + eventName + created". A retry is NOT byte-identical —
+  // the `sent` stamp moves — so a payload hash alone would file it twice.
+  const retryBody = { ...body1, sent: new Date(Date.now() + 5000).toISOString(), data: { ...body1.data, Reason: 'Order accepted' } };
+  const r1c = await post(retryBody, { Authorization: basic });
+  ok(r1c.status === 200, 'a redelivery whose sent stamp moved is accepted');
+  const n1b = await db.query('SELECT count(*)::int n FROM class_callback_events WHERE class_order_id = $1', [`cls26-${tag}`]);
+  ok(n1b.rows[0].n === 1, 'and collapses onto the first — orderId + eventName + created is the identity');
+  const laterCreated = new Date(Date.parse(body1.created) + 1000).toISOString();
+  await post({ ...body1, created: laterCreated, sent: laterCreated }, { Authorization: basic });
+  const n1c = await db.query('SELECT count(*)::int n FROM class_callback_events WHERE class_order_id = $1', [`cls26-${tag}`]);
+  ok(n1c.rows[0].n === 2, 'while the same event created one second later is a real second event');
 
   // The receiver drains on its own; give it a moment, then settle anything left.
   await new Promise((r) => setTimeout(r, 300));
