@@ -116,33 +116,44 @@ function authed(req) {
 //
 // `created` without a timezone is read as UTC: their examples are `…Z`, and
 // Date.parse treats an offset-less ISO string as LOCAL time, which would make the
-// same instant hash differently on two servers in two zones.
-const ISO_NO_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+// same instant hash differently on two servers in two zones. The lowercase `t` and
+// the SQL-style space separator are accepted for the same reason — V8 reads both as
+// local time too.
+const ISO_NO_OFFSET = /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
 const TRANSPORT_KEYS = new Set(['sent', 'Sent', 'created', 'Created']);
+// Deep enough that no real envelope reaches it (the stored body is written verbatim
+// several thousand levels deep before JSON.stringify itself overflows), so the digest
+// ladder below almost never leaves its first rung.
+const CANONICAL_MAX_DEPTH = 1024;
 function canonical(v, depth) {
-  if (depth > 64) throw new Error('too deep');
+  if (depth > CANONICAL_MAX_DEPTH) throw new Error('too deep');
   if (v === null || typeof v !== 'object') return JSON.stringify(v === undefined ? null : v);
   if (Array.isArray(v)) return '[' + v.map((x) => canonical(x, depth + 1)).join(',') + ']';
   const keys = Object.keys(v).sort();
   return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonical(v[k], depth + 1)).join(',') + '}';
 }
+// Three rungs, each still sans the transport stamps where it can be: canonical (key
+// order never matters) → plain JSON.stringify of the same object (a body too deep to
+// canonicalise but still storable — a retry's stringified content is identical) →
+// the stored marker (the body could not be serialised at all; the marker carries the
+// raw-body digest, which is as distinguishing as the content). `rest` has a null
+// prototype so a top-level "__proto__" key — which JSON.parse does produce as an own
+// property — is data, not an assignment to the object's prototype.
 function contentDigest(p, payload) {
+  const rest = Object.create(null);
+  if (p && typeof p === 'object') for (const k of Object.keys(p)) if (!TRANSPORT_KEYS.has(k)) rest[k] = p[k];
   let material;
-  try {
-    const rest = {};
-    for (const k of Object.keys(p || {})) if (!TRANSPORT_KEYS.has(k)) rest[k] = p[k];
-    material = canonical(rest, 0);
-  } catch (_) {
-    // Unserializable body: the stored payload is the marker carrying the raw-body
-    // digest, which is exactly as distinguishing as the content itself.
-    material = String(payload);
+  try { material = canonical(rest, 0); }
+  catch (_) {
+    try { material = JSON.stringify(rest); }
+    catch (_2) { material = String(payload); }
   }
   return crypto.createHash('sha256').update(material).digest('hex');
 }
 function deliveryKey(env, p, payload, day) {
   const createdRaw = p && (p.created != null ? p.created : p.Created);
   let createdStr = createdRaw == null || createdRaw === '' ? null : String(createdRaw).trim();
-  if (createdStr && ISO_NO_OFFSET.test(createdStr)) createdStr += 'Z';
+  if (createdStr && ISO_NO_OFFSET.test(createdStr)) createdStr = createdStr.replace(/[t ]/, 'T') + 'Z';
   const createdMs = createdStr == null ? NaN : Date.parse(createdStr);
   if (env.classOrderId && Number.isFinite(createdMs)) {
     return {

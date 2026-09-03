@@ -82,6 +82,8 @@ the swap." PILOT does that through `CLASS_CALLBACK_PASSWORD_PREVIOUS`.
    answering throughout.
 3. Run `verify` → `complete: true`. If `rotate` failed part-way (the delete went
    through but the addAll did not), run `register` again — it adds only what is missing.
+   If the DELETE itself stopped part-way, the survivors still carry the old password and
+   `register` will refuse them as stale — run `rotate --confirm` again instead.
 4. Remove `CLASS_CALLBACK_PASSWORD_PREVIOUS` in Render. Save; redeploy. The old password
    is dead.
 5. Send the new password to Class through the secure channel.

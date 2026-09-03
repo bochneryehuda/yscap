@@ -1,4 +1,8 @@
 'use strict';
+// The UTC-default proof below only bites when the server's clock is NOT UTC — under
+// UTC an offset-less created parses to the same instant either way. CI sets no TZ,
+// so pin one here before the first Date is ever built.
+process.env.TZ = process.env.TZ || 'America/New_York';
 /**
  * Class Valuation callback tool — the pure half (no database, no network).
  *
@@ -108,10 +112,23 @@ const d4 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00.000Z', data: { 
 const d5 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: { a: [1, { y: 3, z: 2 }], b: 1 } }, 'x', '2026-09-04');
 ok(d4.material === d5.material, 'key order and the created spelling never change the identity — the digest is canonical');
 ok(!d1.material.endsWith('|'), 'the digest is part of the material, not an empty tail');
-const deep = {}; let cur = deep; for (let i = 0; i < 200; i++) { cur.n = {}; cur = cur.n; }
-const d6 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: deep }, 'MARKER-A', '2026-09-03');
-const d7 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: deep }, 'MARKER-B', '2026-09-03');
-ok(d6.keyed && d7.keyed && d6.material !== d7.material, 'an unserializable body falls back to the stored marker for its digest, never a throw');
+const mkDeep = (n) => { const d = {}; let cur = d; for (let i = 0; i < n; i++) { cur.n = {}; cur = cur.n; } return d; };
+const d6 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: mkDeep(200), sent: 'A' }, 'x', '2026-09-03');
+const d7 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: mkDeep(200), sent: 'B' }, 'y', '2026-09-03');
+ok(d6.keyed && d6.material === d7.material, 'a 200-deep body is canonicalised like any other — a retry with a moved sent still collapses');
+const d8 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: mkDeep(2000), sent: 'A' }, 'x', '2026-09-03');
+const d9 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: mkDeep(2000), sent: 'B' }, 'y', '2026-09-03');
+ok(d8.keyed && d8.material === d9.material, 'past the canonical depth cap the digest falls to plain JSON (still sans sent) — a deep retry still collapses');
+const d10 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: mkDeep(2000) }, 'x', '2026-09-03');
+const d11 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: { ...mkDeep(2000), other: 1 } }, 'x', '2026-09-03');
+ok(d10.material !== d11.material, 'and on that rung two different deep bodies are still two events');
+const d12 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: { big: 1n } }, 'MARKER-A', '2026-09-03');
+const d13 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: { big: 1n } }, 'MARKER-B', '2026-09-03');
+ok(d12.keyed && d13.keyed && d12.material !== d13.material, 'a body nothing can serialise falls back to the stored marker for its digest, never a throw');
+const d14 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', ...JSON.parse('{"__proto__": {"x": 1}}') }, 'x', '2026-09-03');
+const d15 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', ...JSON.parse('{"__proto__": {"x": 2}}') }, 'x', '2026-09-03');
+const d16 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z' }, 'x', '2026-09-03');
+ok(d14.material !== d15.material && d14.material !== d16.material, 'a top-level "__proto__" key is content, never an assignment to the prototype');
 
 console.log("\n--- created without a timezone is UTC, never the server's local clock ---");
 const u1 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00' }, 'x', '2026-09-03');
@@ -119,6 +136,9 @@ const u2 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z' }, 'x', '2026
 ok(u1.keyed && u1.material === u2.material, 'an offset-less ISO created is read as UTC (same key as the Z form)');
 const u3 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00+02:00' }, 'x', '2026-09-03');
 ok(u3.keyed && u3.material !== u2.material, 'an explicit offset is honoured, not overwritten');
+const u4 = hook.deliveryKey(env, { created: '2026-09-03t10:00:00' }, 'x', '2026-09-03');
+const u5 = hook.deliveryKey(env, { created: '2026-09-03 10:00:00' }, 'x', '2026-09-03');
+ok(u4.material === u2.material && u5.material === u2.material, 'a lowercase t or a space separator without an offset is UTC too');
 
 console.log(`\ntest-class-callbacks-cli-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
