@@ -100,6 +100,41 @@ export function NearTierFlag({ near, onUse }) {
  * the vendor from every row before it leaves (the owner's "it should sound like one system"), so
  * there is nothing here to un-strip. Asking for it is an explicit second request.
  */
+/**
+ * "THIS BOARD IS SHORTER THAN IT SHOULD BE" (audit F2).
+ *
+ * ⛔ IT DECIDES NOTHING AND WORDS NOTHING. Both the fact and the sentence come from the server
+ * (`investor-routing.applyRouting` → `completeness`), because a screen that composed this wording
+ * would one day word it differently from the server's own idea of the same fact. It renders when
+ * there is something to say and nothing at all otherwise — which is almost always.
+ *
+ * ⛔ AND IT NAMES NO VENDOR. "One of the two rate sheets did not answer" is the whole of what an
+ * officer needs to know that prices are MISSING rather than unavailable; which one is provenance,
+ * and provenance is what the reveal is for. That is what let this be fixed at all without breaking
+ * the one-system rule.
+ *
+ * Drawn ABOVE the board rather than inside the empty state, because the expensive case is not an
+ * empty board — it is a board with SOME prices on it that reads as complete.
+ */
+export function ShortBoardNotice({ completeness }) {
+  const c = completeness;
+  if (!c || c.complete !== false || !c.message) return null;
+  return (
+    <div style={{
+      border: `1px solid ${CAUTION}`, borderRadius: 10, background: '#FFF7F2',
+      padding: '12px 14px', marginBottom: 10,
+    }}>
+      <div style={{
+        fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase',
+        color: CAUTION, fontWeight: 700, marginBottom: 4,
+      }}>
+        This board is short
+      </div>
+      <div style={{ fontSize: 13.5, color: INK, lineHeight: 1.6 }}>{c.message}</div>
+    </div>
+  );
+}
+
 export function CombinedPanel({ hidden, settings, revealed, onReveal, busy }) {
   const rows = Array.isArray(hidden) ? hidden : [];
   return (
@@ -150,6 +185,9 @@ export default function LtCombinedPricer() {
            the thing to act on, then what is missing from the board, then the names to reconcile. */
         afterStrip: ({ res, busy, reveal, setReveal, reprice, setForm }) => (
           <>
+            {/* FIRST, because "some of your prices are missing" outranks every other thing on this
+                strip: a person who reads the board without knowing it is short may act on it. */}
+            <ShortBoardNotice completeness={res.completeness} />
             <NearTierFlag near={res.nearTier} onUse={(loan) => {
               setForm((p) => ({ ...p, loan: String(loan) }));
               try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { /* no window in a test render */ }
