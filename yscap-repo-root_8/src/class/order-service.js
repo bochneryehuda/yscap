@@ -246,28 +246,20 @@ const PRODUCT_RULE_COLS =
    product_id, product_name, priority, active`;
 
 async function loadProductRules(db) {
-  // Scope to the tenant environment — the seeded ids are environment-specific, so a
-  // service pointed at UAT must prefer its OWN rules and never pick a production id when
-  // a UAT rule exists. But when THIS environment has no rules, fall back to whatever
-  // active rules DO exist so a deal still gets a sensible default — the same shape the
-  // AMC formRules resolver uses. (An id that is wrong for the tenant surfaces as a
-  // VISIBLE send error, never a silent bad order.)
+  // Scope to the tenant environment, and ONLY the tenant environment. Class product ids
+  // are environment-specific — UAT ids are short numbers ("56634"), production ids are
+  // 24-hex — so a rule seeded for one environment names a product the other does not
+  // have. A cross-environment fallback used to fill the gap "so a product still
+  // auto-picks"; once db/686 seeded the production rows it made every UAT deal
+  // auto-pick a production id, which Class would refuse at send time. Better nothing
+  // than a confident wrong product: with no rules for THIS environment nothing is
+  // picked and staff choose from the live catalogue, exactly as before any seed.
   const env = (cfg.class && cfg.class.environment) || 'production';
   const forEnv = await db.query(
     `SELECT ${PRODUCT_RULE_COLS} FROM class_form_map
       WHERE active = true AND (environment = $1 OR environment IS NULL)
       ORDER BY priority ASC, id ASC`, [env]);
-  if (forEnv.rows.length) return forEnv.rows;
-  const anyEnv = await db.query(
-    `SELECT ${PRODUCT_RULE_COLS} FROM class_form_map
-      WHERE active = true
-      ORDER BY priority ASC, id ASC`);
-  if (anyEnv.rows.length) {
-    console.warn(`[class] no product-map rules for environment='${env}'; falling back to ` +
-      `${anyEnv.rows.length} rule(s) from another environment so a product still auto-picks — ` +
-      `set CLASS_ENVIRONMENT correctly or seed '${env}' rules to silence this`);
-  }
-  return anyEnv.rows;
+  return forEnv.rows;
 }
 
 // The deal shape the product rules match on — program + property category/key + loan
