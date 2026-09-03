@@ -83,7 +83,7 @@ const investorLinks = require('../pricing/investor-links');
 // second list this route keeps for itself.
 const { whiteLabelOf } = require('../lenderprice/investor-programs');
 const quoteShape = require('../pricing/quote-shape');
-const productFilter = require('../pricing/product-filter');
+const loannexHalf = require('../pricing/loannex-half');
 const breakdown = require('../pricing/breakdown');
 const nearTier = require('../pricing/near-tier');
 const vendorMargin = require('../pricing/vendor-margin');
@@ -91,6 +91,15 @@ const settingsStore = require('../settings/store');
 const rosterContext = require('../pricing/roster-context');
 const roster = require('../pricing/investor-roster');
 const sealedPrice = require('../pricing/sealed-price');
+/* ⛔ THE EXPLAIN DOOR AND ITS HELPERS — ONE DEFINITION, MOUNTED BY BOTH ENGINES.
+   These functions used to live in this file; they were moved so the General Pricing
+   Engine could mount the SAME door rather than grow a second one. Required back under
+   their own names, so every other door in this file reads exactly as it did. */
+const explainDoor = require('./explain-door');
+const {
+  stripExplainedTrail, searchIdentity, quoteFromBody, vendorQuote, holdbackOnRow,
+  scenarioOf, explainScenario, scenarioRefused, askedOf, reasonOf, isNotConfigured,
+} = explainDoor;
 
 /**
  * An investor with nothing shapeable — never a guess, always an honest empty.
@@ -136,141 +145,10 @@ const settingsRaw = () => investorConfig.investorsRaw();
  */
 const holdbackRaw = () => investorConfig.holdbackRaw();
 
-/**
- * ONE EXPLAINED OPTION WITH OUR OWN MARGIN'S TRAIL REMOVED — never its price.
- *
- * The same rule `investor-routing.stripSource` applies to a board row, applied here because this
- * door builds an option the board never carried. `vendorBasePoints` is the pre-holdback base: left
- * on, a reader could subtract it from the base beside it and read our margin straight off the panel.
- */
-function stripExplainedTrail(option) {
-  if (!option || !option.priceBuild) return option;
-  const { vendorPrice, vendorBasePoints, vendorAdjustedPoints, ...pb } = option.priceBuild;
-  return { ...option, priceBuild: pb };
-}
 
-/**
- * WHICH SEARCH THIS QUOTE BELONGS TO — the ROW's own answer first, the request body second.
- *
- * The row is stamped by `priceBoth` from the very result its rungs were read out of, so it can
- * never name a different search than the one that priced it. The body remains a fallback ONLY for
- * a caller that predates the stamp; when neither says, the client mints one and the vendor is
- * being asked about a search it has never seen — which is exactly the silence this exists to end.
- *
- * Returns `{}` rather than `{ transactionId: undefined }` so the client's own
- * `opts.transactionId || newTransactionId()` fallback is reached the same way it always was.
- */
-function searchIdentity(quote, body) {
-  const q = quote || {};
-  const b = body || {};
-  const out = {};
-  const txn = q.transactionId != null ? q.transactionId : b.transactionId;
-  const portal = q.portal != null ? q.portal : b.portal;
-  if (txn != null && txn !== '') out.transactionId = txn;
-  if (portal != null && portal !== '') out.portal = portal;
-  return out;
-}
 
-/**
- * THE QUOTE THE CALLER SENT, WITH THE VENDOR'S OWN PRICE UNSEALED — the ONE door on the way in.
- *
- * ⛔ WHY THERE IS A FUNCTION HERE AT ALL, rather than two `b.quote || b` reads. The browser holds
- * the row's `explain` handle and posts it straight back, and that handle carries the vendor's exact
- * price SEALED (`quote-shape.explainHandle` — in the clear the pair `priceExact − price` IS our
- * margin holdback, which the owner has directed must never be visible). Opening it is therefore a
- * step every explain door has to take, and a third door added later that forgets would not error —
- * it would quietly ask the sheet about a rounded price and get an empty breakdown back, which is
- * exactly the bug `priceExact` was added to fix, wearing a different face. One reader, no third way.
- *
- * ⛔ AN UNOPENABLE SEAL IS NOT AN ERROR. A restart mints a new key when `LT_PRICE_SEAL_KEY` is
- * unset, and a stale board in an open tab still posts yesterday's blob; a forged one fails its
- * authentication tag by construction. In every one of those the exact price is simply ABSENT, and
- * the door falls back to `vendorQuote`'s add-back — the path that was there before this field
- * existed and still answers correctly for every rung whose price needs no fourth decimal.
- *
- * ⛔ AND THE SEAL NEVER RIDES ON. It is deleted from the quote handed downstream, so nothing can
- * pass a blob to the vendor, print it, or log it.
- */
-function quoteFromBody(b) {
-  const raw = (b && b.quote) || b;
-  if (!raw || typeof raw !== 'object') return raw;
-  // Nothing to open and nothing to strip: the Lender Price rows and every internal caller.
-  if (!('priceSeal' in raw)) return raw;
-  // The key is present, so it goes — whatever it holds. A `priceSeal: undefined` is not a blob,
-  // but leaving the key on the quote would make "the seal never rides on" a claim with an
-  // exception in it, and an exception is what the next reader copies.
-  const { priceSeal, ...rest } = raw;
-  const exact = sealedPrice.isSealed(priceSeal) ? sealedPrice.open(priceSeal) : null;
-  // ⛔ THE SEAL WINS. A caller may post a `priceExact` of its own beside it; the only price this
-  // door believes is one it minted, so a forged figure is overwritten rather than trusted.
-  if (exact != null) return { ...rest, priceExact: exact };
-  // An unopenable seal leaves no exact price at all — never a forged one somebody sent with it.
-  if ('priceExact' in rest) delete rest.priceExact;
-  return rest;
-}
 
-/**
- * THE QUOTE AS THE RATE SHEET ITSELF WROTE IT — our margin added back on, for the QUESTION only.
- *
- * A LoanNEX rung reaches the browser with the holdback already in its price (`applyToBoard` runs
- * before the merge), so the price on the explain handle is OURS rather than the vendor's. This puts
- * the vendor's own figure back for the one call that is addressed to them, and touches nothing else
- * on the quote — `priceHashKey`, rate, lock, product and investor ride through untouched, and the
- * option the panel draws is still built from the ORIGINAL held-back quote.
- *
- * A holdback of zero, an unreadable one, or a quote with no price returns the quote itself, so a
- * Lender Price row and an ordinary board are byte-identical to what they were.
- *
- * ⛔ THIS IS THE FALLBACK NOW, NOT THE MAIN ROUTE. A LoanNEX handle carries the sheet's own price
- * to the last decimal — sealed, opened by `quoteFromBody` above — and `loannex/client.evidence`
- * prefers it, because adding 0.25 back onto a figure already rounded to three decimals does NOT
- * reproduce a price with a fourth (104.1762 → 104.176 → 103.926 → 104.176), and the sheet matches
- * exactly.
- *
- * It still matters, and in three real cases rather than as decoration: a row shaped before that
- * field existed, a seal this process cannot open (a restart on an ephemeral key, a stale tab), and
- * every rung whose price needs no fourth decimal at all. `priceExact` rides through this function
- * untouched — it is the vendor's number and our margin is not on their sheet.
- */
-function vendorQuote(quote, points) {
-  const pts = Number(points);
-  if (!quote || !Number.isFinite(pts) || pts === 0) return quote;
-  const price = Number(quote.price);
-  if (!Number.isFinite(price)) return quote;
-  return { ...quote, price: Math.round((price + pts) * 1000) / 1000 };
-}
 
-/**
- * HOW MUCH WE HELD BACK ON ONE ROW — resolved from the SAVED SETTINGS, never from the caller.
- *
- * ⛔ WHY THE EXPLAIN DOOR NEEDS THIS AT ALL. LoanNEX explains a price with ITS OWN base and ITS OWN
- * adjustments, and the row on the board is quoting a price we have already taken our margin out of.
- * Handed to the panel untouched, the running total it draws would land exactly the holdback away
- * from the final price printed under it — an unexplained gap on the one screen whose job is to
- * explain the price, about a figure the owner has directed must stay invisible.
- *
- * ⛔ AND WHY THE INVESTOR KEY IS ONLY A POINTER. The caller names WHICH investor's saved setting to
- * read; it can never state an amount. The number itself comes from `settingsRaw()` and
- * `holdbackRaw()` — the same two reads `priceBoth` makes, through the same `resolveHoldback` — so
- * the panel and the board can never disagree about what was taken. A key nobody has saved a setting
- * for resolves to the board-wide answer, and an unresolvable one to nothing at all, which leaves the
- * panel exactly as it is today rather than shifting a base by a number nobody chose.
- */
-async function holdbackOnRow(investorKey, b = {}) {
-  const savedGlobal = b.marginHoldback !== undefined ? b.marginHoldback : await holdbackRaw();
-  let extra = null;
-  const key = investorKey == null ? '' : String(investorKey).trim();
-  if (key) {
-    const saved = b.routes !== undefined ? { raw: b.routes } : await settingsRaw();
-    // The investors added by hand, read the same way the board reads them — a
-    // panel that did not know about them would answer "no setting" for one and
-    // quietly shift its base by the board-wide figure instead.
-    const custom = b.custom !== undefined ? roster.asCustom(b.custom) : (await customRaw()).custom;
-    const row = routing.settingFor(key, routing.readSettings(saved.raw, custom).settings, custom);
-    if (row && row.holdbackOrigin === 'setting') extra = row.holdback;
-  }
-  return vendorMargin.resolveHoldback('loannex', savedGlobal, extra);
-}
 
 /**
  * Every grid CELL a board already carries, in the shape `near-tier` reads.
@@ -299,14 +177,10 @@ function cellsOnBoard(board) {
 }
 
 /** Every investor name a board actually returned, in the order it returned them. */
-function namesOf(board) {
-  const out = [];
-  for (const p of (board && board.programs) || []) {
-    const n = p.investor || p.lender;
-    if (n && !out.includes(n)) out.push(n);
-  }
-  return out;
-}
+/* `namesOf` moved to `pricing/investor-links.js` as `namesFromBoard` so the GENERAL engine
+   asks the same question the same way — two engines each deriving "which names did this sheet
+   return" their own way is how one screen offers a link the other cannot see. */
+const namesOf = investorLinks.namesFromBoard;
 
 /**
  * The human's "these two names are the same investor" map.
@@ -357,113 +231,11 @@ function isSuperAdmin(req) {
   return !!(a && a.kind === 'staff' && String(a.role || '') === 'super_admin');
 }
 
-function scenarioOf(req) {
-  const b = req.body || {};
-  return b && typeof b === 'object' && b.scenario && typeof b.scenario === 'object' ? b.scenario : b;
-}
 
-/**
- * THE SCENARIO AN EXPLAIN CALL IS MADE ABOUT — the SAME enriched loan the board was priced on.
- *
- * ⛔ THE DEFECT THIS CLOSES (owner-reported 2026-09-02, *"Very important: I still don't see the
- * detailed LLPA and adjustments populate"*). `priceBoth` runs every scenario through
- * `validateScenario` BEFORE either vendor is asked: the browser sends a ZIP and nothing else about
- * the location, and that step turns it into state + county (+ FIPS), canonicalises the buttons and
- * clamps a ratio above the vendor's ceiling. The explain doors handed the RAW browser scenario
- * straight to the LoanNEX body builder, so the vendor was asked to itemise a quote for a loan with
- * NO STATE — `nexApp.state: null` against the board's `"NJ"`, measured field by field — and the
- * eligibility screen it re-runs behind `/evidences` had nothing to screen. The live recording of
- * 30 Aug supplied the state by hand and three of four investors itemised; the board never does.
- *
- * `validateScenario` is pure, offline and deterministic, so running it here on the same input the
- * price call ran it on yields the same enriched scenario — the explain call now describes the
- * loan the quote was priced on, to the field. A scenario it refuses is refused HERE with the same
- * 422 the price door gives, never sent to the vendor as a different loan.
- */
-function explainScenario(req) {
-  const chk = validateScenario(scenarioOf(req) || {});
-  if (!chk.ok) {
-    const err = new Error(chk.message || 'invalid scenario');
-    err.code = chk.error; err.field = chk.field; err.status = chk.status || 422;
-    throw err;
-  }
-  return chk.scenario;
-}
 
-/**
- * A REFUSED scenario is a 422 naming the field, exactly as the price door answers it. An error
- * with no status is not a refusal — `validateScenario` itself threw — and answering 422 for it
- * would tell the caller their scenario is wrong when the server is. That is a 500 that says so.
- */
-function scenarioRefused(res, e) {
-  if (e && e.status) {
-    return res.status(e.status).json({ ok: false, error: e.code || 'invalid_scenario', field: e.field || null, message: reasonOf(e) });
-  }
-  return res.status(500).json({ ok: false, error: 'scenario_check_failed', message: reasonOf(e) });
-}
 
-/**
- * WHAT WAS ASKED, stated on the answer so an empty panel can say what it asked about.
- *
- * Carries the figures a person can check against the board — never a vendor name. TWO figures
- * ride only when the caller asked to see where rows come from: the PORTAL (it names the
- * investor's own portal) and the PRICE. The vendor is asked about ITS price, which is the
- * held-back price plus the holdback, and stating it beside a row that shows the held-back price
- * would let a reader subtract the two — the same reason `stripExplainedTrail` withholds
- * `priceBuild.vendor*` (pre-merge audit 2026-09-02). The rate, the lock, the place and the search
- * identify the question on their own.
- */
-function askedOf(sc, vendorQ, ident, opts = {}) {
-  const s = sc || {}; const q = vendorQ || {}; const id = ident || {};
-  const out = {
-    rate: q.rate == null ? null : Number(q.rate),
-    lockDays: q.lockDays == null ? null : Number(q.lockDays),
-    transactionId: id.transactionId || null,
-    state: s.state || null,
-    county: s.countyName || s.county || null,
-    zip: s.zip || null,
-    dscr: s.dscr == null ? null : Number(s.dscr),
-    loan: s.loan == null ? null : Number(s.loan),
-    value: s.value == null ? null : Number(s.value),
-  };
-  if (opts.reveal) {
-    out.price = q.price == null ? null : Number(q.price);
-    out.portal = id.portal || null;
-  }
-  return out;
-}
 
-/** An upstream failure, reduced to a reason string a caller may safely see. */
-function reasonOf(e) {
-  if (!e) return 'unknown_error';
-  const code = e.code || e.name || 'error';
-  const msg = String(e.message || '').slice(0, 300);
-  return msg || String(code);
-}
 
-/**
- * OUR OWN SETUP GAP IS NOT AN UPSTREAM FAILURE, and answering 502 for one is a
- * lie about whose fault it is. Every code below describes THIS deployment — no
- * credentials set, a ticket that is spent or single-use, or credentials the
- * portal refused — and in none of them did LoanNEX fail at anything. A
- * diagnostic route reports that as a successful reading of a known state; only a
- * genuine vendor failure is a 502.
- *
- * It matters on the first step somebody takes: switching the flag on before
- * setting a username used to answer "Bad Gateway", which reads as "LoanNEX is
- * down" when the truth is "you have not told me who to sign in as".
- *
- * DELIBERATELY ABSENT: `loannex_antiforgery_not_found` and
- * `loannex_portal_redirect_loop`. Those mean the sign-in PAGE no longer looks
- * the way it did when it was recorded — a change at their end, not a gap at
- * ours — so they stay a 502 and read as something to go and look at.
- */
-const NOT_CONFIGURED = new Set([
-  'loannex_login_not_configured',
-  'loannex_token_exchange_failed',
-  'loannex_login_failed',
-]);
-function isNotConfigured(e) { return !!(e && NOT_CONFIGURED.has(e.code)); }
 
 /**
  * Price one scenario on BOTH programs, concurrently, and merge.
@@ -589,32 +361,29 @@ async function priceBoth(scenario, opts = {}) {
    * which is the owner's own condition on this filter. It runs HERE, before the holdback, the merge,
    * the routing, the counts and the option shape, so every one of those describes the same board.
    */
-  // ⛔ THE INTEREST-ONLY ANSWER COMES OFF THE REQUEST LENDER PRICE WAS ACTUALLY SENT when the
-  // scenario is silent. The screen omits an OFF switch rather than sending `false` (see
-  // `product-filter.wantFrom`), so without this the LoanNEX board was never narrowed on
-  // interest-only while Lender Price's tenant default already had — one board answering an
-  // amortising question and the other answering none (owner-reported 2026-09-02).
-  //
-  // WHICH REQUEST: the WIRE body `lp.price` hands back (`request`), never only the static build in
-  // `chk.request`. The client builds the body it POSTs on the tenant's LIVE foundation, and
-  // `mergeKnownRequestDefaults` copies same-typed scalars — `criteria.interestOnly` included —
-  // from the live defaultSearch, so the two can disagree. The pre-merge audit (2026-09-02) found
-  // the first cut mirroring the static one: a live default of `true` would have narrowed LoanNEX
-  // to amortising while Lender Price was asked for interest-only. The static build is the
-  // FALLBACK for a Lender Price failure, when there is no wire body to mirror.
-  const wire = lpRes.status === 'fulfilled' && lpRes.value && lpRes.value.request && typeof lpRes.value.request === 'object'
-    ? lpRes.value.request : null;
-  const lpCriteria = (wire && wire.criteria && typeof wire.criteria === 'object') ? wire.criteria
-    : (chk.request && chk.request.criteria);
-  // ⛔ THE RATE LOCK COMES OFF THE BODY ROOT, not off `criteria` — `search-model` writes it to
-  // `dayLocksCriteria` (and `brokerCriteria.dayLocks`) beside `criteria`, never inside it. Same
-  // rule and same fallback as interest-only above: the WIRE body Lender Price actually received,
-  // and the static build only when Lender Price failed and there is no wire body to mirror.
-  const lpRequest = wire || (chk.request && typeof chk.request === 'object' ? chk.request : null);
-  const want = productFilter.wantFrom(sc, lpModel._internals, { lpCriteria, lpRequest });
-  const narrowed = nxRes.status === 'fulfilled'
-    ? productFilter.narrowBoard(nxRes.value.board, want)
-    : null;
+  // ⛔ WHICH REQUEST IS MIRRORED, AND WHAT IS NARROWED TO, IS `pricing/loannex-half.js` — the
+  // SAME function the general engine asks. The rule (`product-filter.wantFrom`) was never the
+  // thing that drifted; the CALLER-SIDE PREAMBLE was, written out once per engine, and the
+  // general one ended up never handing the rule the Lender Price criteria at all — so
+  // interest-only, the term and the rate lock went un-narrowed on that board while the rule
+  // sat there answering correctly about a request it had never seen. One definition now, so a
+  // change to any of it moves both boards or neither.
+  const wire = lpRes.status === 'fulfilled' && lpRes.value ? lpRes.value.request : null;
+  const want = loannexHalf.wantFor(sc, lpModel._internals, {
+    wireRequest: wire,
+    // The static build is the FALLBACK, for the case where Lender Price failed and there is
+    // no wire body to mirror at all.
+    staticRequest: chk.request,
+  });
+  /* THE NARROWING AND THE HOLDBACK, in that order and through the shared door: the narrowing
+     runs before the merge, the routing, the counts and the option shape so every one of those
+     describes the same board, and the holdback goes on before a single number is compared,
+     because Lender Price's feed already carries our margin and LoanNEX's does not. */
+  const nxHalf = loannexHalf.narrowAndHold(
+    nxRes.status === 'fulfilled' && nxRes.value ? nxRes.value.board : null,
+    want,
+    { saved: heldSetting, extraFor },
+  );
   // The wire body was for the narrowing; it is not part of the answer.
   const lpBoard = lpRes.status === 'fulfilled' ? (({ request: _wire, ...rest }) => rest)(lpRes.value) : null;
 
@@ -625,7 +394,7 @@ async function priceBoth(scenario, opts = {}) {
     // Price's feed already carries it and LoanNEX's does not, so this is what
     // puts the two on the same footing; applying it any later would have the
     // comparison electing on one set of numbers and the board showing another.
-    loannex: narrowed ? vendorMargin.applyToBoard(narrowed.board, 'loannex', { saved: heldSetting, extraFor }) : null,
+    loannex: nxHalf.board,
   };
   const errors = {
     lenderprice: lpRes.status === 'rejected' ? reasonOf(lpRes.reason) : null,
@@ -774,13 +543,13 @@ async function priceBoth(scenario, opts = {}) {
      */
     productFilter: {
       asked: want,
-      applied: !!(narrowed && narrowed.narrowed),
-      dropped: narrowed ? narrowed.dropped : { amortization: 0, interestOnly: 0, term: 0, lock: 0 },
+      applied: !!(nxHalf.detail && nxHalf.detail.narrowed),
+      dropped: nxHalf.detail ? nxHalf.detail.dropped : { amortization: 0, interestOnly: 0, term: 0, lock: 0 },
       // The lock removes RUNGS from programmes that stay, so it is reported as its own quantity
       // rather than folded into a programme count that would then not add up.
-      droppedRungs: narrowed ? narrowed.droppedRungs : { lock: 0 },
-      unclassified: narrowed ? narrowed.unclassified : 0,
-      unclassifiedRungs: narrowed ? narrowed.unclassifiedRungs : 0,
+      droppedRungs: nxHalf.detail ? nxHalf.detail.droppedRungs : { lock: 0 },
+      unclassified: nxHalf.detail ? nxHalf.detail.unclassified : 0,
+      unclassifiedRungs: nxHalf.detail ? nxHalf.detail.unclassifiedRungs : 0,
     },
     // The general engine's own top-level keys, so the copied screen needs no
     // reshaping of its own. `investorRoster` / `investorsUnmapped` keep the
@@ -1141,113 +910,16 @@ function makeRouter(opts = {}) {
   /**
    * WHY IS THIS PRICE THIS PRICE — one door, one layout, either program.
    *
-   * THE ONE REAL ASYMMETRY BETWEEN THE TWO PROGRAMS, and it is answered here
-   * rather than by the screen: Lender Price ships the itemization WITH the
-   * search, so a Lender Price row is already explained and asking again would be
-   * a call that buys nothing. LoanNEX ships the ladder and explains a row only
-   * when asked — one call per quote, which is how its own screen works too.
+   * ⛔ THE DOOR ITSELF LIVES IN `routes/explain-door.js` AND THE GENERAL ENGINE MOUNTS THE
+   * SAME ONE (owner-directed 2026-09-03: *"I told you to copy it from here and bring in how
+   * it works"* — the itemised LLPA breakdown was built and tested here and existed nowhere
+   * else). Two copies is how one engine comes to itemise a price differently from the other
+   * on the same quote, and the copy that drifts is the one somebody quotes from.
    *
-   * So a row carrying a LoanNEX explain handle is fetched, and one that does not
-   * is told plainly that its breakdown already arrived with the board. Both
-   * answers come back through the SAME `breakdown` builder, so the reader is
-   * handed one shape and never learns which program answered.
+   * `reveal: 'ask'` is this engine's own authority: it is super-admin only, so an admin may
+   * ASK to see which rate sheet a row came from. The general engine passes `false`.
    */
-  router.post('/explain', (req, res) => {
-    const b = req.body || {};
-    const quote = quoteFromBody(b);
-    const reveal = b.revealSource === true;
-    if (!quote || typeof quote !== 'object') {
-      return res.status(400).json({ ok: false, error: 'missing_quote', message: 'Send the quote to explain — the `explain` block from the option row.' });
-    }
-    // A row with no explain handle is not an error and must not read as one: its
-    // rate sheet published the itemization up front, so the breakdown the screen
-    // already holds IS the answer. Refusing here would send somebody hunting for
-    // a call that was never needed.
-    if (!quote.priceHashKey) {
-      return res.json({
-        ok: true,
-        breakdown: null,
-        alreadyExplained: true,
-        message: 'This rate sheet publishes its itemized adjustments with the quote, so there is nothing further to fetch — the breakdown on this row is complete.',
-      });
-    }
-    /**
-     * \u26d4 THE VENDOR IS ASKED ABOUT ITS OWN PRICE, NOT OURS \u2014 which is why the holdback is
-     * resolved BEFORE the question rather than beside it.
-     *
-     * `vendor-margin.applyToBoard` runs on the LoanNEX board before the merge, so by the time
-     * `programsFromLoanNex` writes a rung's explain handle the `price` on it is ALREADY the
-     * held-back one. Sending that straight through asked the rate sheet to itemise a price it has
-     * never quoted \u2014 a question about a number that does not exist on its sheet \u2014 and the row's
-     * `priceHashKey` is what actually identifies the quote, so the price rides as an assertion
-     * beside it. `holdbackOnRow` is the SAME resolver the board used, so what is added back here is
-     * exactly what was taken there.
-     *
-     * \u26d4 ONLY THE QUESTION IS RESTATED. The option the panel draws keeps the held-back price,
-     * because that is the price on the board and the price somebody quotes; `holdBackExplainedBase`
-     * then moves the vendor's own base by the same amount so the running total still lands on it.
-     */
-    // The SAME enriched loan the board was priced on — see `explainScenario`. A refused scenario
-    // is a 422 naming the field, exactly as the price door answers it.
-    let sc;
-    try { sc = explainScenario(req); }
-    catch (e) { return scenarioRefused(res, e); }
-    const ident = searchIdentity(quote, b);
-    holdbackOnRow(b.investorKey, b)
-      // Never lets the answer fail: an unreadable settings store costs the base shift, not the
-      // breakdown the caller asked for.
-      .catch(() => ({ points: 0 }))
-      .then((hb) => {
-        const vq = vendorQuote(quote, (hb && hb.points) || 0);
-        return nex.evidence(sc, vq, ident).then((r) => [r, hb, vq]);
-      })
-      .then(([r, hb, vq]) => {
-        // THE SAME LAYOUT, WHATEVER PRICED IT. The vendor's answer is folded onto
-        // an option in the common shape and handed to the ONE breakdown builder,
-        // so this door and a Lender Price row produce the same rows, in the same
-        // order, with the same keys.
-        const explained = vendorMargin.holdBackExplainedBase(quoteShape.attachEvidence(
-          quoteShape.optionForExplain(quote, b.option), r.evidence, { absence: r.absence },
-        ), (hb && hb.points) || 0);
-        /**
-         * WHAT WAS ASKED RIDES ON THE OPTION'S OWN EVIDENCE BLOCK, so the panel that prints "the
-         * rate sheet returned no breakdown" can print, beside it, exactly which loan and which
-         * quote it asked about — the one line that turns an empty panel into a diagnosis.
-         */
-        const asked = askedOf(sc, vq, ident, { reveal });
-        const option = { ...explained, evidence: { ...(explained.evidence || {}), asked } };
-        const built = breakdown.breakdown(option, { reveal });
-        res.json({
-          ok: true,
-          breakdown: built,
-          asked,
-          vendor: { answered: !!r.evidence, reason: r.absence ? r.absence.reason : null, message: r.absence ? r.absence.message : null },
-          /**
-           * ⛔ THE OPTION ITSELF, so the screen never re-keys a breakdown into an option shape.
-           *
-           * The panel reads an OPTION (`o.adjustments[].reason`, `o.priceBuild`, `o.terms`); the
-           * breakdown is a different, flatter shape (`lines[].label`). A browser-side translation
-           * between them would be a second copy of a mapping this route already holds in its hand
-           * — and the copy that drifts is the one drawing the price somebody quotes. The reveal is
-           * respected: the vendor's own trail is stripped unless an admin asked where the row came
-           * from.
-           */
-          option: reveal ? option : stripExplainedTrail(option),
-          // THE SHARPER FLAG. This sheet has now stated its own bands, so the
-          // hint can name the investor's real tier instead of the standing
-          // steps — same module, same wording, better evidence.
-          nearTier: nearTier.nearTier({
-            value: b.value != null ? b.value : (b.scenario || {}).value,
-            loan: b.loan != null ? b.loan : (b.scenario || {}).loan,
-            dscr: b.dscr != null ? b.dscr : (b.scenario || {}).dscr,
-            lines: (built && built.lines) || [],
-          }),
-          transactionId: r.transactionId || null,
-        });
-      })
-      .catch((e) => res.status(isNotConfigured(e) ? 503 : 502)
-        .json({ ok: false, error: e.code || 'loannex_evidence_error', message: reasonOf(e) }));
-  });
+  explainDoor.attach(router, { reveal: 'ask' });
 
   /**
    * The OLD door, kept because something may already be pointed at it.

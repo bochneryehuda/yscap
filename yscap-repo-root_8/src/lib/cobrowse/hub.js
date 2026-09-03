@@ -150,6 +150,14 @@ function claimsFromToken(token) {
  * account is inactive or external, the token version moved, the session id was
  * revoked), and `AUTH_UNKNOWN` when a query threw and the question genuinely
  * could not be answered.
+ *
+ * THE ALLOWED ANSWER CARRIES `{ kind, id, role, perms }`, not just `{ kind, id }`.
+ * `role` and the resolved capability Set ride along on the staff query that was
+ * already being made, because the beat hands this answer to `sessions.mayWatch`
+ * and `perms.can(actor, 'see_all_files')` reads both. Without them every admin
+ * watching a borrower resolves to an EMPTY capability set and is thrown off every
+ * 25 seconds. They are null on the borrower branch, which never reaches `mayWatch`
+ * (`isViewer` requires `kind === 'staff'` first).
  */
 async function stillAllowed(claims) {
   if (!claims) return null;
@@ -429,10 +437,25 @@ function close(sessionId, reason) {
  *   · BOUNDED BY ONE BEAT TOO, NOW: a SCOPE change that leaves `token_version` alone.
  *     The beat re-asks `sessions.mayWatch` for every VIEWER socket on a
  *     borrower-targeted session, so the answer comes from the one definition
- *     (`perms.visibleBorrowerSql` → `visibleOfficersSql`) instead of being
- *     re-derived here. All five of its branches are covered by construction: the
- *     primary officer, the primary processor, the delegation list, an ACTIVE
- *     `application_assignees` row, and a `workflow_items` hand-off.
+ *     (`perms.visibleBorrowerSql`) instead of being re-derived here. EVERY route it
+ *     recognises is covered by construction. Counting them is where two drafts of
+ *     this line have now gone wrong, so: the code asks the function and is right
+ *     whatever the count, and the count below is offered as a map, not as an
+ *     invariant. (An earlier draft said "all five branches", which was the count of
+ *     the WRONG function and dropped two routes; the next said "eight", which split
+ *     one delegation clause into its own route while folding the identical clause
+ *     inside `borrower_officers` into its parent. At consistent granularity it is
+ *     nine. A number nobody can re-derive the same way twice does not belong in an
+ *     invariant.) `visibleBorrowerSql` has four of its own:
+ *     `primary_officer_id`, that officer being on the reader's delegation list, a
+ *     `borrower_officers` row, and a visible APPLICATION; and that last one expands
+ *     through `visibleOfficersSql` into five more: the primary loan officer, the
+ *     primary processor, the delegation list, an ACTIVE `application_assignees` row,
+ *     and a `workflow_items` hand-off. The draft that said "all five" dropped
+ *     `primary_officer_id` and `borrower_officers` — precisely the two the deleted
+ *     "BOUNDED BY NOTHING" paragraph had named as what escaped. Counting the branches
+ *     of the wrong function is how a scope claim goes stale; the code asks the
+ *     function, so the code is right either way, but the sentence was not.
  *
  * ⛔ THIS PARAGRAPH USED TO SAY THE OPPOSITE — "the beat's party check is a pure id
  * comparison, `mayWatch` is never called from here … that is an open gap, written
@@ -448,13 +471,21 @@ function close(sessionId, reason) {
  * an `endAllFor` call to each new door. So the question is asked where the answer
  * lives.
  *
- * WHAT IT COSTS: one query per (viewer, borrower) pair per beat, deduped within the
- * beat, and only for borrower-targeted sessions. A STAFF target is deliberately not
- * re-asked — `mayWatch` checks only that the target is active and internal, which
- * `stillAllowed` already establishes on that person's OWN socket every beat.
+ * WHAT IT COSTS: TWO queries per (viewer, borrower) pair per beat, deduped within
+ * the beat, and only for borrower-targeted sessions. Two, not one — `mayWatch` calls
+ * `viewerRow` (a `SELECT … FROM staff_users`) before it runs the borrower scope
+ * query, so asking it once costs a pair of round trips. This sentence said "one
+ * query" when it was written and was corrected by the post-merge audit that counted
+ * them; the number is in `sessions.mayWatch`, not here, and it was not checked.
+ * A STAFF target is deliberately not re-asked — `mayWatch` checks only that the
+ * target is active and internal, which `stillAllowed` already establishes on that
+ * person's OWN socket every beat.
  * A missed deadline or a thrown query is UNKNOWN and leaves the socket alone, the
  * same as everywhere else in this beat; `no_login` is likewise not a revocation,
- * because a live session is proof the borrower had a password.
+ * because a live session is proof the borrower had a password — and it cannot be
+ * reached by an out-of-scope borrower, because the scope is a WHERE clause and
+ * `has_login` is only read on a row that already passed it (measured: out of scope
+ * answers `no_such_target` whether or not there is a login).
  *
  * THE ROUTES ABOVE STAY, and are still worth having: they close a session the
  * INSTANT the scope moves, where the beat closes it within 25 seconds.
@@ -478,13 +509,30 @@ function close(sessionId, reason) {
  * ping costs one interval of liveness detection, a wrong `terminate()` costs a
  * live session.
  *
- * WHAT A BEAT COSTS, stated rather than implied: `2U + S` queries, where U is the
- * number of distinct identities holding sockets and S the number of distinct
- * sessions. Co-browse's ordinary shape is one identity per socket, so the
- * per-identity cache saves nothing there and the `loadRaw` per session is new —
- * at 40 sockets that is 100 queries against the 81 this replaced. It buys the
- * party re-check (see above) and it collapses the case that would actually hurt,
- * one person holding many viewer tabs.
+ * WHAT A BEAT COSTS, stated rather than implied: `2U + S + 2P` queries, where U is
+ * the number of distinct identities holding sockets, S the number of distinct
+ * sessions, and P the number of distinct (viewer, borrower) pairs on
+ * borrower-targeted sessions. Co-browse's ordinary shape is one identity per socket,
+ * so the per-identity cache saves nothing there. MEASURED against a real hub and a
+ * real database — 40 sockets, 20 borrower-targeted sessions, 40 identities, every
+ * token carrying a `sid`: 140 queries in 148 ms.
+ *
+ * ⛔ THIS PARAGRAPH SAID `2U + S` AND "at 40 sockets that is 100 queries" AFTER the
+ * scope re-check was added, which is 40% low. The commit that added a third query
+ * family to the beat rewrote the paragraph directly above this one and left this one
+ * alone — a stale cost note, in the same comment block, in the same change. Anyone
+ * budgeting a beat off it would have budgeted against a number that had not been
+ * true since the day it was edited.
+ *
+ * WORST CASE IN TIME, since the query count says nothing about it: every await in
+ * the beat is bounded individually by `BEAT_DEADLINE_MS`, not the beat as a whole,
+ * and the loop is sequential. With 40 sockets whose scope query hangs, a beat takes
+ * about 102 s; with every query hanging, about 201 s (both measured at a 200 ms
+ * deadline and scaled). `HEARTBEAT_MS` is 25 s, so that is four to eight skipped
+ * beats — during which the pings, the reaping AND the revocation re-check are all
+ * suspended, because `beating` stays true. Self-healing, and the right trade against
+ * terminating healthy sockets, but it is an AGGREGATE the per-await deadline does not
+ * bound and it is written down rather than implied.
  */
 /**
  * A BEAT THAT NEVER SETTLES WOULD LEAVE `beating` TRUE FOR THE LIFE OF THE PROCESS,

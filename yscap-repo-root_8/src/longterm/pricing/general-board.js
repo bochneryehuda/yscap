@@ -41,9 +41,15 @@ const settingsOf = require('./investor-settings');
 const routing = require('./investor-routing');
 const quoteShape = require('./quote-shape');
 const vendorMargin = require('./vendor-margin');
-const productFilter = require('./product-filter');
+const loannexHalf = require('./loannex-half');
 const investorConfig = require('./investor-config');
 const investorLinks = require('./investor-links');
+/* ⛔ THE SEARCH MODEL IS REQUIRED, NEVER READ OFF THE INJECTED CLIENT. `wantFrom` mirrors the
+   Lender Price request through `mapAmortization` and `resolveSearchTerms`, which live on the
+   search MODEL. Reading them off `deps.lp` would silently answer `{}` for every caller that
+   injects a stub — including every test — so the narrowing would quietly do nothing in exactly
+   the place it is supposed to be proven. Same module, same functions, as the combined engine. */
+const lpModel = require('../lenderprice/search-model');
 
 /** The reason a vendor call did not produce a board, in one short phrase. */
 function reasonOf(e) {
@@ -189,29 +195,67 @@ async function boardForScenario(sc, deps, opts = {}) {
   const lpAnswer = lpRes.value;
   const lpParsed = lp.parseFull(lpAnswer.raw, { raw: !!opts.raw });
   const deco = investorPrograms.decorate(lpParsed.programs);
-  const lpBoard = { source: 'lenderprice', programs: deco.programs };
+  /* ⛔ AN INVESTOR'S OWN HOLDBACK APPLIES ON THIS SHEET TOO (owner-reported 2026-09-03).
+     The LoanNEX half went through `vendorMargin.applyToBoard` and the Lender Price half went
+     through nothing at all — so a per-investor holdback set in the settings was silently
+     ignored on every Lender Price row of this board, while the COMBINED engine had been
+     applying it to both sheets all along (`combined-pricer.js`, its lenderprice and loannex
+     calls). One setting doing two different things on two screens is the split this engine
+     keeps being caught by.
 
-  // ── The LoanNEX half, shaped by the SAME code the combined engine uses ─────
-  // Fixed only (see the header). `wantFrom` is deliberately not consulted for the
-  // amortization: this screen has no ARM chooser, so there is no officer answer to
-  // read and "fixed" is the standing rule rather than a preference.
+     ⛔ AND IT CANNOT TAKE OUR MARGIN TWICE. Lender Price's own base is ZERO BY DESIGN —
+     "Lender Price's feed ALREADY carries our holdback, so a second GLOBAL one here would take
+     it twice", which is a fact about the feed and is why no global holdback is offered for it.
+     `resolveHoldback` therefore adds nothing here unless an investor carries an EXTRA of its
+     own, which is a different decision and does apply. `applyToBoard` also refuses a board it
+     has already stamped, so passing one through twice cannot double it either. */
+  const lpBoard = vendorMargin.applyToBoard(
+    { source: 'lenderprice', programs: deco.programs },
+    'lenderprice',
+    { extraFor: opts.extraFor },
+  );
+
+  /* ── The LoanNEX half, shaped by the SAME code the combined engine uses ─────
+     ⛔ ALL FOUR DIMENSIONS, NOT ONLY THE ARM ONE (owner-reported 2026-09-03: *"LoanNEX was
+     perfect, including filtering out the wrong programs by term and by interest-only and by
+     ARM… I told you to copy it from here"*). This board narrowed on the amortization ALONE,
+     so an officer's own interest-only answer, their term and their rate lock did nothing to
+     the LoanNEX half while Lender Price had already been asked for exactly those — the two
+     sheets answering two different questions on one screen. MEASURED on the recorded board:
+     38 programmes reached this board against the combined engine's 13, 19 of them
+     interest-only on a search that asked for none, 15 at 40 years on a 30-year search, and
+     about 69% of the rungs at a lock nobody asked for (mean spread 0.206 points, max 0.500 —
+     twice the whole margin holdback).
+
+     ⛔ AND THE RULE ITSELF WAS NEVER THE PROBLEM — `product-filter.wantFrom` has always
+     answered all four. What was written out TWICE, once per engine, was the CALLER-SIDE
+     PREAMBLE: which request to mirror, and where in it each answer lives. That is what
+     drifted, and a caller feeding the right rule the wrong request is a dead rule — this
+     engine simply never handed it the Lender Price criteria, so the rule sat there answering
+     correctly about a request it had never seen. So the preamble, the narrowing and the
+     holdback are `pricing/loannex-half.js` now, and the COMBINED engine asks the same
+     function: a change to any of them moves both boards or neither.
+
+     The one thing this engine adds is the FORCE, applied after the rule so it can only ever
+     narrow. */
   let nxBoard = null;
   let nxMeta = null;
   const nxOk = nxRes.status === 'fulfilled' && nxRes.value && nxRes.value.board;
   if (nxOk) {
-    const narrowed = productFilter.narrowBoard(nxRes.value.board, { amortization: 'fixed' });
-    nxBoard = vendorMargin.applyToBoard(narrowed.board, 'loannex', {
+    const want = loannexHalf.wantFor(sc, lpModel._internals, {
+      wireRequest: lpAnswer.request,
+      staticRequest: opts.staticRequest,
+      // Owner-directed: "in the general engine, don't enable the ARM feature."
+      force: { amortization: 'fixed' },
+    });
+    const half = loannexHalf.narrowAndHold(nxRes.value.board, want, {
       saved: opts.heldSetting, extraFor: opts.extraFor,
     });
-    nxMeta = {
+    nxBoard = half.board;
+    nxMeta = Object.assign({
       transactionId: nxRes.value.transactionId || null,
       portal: nxRes.value.portal || null,
-      droppedArm: (narrowed.dropped && narrowed.dropped.amortization) || 0,
-      // What the sheet published twice, and what it published twice that no longer
-      // prices alike — carried out so the board can account for every programme.
-      duplicates: narrowed.duplicates || [],
-      diverged: narrowed.diverged || [],
-    };
+    }, half.meta);
   }
 
   const errors = {
@@ -234,6 +278,41 @@ async function boardForScenario(sc, deps, opts = {}) {
     portal: nxMeta ? nxMeta.portal : null,
     ...nxSearch,
   });
+
+  /**
+   * ⛔ A LENDER PRICE PROGRAM NOBODY CAN NAME STILL REACHES THIS BOARD — a REGRESSION this file
+   * introduced, reported by the owner as *"the entire Lender Price is disconnected from the general
+   * pricing engine"* (2026-09-03).
+   *
+   * Until this board became two-source, every Lender Price program went straight from
+   * `investorPrograms.decorate` onto the screen, named or not: an unresolved one simply carried
+   * `investorKey: null, whiteLabel: null` and showed under the vendor's own lender name, with the
+   * screen's standing "No white-label program name yet for: …" warning naming it. Routing the whole
+   * Lender Price half through `merge.merge` changed that silently — the merge keeps a row it cannot
+   * name OFF the priced board (correctly, for ITS purpose), so a lender the registry does not carry
+   * DISAPPEARED from a board it had always been on, and `investorsUnmapped` came back EMPTY because
+   * this function reports the routed lens's list rather than the merge's.
+   *
+   * ⛔ ONLY THE LENDER PRICE HALF, and that is the whole point rather than an omission. Restoring
+   * these is a RESTORATION: they were on this board yesterday. A LoanNEX row nobody can name was
+   * never on it, and the owner's standing rule for a LoanNEX investor that does not arrive is to
+   * leave it off silently and tell a super admin — so bringing one on under a vendor spelling would
+   * be a new decision, not a repair.
+   *
+   * ⛔ IT CANNOT PUT A REAL INVESTOR NAME IN FRONT OF A CLIENT. This board is staff-only, an
+   * unnamed row carries `whiteLabel: null` so `rosterFromRouted` reports it in `unmapped` (which is
+   * exactly what makes it visible rather than silent), and the term-sheet door refuses a programme
+   * that has no client-safe name outright (`termsheet/snapshot.buildMember` → `program_not_named`).
+   * The name rule is enforced where a document is built, not by deleting rows from a staff screen.
+   */
+  const lpUnnamed = [];
+  for (const p of (lpBoard.programs || [])) {
+    // The SAME resolver the merge just used, so "could not be named" means the same thing in both
+    // places and a row can never be dropped by one and restored by the other on a different rule.
+    const id = merge.resolveInvestor(p, links, custom);
+    if (!id || !id.key) lpUnnamed.push({ ...p, investorKey: null, whiteLabel: null, consumerLabel: null });
+  }
+  if (lpUnnamed.length) programs.push(...lpUnnamed);
 
   /* ── WHO WAS EXPECTED FROM LOANNEX AND DID NOT COME ────────────────────────
      Owner-directed: an investor the settings point at LoanNEX which LoanNEX did
@@ -291,9 +370,29 @@ async function boardForScenario(sc, deps, opts = {}) {
      `parsed.programs`, so overriding these counts never reaches the bands. */
   const routedLenderCount = new Set(programs.map((p) => p && p.lender).filter(Boolean)).size;
 
+  /* ⛔ WHAT THE TWO SHEETS ACTUALLY CALLED EACH INVESTOR — the input the linking screen
+     works from (owner-reported 2026-09-03: *"linking doesn't work"*).
+
+     It did not, and this is why: the COMBINED board has always returned `investorPairing`,
+     and its pricer hands it to `LtInvestorLinks`, which caches it so the settings screen can
+     read it back. The GENERAL board returned NOTHING of the kind — so on the general settings
+     screen the linking panel had no board to work from, and the only way it ever showed
+     anything was if the same person had visited the COMBINED pricer (super-admin only) in the
+     same browser session. The panel was mounted and wired to real doors the whole time; what
+     was missing was the DATA.
+
+     Built by the SAME `investorLinks.pairing` from the SAME `namesFromBoard`, off the boards
+     as the sheets returned them (never the registry's idea of them), so a link offered on one
+     engine's screen is the link the other engine's screen offers too. */
+  const investorPairing = investorLinks.pairing({
+    lenderprice: investorLinks.namesFromBoard(lpBoard),
+    loannex: investorLinks.namesFromBoard(nxBoard),
+  }, links, custom);   // in THIS scope `links` is already the raw value (see line ~169), not a { raw } wrapper
+
   return {
     ok: true,
     sightings,
+    investorPairing,
     parsed: Object.assign({}, lpParsed, { programs, programCount: programs.length, lenderCount: routedLenderCount }),
     programs,
     missing,

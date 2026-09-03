@@ -19,8 +19,7 @@ const lp = require('../lenderprice/client');
 // the screen, and the search always asks for everything.
 const investorPrograms = require('../lenderprice/investor-programs');
 const generalBoard = require('../pricing/general-board');
-const investorConfig = require('../pricing/investor-config');
-const sourceMisses = require('../pricing/source-misses');
+const searchRecord = require('../pricing/search-record');
 /* THE SECOND RATE SHEET. Required here so the bracket loop can hand both clients to
    `generalBoard`; it is never called unless an investor is routed to it, and a portal
    with no credentials simply refuses, which leaves the board Lender Price's alone —
@@ -184,7 +183,11 @@ function rejectInvalidRequest(sc, res) {
   // at this hop would leave every door reading `undefined` and the officer told
   // nothing — the number changed behind them, which is the one thing the clamp was
   // not allowed to do.
-  return { rejected: false, scenario: v.scenario || sc, countyEnrichment: v.countyEnrichment || null, dscrClamped: v.dscrClamped || null };
+  /* ⛔ AND SO DOES THE STATIC REQUEST BUILD. `wantFrom` mirrors the body Lender Price was
+     actually sent to narrow the LoanNEX board on interest-only and the rate lock; the WIRE
+     body wins, and this is the fallback for a search where Lender Price never answered.
+     Dropping it here left the board with nothing to fall back to. */
+  return { rejected: false, scenario: v.scenario || sc, countyEnrichment: v.countyEnrichment || null, dscrClamped: v.dscrClamped || null, request: v.request || null };
 }
 
 // Cash-out amount ("cash in hand") transparency — so it is never SILENTLY handled either way. It is
@@ -342,21 +345,21 @@ async function priceBrackets(req, res) {
   const cfg = await generalBoard.loadConfig({
     routes: body.routes, links: body.links, marginHoldback: body.marginHoldback,
   });
+  // The static Lender Price build, as the narrowing's fallback (see `rejectInvalidRequest`).
+  cfg.staticRequest = chk.request || null;
 
-  /* WHAT EACH SHEET ACTUALLY PRODUCED, ACROSS THE WHOLE SEARCH. One search asks the sheets
-     once per DSCR band, and an investor that answers in one band and not another is still an
-     investor that sheet CARRIES — so the bands are unioned and the register is written ONCE at
-     the end. Writing per band would spend a settings round trip per band and, worse, would
-     record a narrow band's silence as evidence about the sheet. */
-  const sighted = {
-    lenderprice: { answered: false, keys: new Set() },
-    loannex: { answered: false, keys: new Set() },
-  };
-  /* WHO THE SECOND SHEET WAS EXPECTED TO CARRY AND DID NOT. Unioned across the bands for
-     the same reason the sightings are: an investor that answers in one band and not another
-     is carried, and reporting the narrow band as a miss would file a review nobody can act
-     on. Recorded once, after the search. */
-  const missedKeys = new Set();
+  /* WHAT EACH SHEET ACTUALLY PRODUCED, AND WHO THE SECOND SHEET DID NOT CARRY, ACROSS THE
+     WHOLE SEARCH. One search asks the sheets once per DSCR band, and an investor that answers
+     in one band and not another is still an investor that sheet CARRIES — so the bands are
+     unioned and both registers are written ONCE at the end. Writing per band would spend a
+     settings round trip per band and, worse, would record a narrow band's silence as evidence
+     about the sheet.
+
+     ⛔ THE SAME COLLECTOR THE IMMEDIATE BOARD USES. Both doors search, so both doors are
+     evidence; a second copy of these rules here is how one door starts recording a sighting
+     the other does not and the settings screen answers differently depending on which door
+     the officer happened to trigger. */
+  const searchSeen = searchRecord.collector();
 
   const runSearch = async (dscr) => {
     // A null ratio is the officer's own scenario, untouched — the probe.
@@ -367,13 +370,7 @@ async function priceBrackets(req, res) {
     const r = await generalBoard.boardForScenario(one, { lp, nex, investorPrograms }, cfg);
     if (!r.ok) return { ok: false, error: r.error || 'lp_price_failed', message: r.message || null, http: r.http || null };
     if (firstRequest == null) { firstRequest = r.request; provenance = r.provenance || null; }
-    for (const src of ['lenderprice', 'loannex']) {
-      const o = r.sightings && r.sightings[src];
-      if (!o || !o.answered) continue;
-      sighted[src].answered = true;
-      for (const k of o.keys || []) sighted[src].keys.add(k);
-    }
-    for (const k of r.missing || []) missedKeys.add(k);
+    searchSeen.observe(r);
     /* ⛔ THE FULL PARSE, NOT THE SUMMARY — done inside `boardForScenario`, which returns
        the same `parseFull` answer with only its programme list replaced. A band has to
        render with the SAME code the whole board renders with (the owner: *"Every rate and
@@ -409,41 +406,28 @@ async function priceBrackets(req, res) {
        than the band's floor). Optional by design: the loop works without them. */
     seenQuotes: Array.isArray(body.seenQuotes) ? body.seenQuotes : [],
   });
-  /* ⛔ RECORD WHAT THE SHEETS PRODUCED — ONCE, AFTER THE SEARCH, AND NEVER AT ITS COST.
-     Owner-directed 2026-09-03: the side-by-side list shows *"which systems that investor is
-     available on"*, and *"If you see a new investor populating in any of the systems, just add
-     that to the list."* This is the only place that register is written from a general-engine
-     search; `recordSightings` swallows its own failures, so a settings store that is briefly
-     unwritable costs a column on a settings screen and never a board. */
-  await investorConfig.recordSightings({
-    lenderprice: { answered: sighted.lenderprice.answered, keys: [...sighted.lenderprice.keys] },
-    loannex: { answered: sighted.loannex.answered, keys: [...sighted.loannex.keys] },
-  }, { staffId: (req.actor && req.actor.id) || null });
+  /* ⛔ RECORD WHAT THIS SEARCH SAW — ONCE, AFTER IT, AND NEVER AT ITS COST.
+     Two registers, both written by the shared collector so the immediate board and the
+     bands door can never record the same search differently:
 
-  /* AN INVESTOR THE SECOND SHEET DID NOT CARRY IS LEFT OFF THE BOARD SILENTLY AND
-     RECORDED HERE (owner-directed 2026-09-03: the miss is left out silently and the super
-     admin is emailed, plus a manual review section recording the scenario, which investor
-     was missed, and whether the other sheet had it).
+     THE SIGHTINGS — owner-directed 2026-09-03, the side-by-side list shows *"which systems
+     that investor is available on"*, and *"If you see a new investor populating in any of
+     the systems, just add that to the list."*
 
+     THE MISSES — an investor the settings point at LoanNEX which LoanNEX answered without
+     carrying is left OFF the board silently and recorded here instead (owner-directed: the
+     miss is left out silently and the super admin is emailed, plus a manual review section
+     recording the scenario, which investor was missed, and whether the other sheet had it).
      Silently, because once an investor is switched over the other sheet's copy of its
      pricing is second-hand — showing it would be quoting a sheet we have stopped trusting
-     for that investor.
+     for that investor. A sheet that REFUSED files nothing at all: the board returns an empty
+     `missing` for it, so one outage can never file forty reviews.
 
-     The band loop only ever adds a key when that sheet ANSWERED (the board returns an
-     empty `missing` for a sheet that refused), so one outage can never file forty reviews.
-     Best-effort throughout: the officer's board has already been built. */
-  if (missedKeys.size) {
-    await sourceMisses.record(
-      [...missedKeys].map((key) => ({
-        key,
-        /* Did the OTHER sheet have them? The owner's own question, and the one that tells
-           'the second sheet is having a bad day' apart from 'this investor has no product
-           for this loan'. Only answerable when that sheet actually answered. */
-        otherSourceHad: sighted.lenderprice.answered ? sighted.lenderprice.keys.has(key) : null,
-      })),
-      { source: 'loannex', scenario: sc, note: 'The second rate sheet answered this search and did not carry this investor.' },
-    );
-  }
+     Best-effort throughout, and OFF THE RESPONSE PATH: the officer's board is
+     already built, and `flush` can reach an outbound email (measured: 161 ms to
+     answer without it, 3,183 ms with a three-second provider). `later` runs it
+     after the answer has gone and can never reject. */
+  searchRecord.later(() => searchSeen.flush({ staffId: (req.actor && req.actor.id) || null, scenario: sc }));
 
   if (!out.ok) {
     // A refusal here is about the DEAL (not enough figures to bracket by) or the
@@ -488,16 +472,33 @@ async function price(req, res) {
        Nobody routed to LoanNEX → `boardForScenario` makes no second vendor call at all
        (`wantLoanNex`), so a shop that has switched no investor over prices exactly as before,
        at Lender Price speed. A LoanNEX that refuses never costs the board: the router asks the
-       sheets with `allSettled` and returns the Lender Price half on its own. The register of
-       sightings/misses is written ONCE per search by the bracket door, never here. The
+       sheets with `allSettled` and returns the Lender Price half on its own. The
        initial board CARRIES `sources`/`missing` as truthful data, but the general-engine
        screen does not yet render a no-login banner from them — wiring that banner is the
        owner's call, not a silent side effect of this change. */
     const cfg = await generalBoard.loadConfig({ routes: body.routes, links: body.links, marginHoldback: body.marginHoldback });
     cfg.debug = !!body.debug; cfg.raw = !!body.raw; // dev diagnostics, parity with the summary door
+    cfg.staticRequest = chk.request || null; // the narrowing's fallback (see `rejectInvalidRequest`)
     const board = await generalBoard.boardForScenario(sc, { lp, nex, investorPrograms }, cfg);
     if (!board.ok) return res.status((board.http && board.http >= 500) ? 502 : 400).json(priceErrorBody(board));
     if (rejectInvalidValues(board.request, res)) return; // a supported field carried an unrecognized value
+
+    /* ⛔ THIS DOOR IS EVIDENCE TOO (owner-reported 2026-09-03: *"why the side by side doesn't
+       work: it's not actually connected"*). It was not: both registers were written only by the
+       DSCR-bands door, so a sheet could produce an investor on THIS board all day and the
+       settings screen would go on saying it had never been seen there — and an investor LoanNEX
+       quietly did not carry was never reported to anybody. This board is the first thing an
+       officer sees, and on plenty of searches the only door that runs.
+
+       The SAME collector the bands door uses, so the two doors can never record one search
+       differently. Best-effort by construction: it swallows its own failures, and the board has
+       already been built by the time it runs — and it runs OFF THE RESPONSE PATH, because on the
+       first miss of a day the recording sends an email and this is the door an officer waits on. */
+    searchRecord.later(() => searchRecord.recordOne(board, {
+      staffId: (req.actor && req.actor.id) || null,
+      scenario: sc,
+    }));
+
     const effectiveFull = effectiveOf(board.request); // requested-vs-effective transparency
     const out = {
       ok: true,
@@ -509,6 +510,12 @@ async function price(req, res) {
       programs: board.programs,
       investorRoster: board.roster,          // the lens roster, for the routed board
       investorsUnmapped: board.unmapped,     // a lender quoting with no white-label name yet
+      /* WHAT THE TWO SHEETS CALLED EACH INVESTOR ON THIS BOARD — the linking screen's input.
+         STAFF-ONLY, like the whole of /api/lt (mounted requireAuth + requireStaff in server.js;
+         the borrower's own router is a different mount), and the same field the COMBINED board
+         has always returned. Without it the general engine's linking panel had no board to work
+         from at all — see `general-board.js`. */
+      investorPairing: board.investorPairing || null,
       missing: board.missing,                // investors LoanNEX was asked for and did not carry
       sources: board.sources,                // which sheet answered (truthful data; the general-engine
                                              // screen does not render a no-login banner from it yet)
@@ -775,6 +782,24 @@ function makeRouter() {
   router.get('/login-check', (req, res) => loginCheck(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_login_error' })));
   router.post('/price-brackets', (req, res) => priceBrackets(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_brackets_error' })));
   router.post('/price', (req, res) => price(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_error' })));
+  /**
+   * WHY IS THIS PRICE THIS PRICE — the SAME door the Combined Pricing Engine mounts.
+   *
+   * ⛔ IT IS A MOUNT, NOT A SECOND DOOR (owner-directed 2026-09-03: *"LoanNEX was perfect,
+   * including pulling up the itemization LLPA. I told you to copy it from here and bring in
+   * how it works"*). The itemised breakdown was built and tested against the live rate sheet
+   * on that engine and existed nowhere else, so a LoanNEX row on THIS board could show a
+   * price and never say what was in it. `routes/explain-door.js` is the one definition;
+   * there is no route body here at all, deliberately, so the two engines can never itemise
+   * one quote two ways.
+   *
+   * ⛔ `reveal: false` — ONE SYSTEM, by the owner's own rule. The combined engine is
+   * super-admin only and lets an admin ask which rate sheet a row came from; this board
+   * never names a vendor, so the reveal cannot be asked for here whatever a caller sends.
+   * A Lender Price row still answers instantly with `alreadyExplained` — its itemization
+   * arrived with the search — so this costs an ordinary board nothing.
+   */
+  require('./explain-door').attach(router, { reveal: false });
   // Poll-only ineligible status by searchKey (kicked off by POST /price) — never restarts the search.
   router.get('/disqualifications/:searchKey', (req, res) => disqualifications(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualifications_error' })));
   router.post('/disqualifications', (req, res) => disqualifications(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualifications_error' })));
@@ -783,5 +808,5 @@ function makeRouter() {
   return router;
 }
 
-module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest, zipLookup, investorsRoster }, BATTERY, SUPPORTED_FIELDS, META_FIELDS,
+module.exports = { makeRouter, handlers: { health, loginCheck, price, priceBrackets, disqualify, disqualifications, selftest, zipLookup, investorsRoster }, BATTERY, SUPPORTED_FIELDS, META_FIELDS,
   _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf } };
