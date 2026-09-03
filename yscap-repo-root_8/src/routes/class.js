@@ -323,6 +323,7 @@ router.get('/files/:id/orders', async (req, res) => {
             product_id, product_title, status, status_reason, invision_url, due_date,
             appointment_date, inspected_at, assigned_vendor, client_fee_cents, paid_at,
             payment_method, payment_recipient_email, payment_link_sent_at,
+            payment_link_forwarded_at, payment_link_forwarded_to,
             total_cents, paid_cents, outstanding_cents, additional_fees, payment_checked_at, payment_recorded_at,
             dryrun, last_event_at, last_error, request_body, placed_at, created_at
        FROM class_orders WHERE application_id = $1
@@ -372,6 +373,7 @@ router.get('/files/:id/documents', async (req, res) => {
 
 // body: { documentIds:[uuid], category? } — `category` forces one Class category for the
 // whole pick (the picker's "send as the purchase contract" → SalesContract).
+const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 router.post('/files/:id/orders/:orderRowId/documents', async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
@@ -379,10 +381,14 @@ router.post('/files/:id/orders/:orderRowId/documents', async (req, res) => {
   const order = (await db.query('SELECT * FROM class_orders WHERE id = $1', [bigintId(req.params.orderRowId)])).rows[0];
   const ids = Array.isArray(req.body && req.body.documentIds) ? req.body.documentIds.filter(isUuid) : [];
   if (!ids.length) return res.status(400).json({ error: 'pick at least one document' });
+  // `force`: a human pressed the button, so a document the poller gave up on gets
+  // another try (documents.js MAX_UPLOAD_ATTEMPTS).
   const out = await classDocuments.uploadToOrder(db, order,
-    { staffId: req.actor.id, documentIds: ids, category: req.body.category }, {});
+    { staffId: req.actor.id, documentIds: ids, category: req.body.category, force: true }, {});
   if (!out.ok) {
-    if (out.error === 'outbound_disabled') return res.status(409).json({ ...out, message: 'Writing to Class Valuation is switched off, so nothing can be sent yet.' });
+    if (out.error === 'outbound_disabled' || out.error === 'class_disabled' || out.error === 'not_configured') {
+      return res.status(409).json({ ...out, message: 'Writing to Class Valuation is switched off, so nothing can be sent yet.' });
+    }
     return res.status(400).json(out);
   }
   res.json(out);
@@ -403,6 +409,11 @@ router.get('/files/:id/orders/:orderRowId/payment', async (req, res) => {
     ok: true, live: !!(r.ok && r.fresh), error: r.ok ? undefined : r.error, detail: r.ok ? undefined : r.message,
     paymentMethod: o.payment_method, recipientEmail: o.payment_recipient_email,
     linkSentAt: o.payment_link_sent_at, paidAt: o.paid_at, recordedAt: o.payment_recorded_at,
+    // The link's second leg: Class emails it to the file's mailbox and PILOT forwards
+    // it to the borrower, the loan officer and the processor (payment-link-inbox.js).
+    linkToMailbox: /^file\+/i.test(String(o.payment_recipient_email || '')),
+    linkForwardedAt: o.payment_link_forwarded_at || null,
+    linkForwardedTo: o.payment_link_forwarded_to || null,
     clientFeeCents: o.client_fee_cents, totalCents: o.total_cents, paidCents: o.paid_cents,
     outstandingCents: o.outstanding_cents, additionalFees: o.additional_fees || [],
     checkedAt: o.payment_checked_at, balance: classPayment.describeBalance(o),

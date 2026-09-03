@@ -48,6 +48,7 @@ const crypto = require('crypto');
 const db = require('../db');
 const client = require('./client');
 const storage = require('../lib/storage');
+const switches = require('../lib/integrations/switches');
 const conditionSlots = require('../lib/appraisal/condition-slots');
 
 const RETRY_DAYS = Math.max(1, parseInt(process.env.CLASS_ATTACH_RETRY_DAYS || '3', 10) || 3);
@@ -469,7 +470,7 @@ async function listUploadable(dbh, appId, orderRowId = null) {
   let sent = new Map();
   if (orderRowId) {
     const s = await q.query(
-      `SELECT document_id, category, uploaded_at FROM class_attachments
+      `SELECT document_id, category, uploaded_at, upload_error, upload_attempts FROM class_attachments
         WHERE class_order_row = $1 AND direction = 'outbound' AND document_id IS NOT NULL`, [orderRowId]);
     sent = new Map(s.rows.map((x) => [String(x.document_id), x]));
   }
@@ -477,6 +478,12 @@ async function listUploadable(dbh, appId, orderRowId = null) {
     const category = categoryOf(d);
     const attachmentType = attachmentTypeFor(d.content_type, d.filename);
     const was = sent.get(String(d.id));
+    // "Sent" means Class actually took it — a stamped uploaded_at and no error. A row
+    // that only records a FAILURE (or a dry run) is not sent, and the picker must
+    // never say it was (pre-merge audit 2026-09-03: it did, so a failed scope of work
+    // was never retried and never re-offered).
+    const done = !!(was && was.uploaded_at && !was.upload_error);
+    const attempts = was ? Number(was.upload_attempts || 0) : 0;
     return {
       id: d.id, filename: d.filename, contentType: d.content_type, sizeBytes: d.size_bytes,
       docKind: d.doc_kind, reviewStatus: d.review_status,
@@ -484,8 +491,12 @@ async function listUploadable(dbh, appId, orderRowId = null) {
       classCategory: classCategoryFor(category),
       attachmentType,
       sendable: !!attachmentType && !isHtmlExport({ contentType: d.content_type, filename: d.filename }),
-      alreadyUploaded: !!was,
-      uploadedAt: was ? was.uploaded_at : null,
+      alreadyUploaded: done,
+      uploadedAt: done ? was.uploaded_at : null,
+      uploadError: was && was.upload_error ? String(was.upload_error) : null,
+      uploadAttempts: attempts,
+      // Retried by the poller until the cap; after that a human sends it by hand.
+      uploadGaveUp: !!(was && was.upload_error && attempts >= MAX_UPLOAD_ATTEMPTS),
     };
   });
 }
@@ -497,7 +508,39 @@ async function listUploadable(dbh, appId, orderRowId = null) {
  * { ok, uploaded:[{documentId, filename, category}], skipped:[{documentId, reason}] }.
  * Never throws for a refusal: a write-gate refusal comes back as `outbound_disabled`.
  */
-async function uploadToOrder(dbh, order, { staffId = null, documentIds, category } = {}, deps = {}) {
+/* One order's uploads run ONE AT A TIME in this process. The order route sends the
+   scope of work the moment Class numbers the order and the poller repeats the same
+   pick minutes later; without this, both can pass the "already sent" read before
+   either has written its row, and Class receives the same file twice. The unique
+   index would merge the ROWS — it cannot un-send the bytes. PILOT runs as a single
+   instance (the web service carries a persistent disk), so an in-process queue is
+   the whole lock. */
+const inFlight = new Map();
+async function withOrderLock(orderRowId, fn) {
+  const key = String(orderRowId);
+  const prev = inFlight.get(key) || Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  inFlight.set(key, run);
+  try { return await run; }
+  finally { if (inFlight.get(key) === run) inFlight.delete(key); }
+}
+
+// A failed send is retried by the poller (every five minutes) this many times, then
+// left for a human: an error that survives an hour of retries is not transient.
+const MAX_UPLOAD_ATTEMPTS = 12;
+
+// The write gates, as `client.request` raises them. None of these is a failure of
+// THIS document: nothing is recorded against the row, and the next pass simply asks
+// again once the switch is on. (The audit found CLASS_DISABLED / CLASS_NOT_CONFIGURED
+// being written down as upload errors and never retried.)
+const GATE_CODES = { CLASS_OUTBOUND_DISABLED: 'outbound_disabled', CLASS_DISABLED: 'class_disabled', CLASS_NOT_CONFIGURED: 'not_configured' };
+
+async function uploadToOrder(dbh, order, opts = {}, deps = {}) {
+  if (!order || order.id == null) return uploadToOrderInner(dbh, order, opts, deps);
+  return withOrderLock(order.id, () => uploadToOrderInner(dbh, order, opts, deps));
+}
+
+async function uploadToOrderInner(dbh, order, { staffId = null, documentIds, category, force = false } = {}, deps = {}) {
   const q = dbh || db;
   const transport = deps.transport || client;
   const readStorage = deps.readStorage || ((ref) => storage.read(ref));
@@ -520,15 +563,23 @@ async function uploadToOrder(dbh, order, { staffId = null, documentIds, category
        LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
        LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
       WHERE d.application_id = $1 AND d.id = ANY($2::uuid[])`, [order.application_id, ids])).rows;
-  const already = new Set((await q.query(
-    `SELECT document_id FROM class_attachments
+  const prior = new Map((await q.query(
+    `SELECT document_id, uploaded_at, upload_error, upload_attempts FROM class_attachments
       WHERE class_order_row=$1 AND direction='outbound' AND document_id = ANY($2::uuid[])`,
-    [order.id, ids])).rows.map((x) => String(x.document_id)));
+    [order.id, ids])).rows.map((x) => [String(x.document_id), x]));
 
   const uploaded = [];
   const skipped = [];
   for (const d of rows) {
-    if (already.has(String(d.id))) { skipped.push({ documentId: d.id, reason: 'already_uploaded' }); continue; }
+    const was = prior.get(String(d.id));
+    // Sent = Class took it (uploaded_at stamped, no error). A failed or dry-run row is
+    // NOT sent and is tried again — up to the cap on failures, unless a human asked
+    // (`force`, the picker's own button), which always gets one more try.
+    if (was && was.uploaded_at && !was.upload_error) { skipped.push({ documentId: d.id, reason: 'already_uploaded' }); continue; }
+    if (!force && was && was.upload_error && Number(was.upload_attempts || 0) >= MAX_UPLOAD_ATTEMPTS) {
+      skipped.push({ documentId: d.id, reason: 'gave_up', detail: String(was.upload_error) });
+      continue;
+    }
     if (isHtmlExport({ contentType: d.content_type, filename: d.filename })) { skipped.push({ documentId: d.id, reason: 'html_export' }); continue; }
     const attachmentType = attachmentTypeFor(d.content_type, d.filename);
     if (!attachmentType) { skipped.push({ documentId: d.id, reason: 'unsupported_type', detail: 'Class takes PDF, XML and image files only' }); continue; }
@@ -543,13 +594,14 @@ async function uploadToOrder(dbh, order, { staffId = null, documentIds, category
       resp = await transport.uploadAttachment(order.class_order_id, cat,
         { fileName: d.filename || 'document', contentType: d.content_type || 'application/octet-stream', bytes, attachmentType });
     } catch (e) {
-      if (e && e.code === 'CLASS_OUTBOUND_DISABLED') return { ok: false, error: 'outbound_disabled', message: String(e.message || e), uploaded, skipped };
+      const gate = e && e.code && GATE_CODES[e.code];
+      if (gate) return { ok: false, error: gate, message: String(e.message || e), uploaded, skipped };
       const reason = String((e && e.message) || e);
       await q.query(
-        `INSERT INTO class_attachments (class_order_row, application_id, name, content_type, document_id, direction, category, uploaded_by, upload_error)
-         VALUES ($1,$2,$3,$4,$5,'outbound',$6,$7,$8)
+        `INSERT INTO class_attachments (class_order_row, application_id, name, content_type, document_id, direction, category, uploaded_by, upload_error, upload_attempts)
+         VALUES ($1,$2,$3,$4,$5,'outbound',$6,$7,$8,1)
          ON CONFLICT (class_order_row, document_id) WHERE direction = 'outbound' AND document_id IS NOT NULL
-         DO UPDATE SET upload_error = EXCLUDED.upload_error`,
+         DO UPDATE SET upload_error = EXCLUDED.upload_error, upload_attempts = class_attachments.upload_attempts + 1`,
         [order.id, order.application_id, d.filename, d.content_type, d.id, cat, staffId, reason.slice(0, 500)]).catch(() => {});
       skipped.push({ documentId: d.id, reason: 'send_failed', detail: reason });
       continue;
@@ -559,7 +611,7 @@ async function uploadToOrder(dbh, order, { staffId = null, documentIds, category
       `INSERT INTO class_attachments (class_order_row, application_id, name, content_type, document_id, direction, category, uploaded_by, uploaded_at, upload_error)
        VALUES ($1,$2,$3,$4,$5,'outbound',$6,$7,$8,NULL)
        ON CONFLICT (class_order_row, document_id) WHERE direction = 'outbound' AND document_id IS NOT NULL
-       DO UPDATE SET uploaded_at = EXCLUDED.uploaded_at, category = EXCLUDED.category, upload_error = NULL`,
+       DO UPDATE SET uploaded_at = EXCLUDED.uploaded_at, category = EXCLUDED.category, upload_error = NULL, upload_attempts = 0`,
       [order.id, order.application_id, d.filename, d.content_type, d.id, cat, staffId, dry ? null : new Date()]);
     uploaded.push({ documentId: d.id, filename: d.filename, category: cat, dryrun: dry || undefined });
   }
@@ -574,8 +626,15 @@ async function uploadToOrder(dbh, order, { staffId = null, documentIds, category
  */
 async function autoUploadForOrder(dbh, order, deps = {}) {
   if (!order || !order.class_order_id) return { ok: true, uploaded: 0 };
+  // Ask the switches BEFORE reading anything off disk: with writes off, the old
+  // shape read every open order's scope of work and contract every five minutes to
+  // then be refused at the transport (pre-merge audit 2026-09-03). A dry run still
+  // runs — it is how the body is checked before the switch is turned on.
+  const sw = deps.switches || switches;
+  if (!sw.on('CLASS_ENABLED')) return { ok: true, uploaded: 0, gated: 'class_disabled' };
+  if (!sw.on('CLASS_OUTBOUND_ENABLED') && !sw.on('CLASS_DRYRUN')) return { ok: true, uploaded: 0, gated: 'outbound_disabled' };
   const docs = await listUploadable(dbh, order.application_id, order.id);
-  const pick = docs.filter((d) => !d.alreadyUploaded && d.sendable
+  const pick = docs.filter((d) => !d.alreadyUploaded && !d.uploadGaveUp && d.sendable
     && (d.category === CAT_SOW || d.category === CAT_CONTRACT));
   if (!pick.length) return { ok: true, uploaded: 0 };
   const out = await uploadToOrder(dbh, order, { staffId: null, documentIds: pick.map((d) => d.id) }, deps);
@@ -589,5 +648,5 @@ module.exports = {
   // pure — exported for the unit tests
   parseAttachmentList, resolveAttachmentBytes, looksXml, looksPdf,
   classCategoryFor, classCategory, attachmentTypeFor, CLASS_CATEGORIES, CAT_SOW, CAT_CONTRACT,
-  _internals: { pick, looksBase64, firstArray, RETRY_DAYS },
+  _internals: { pick, looksBase64, firstArray, RETRY_DAYS, MAX_UPLOAD_ATTEMPTS, GATE_CODES, withOrderLock },
 };

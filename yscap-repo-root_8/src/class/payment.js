@@ -131,11 +131,19 @@ async function recordCardPayment(dbh, order, { nameCardHolder, amount, last4, au
   if (!Number.isFinite(amt) || amt <= 0) return { ok: false, error: 'bad_amount', message: 'The amount has to be a positive number of dollars.' };
   const four = String(last4 || '').replace(/\D/g, '').slice(-4);
   if (four.length !== 4) return { ok: false, error: 'bad_last4', message: 'Class records the LAST FOUR digits of the card only.' };
+  // The guide lists all four fields on add-creditcard-payment with no "optional" mark
+  // (p.51), and a recorded charge with no name or no authorisation code is a record
+  // nobody can reconcile against the processor's statement — so both are required
+  // here rather than sent as null and left for Class to refuse (pre-merge audit).
+  const name = String(nameCardHolder || '').trim();
+  if (!name) return { ok: false, error: 'bad_name', message: 'Enter the name on the card as it was charged.' };
+  const auth = String(authorizationCode || '').trim();
+  if (!auth) return { ok: false, error: 'bad_auth_code', message: 'Enter the authorisation code the card processor returned for this charge.' };
   const body = {
-    nameCardHolder: String(nameCardHolder || '').trim() || null,
+    nameCardHolder: name,
     amount: Math.round(amt * 100) / 100,
     cardNumber: four,
-    authorizationCode: String(authorizationCode || '').trim() || null,
+    authorizationCode: auth,
   };
   let resp;
   try { resp = await client.recordCardPayment(order.class_order_id, body); }
@@ -154,7 +162,9 @@ async function recordCardPayment(dbh, order, { nameCardHolder, amount, last4, au
  * the last fees Class actually charged us (payment-details / ClientFeeChanged) on
  * orders in the current environment. Returns { [productId]: { lastCents, count,
  * lowCents, highCents } } for the picker to print "last time $X". No history → no
- * entry, and the screen says the fee will show once the order is placed.
+ * entry, and the screen says the fee will show once the order is placed. The rows
+ * are not filtered by environment: a UAT product id never matches a production one,
+ * so a UAT order's fee can never be printed against a production product.
  */
 async function recentFees(dbh, { limitPerProduct = 5 } = {}) {
   const q = dbh || db;
@@ -185,5 +195,5 @@ module.exports = {
   refreshOrder, recordCardPayment, recentFees,
   // pure — exported for the unit tests
   parsePaymentDetails, describeBalance, cents,
-  PAYMENT_METHODS: ['Invoice', 'PaymentLink', 'Prepay'],
+  PAYMENT_METHODS: require('./order-build').PAYMENT_METHODS,
 };

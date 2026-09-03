@@ -1102,7 +1102,7 @@ function ClassBuilder({ appId, cfg, onPlaced }) {
   const options = (preview && preview.options) || {};
   // The payment methods ride alongside Class's own enums so the field row renders a
   // picker of their three values rather than a free text box.
-  const enums = useMemo(() => ({ ...(options.enums || {}), paymentMethod: options.paymentMethods || ['Invoice', 'PaymentLink', 'Prepay'] }), [options]);
+  const enums = useMemo(() => ({ ...(options.enums || {}), paymentMethod: options.paymentMethods || ['PaymentLink', 'Prepay'] }), [options]);
   const occSuggestions = options.occupancySuggestions || [];
   const occIsList = !!options.occupancyIsEnum;
   const fields = (preview && preview.fields) || [];
@@ -1181,22 +1181,24 @@ function ClassBuilder({ appId, cfg, onPlaced }) {
 }
 
 /* ---- how the appraisal is paid — chosen HERE because Class's API only lets it be
-   chosen when the order is placed (src/class/payment.js): Invoice bills our account,
-   PaymentLink makes Class email the borrower their hosted payment page, Prepay is
-   paid up front. There is no card charge in their API, so no card is asked for. ---- */
+   chosen when the order is placed (src/class/payment.js). No invoicing (owner-directed
+   2026-09-03): the payment link is the default on every order, and it is addressed to
+   the file's own mailbox so PILOT forwards it to the borrower, the loan officer and
+   the processor in one email. Prepay is the one other choice. There is no card charge
+   in their API, so no card is asked for. ---- */
 const PAYMENT_WORDS = {
-  Invoice: { head: 'Bill YS Capital', sub: 'Class invoices our account. The back office settles it, or charges the card on file by hand and records it on the order.' },
-  PaymentLink: { head: 'Email the borrower a payment link', sub: 'Class emails the borrower their own payment page when the order is placed. The order proceeds once they pay.' },
+  PaymentLink: { head: 'Payment link to the borrower, officer and processor', sub: 'Class emails the link to the file mailbox when the order is placed; PILOT forwards it to all three in one email. The appraisal moves ahead once it is paid.' },
   Prepay: { head: 'Prepaid', sub: 'Paid up front, outside Class\'s system.' },
 };
 function PaymentRow({ preview, methods, overrides, onMethod, onEmail }) {
   const rows = (preview && preview.fields) || [];
   const methodRow = rows.find((f) => f.path === 'paymentDetails.paymentMethod');
   const emailRow = rows.find((f) => f.path === 'paymentDetails.recipientEmail');
-  const current = (overrides.paymentMethod || (methodRow && methodRow.value) || 'Invoice');
+  const current = (overrides.paymentMethod || (methodRow && methodRow.value) || 'PaymentLink');
   const words = PAYMENT_WORDS[current] || { head: current, sub: '' };
   const chosen = !!overrides.paymentMethod;
-  const list = Array.isArray(methods) && methods.length ? methods : ['Invoice', 'PaymentLink', 'Prepay'];
+  const list = Array.isArray(methods) && methods.length ? methods : ['PaymentLink', 'Prepay'];
+  const toMailbox = /^file\+/i.test(String((overrides.paymentEmail != null ? overrides.paymentEmail : (emailRow && emailRow.value)) || ''));
   return (
     <div style={{ border: `1px solid ${chosen ? TEAL : LINE}`, borderRadius: 10, padding: 12, marginTop: 12, background: '#fff' }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1208,7 +1210,7 @@ function PaymentRow({ preview, methods, overrides, onMethod, onEmail }) {
         <div className="seg">
           {list.map((m) => (
             <button type="button" key={m} className={current === m ? 'on' : ''} aria-pressed={current === m}
-              onClick={() => onMethod(m === 'Invoice' && !overrides.paymentMethod ? '' : m)}>
+              onClick={() => onMethod(m === 'PaymentLink' && !overrides.paymentMethod ? '' : m)}>
               {(PAYMENT_WORDS[m] || {}).head || m}
             </button>
           ))}
@@ -1222,7 +1224,9 @@ function PaymentRow({ preview, methods, overrides, onMethod, onEmail }) {
             placeholder="borrower@example.com"
             onChange={(e) => onEmail(e.target.value)} />
           <div style={{ width: '100%', fontSize: 12, color: MUTED }}>
-            The borrower&apos;s email from the file is used unless you change it. The loan officer and processor follow the order in PILOT, not through Class&apos;s link.
+            {toMailbox
+              ? 'This is the file\u2019s own mailbox. Class emails the link here and PILOT forwards it to the borrower, the loan officer and the processor together. Change it only if the link should go to one address instead.'
+              : 'PILOT\u2019s file mailbox is not set up on this system, so the link goes straight to this address. The loan officer and processor are told in PILOT when it is sent.'}
           </div>
         </div>
       ) : null}
@@ -3431,7 +3435,7 @@ function ClassDocuments({ appId, order, onChanged }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ color: INK, fontWeight: 550, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</div>
                 <div style={{ fontSize: 12, color: MUTED }}>
-                  {d.category}{d.alreadyUploaded ? ' · already sent' : (!d.sendable ? ' · Class takes PDF, XML and image files only' : ` · goes as ${d.classCategory}`)}
+                  {d.category}{d.alreadyUploaded ? ' · already sent' : (d.uploadGaveUp ? ' · could not be sent after several tries — send it again by hand' : (d.uploadError ? ' · last try failed, PILOT will retry' : (!d.sendable ? ' · Class takes PDF, XML and image files only' : ` · goes as ${d.classCategory}`)))}
                 </div>
               </div>
             </label>
@@ -4238,8 +4242,12 @@ function PayModal({ appId, order, card, onClose, onPaid }) {
             <div style={{ fontWeight: 650, color: INK }}>{classPay.balance || 'Class has not priced this order yet.'}</div>
             <div style={{ fontSize: 12.5, color: MUTED, marginTop: 3, lineHeight: 1.45 }}>
               {classPay.paymentMethod === 'PaymentLink'
-                ? `Ordered with a payment link${classPay.recipientEmail ? ' to ' + classPay.recipientEmail : ''}${classPay.linkSentAt ? ', sent ' + fmtDate(classPay.linkSentAt) : ', not sent yet'}.`
-                : (classPay.paymentMethod === 'Invoice' ? 'Ordered as an invoice to YS Capital.' : (classPay.paymentMethod ? `Ordered as ${classPay.paymentMethod}.` : ''))}
+                ? (classPay.linkToMailbox
+                  ? (classPay.linkForwardedAt
+                    ? `Class sent the payment link and PILOT forwarded it on ${fmtDate(classPay.linkForwardedAt)} to ${[...((classPay.linkForwardedTo && classPay.linkForwardedTo.to) || []), ...((classPay.linkForwardedTo && classPay.linkForwardedTo.cc) || [])].join(', ') || 'the borrower and the team'}.`
+                    : `Ordered with a payment link to the file mailbox${classPay.linkSentAt ? ' — Class says it sent the link ' + fmtDate(classPay.linkSentAt) + ', PILOT has not received it yet' : ' — Class has not sent it yet'}.`)
+                  : `Ordered with a payment link${classPay.recipientEmail ? ' to ' + classPay.recipientEmail : ''}${classPay.linkSentAt ? ', sent ' + fmtDate(classPay.linkSentAt) : ', not sent yet'}.`)
+                : (classPay.paymentMethod === 'Prepay' ? 'Ordered as prepaid.' : (classPay.paymentMethod ? `Ordered as ${classPay.paymentMethod}.` : ''))}
               {classPay.recordedAt ? ` A card charge was recorded at Class on ${fmtDate(classPay.recordedAt)}.` : ''}
               {' '}{classPay.note}
             </div>

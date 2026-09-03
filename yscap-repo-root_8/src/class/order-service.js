@@ -22,6 +22,7 @@
  */
 
 const orderBuild = require('./order-build');
+const fileAddress = require('../lib/file-address');
 const client = require('./client');
 const cfg = require('../config');
 const formSelect = require('./form-select');
@@ -131,13 +132,17 @@ async function loadContext(db, appId) {
     propertyContact: null,
     lender: { clientName: 'YS Capital Group' },
     notifyEmails,
-    // HOW IT IS PAID. Class's API offers three ways at order time (src/class/payment.js):
-    // Invoice (billed to our account), PaymentLink (Class emails the borrower their
-    // hosted payment page) and Prepay. Invoice is their default and ours; a staffer
-    // switches to the payment link on the order screen, and the link goes to the
-    // borrower's own address unless they name another.
-    paymentMethod: 'Invoice',
-    paymentEmail: a.b_email || null,
+    // HOW IT IS PAID (owner-directed 2026-09-03: no invoicing, everything paid up
+    // front). The payment link is the default. It is addressed to the FILE'S OWN
+    // MAILBOX so that PILOT receives Class's email and forwards it to the borrower,
+    // the loan officer and the processor in one message (src/class/payment-link-
+    // inbox.js). With no inbound domain configured PILOT cannot receive mail, so the
+    // link goes straight to the borrower and the team is told it went out — the
+    // screen says which of the two is in force. A staffer may still name another
+    // address on the order screen.
+    paymentMethod: 'PaymentLink',
+    paymentEmail: fileAddress.fileReplyTo(a.id) || a.b_email || null,
+    paymentEmailVia: fileAddress.fileReplyTo(a.id) ? 'mailbox' : (a.b_email ? 'borrower' : null),
   };
 }
 

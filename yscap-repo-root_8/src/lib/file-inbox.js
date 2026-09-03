@@ -951,6 +951,38 @@ async function processReceivedEvent(event) {
   let forwardedRecipients = [];
   for (const applicationId of applicationIds) {
     if (appResults[applicationId] === 'forwarded') { anyForwarded = true; continue; }
+    if (appResults[applicationId] === 'payment_link_forwarded') { anyForwarded = true; continue; }
+
+    // CLASS VALUATION'S PAYMENT LINK (owner-directed 2026-09-03). An order placed with
+    // the payment link names THIS file's mailbox as the address Class emails it to, so
+    // the vendor's email lands here and is forwarded ONCE to the borrower (To) and the
+    // loan officer + processor (visible Cc) by src/class/payment-link-inbox.js — the
+    // borrower-voiced email with the payment page as a button. It replaces the
+    // staff-voiced team forward for that delivery: the team is on the same email.
+    // Only a genuine file+ address and only a vendor sender reach it; anything else
+    // is the ordinary file reply below.
+    if (fileAddrIds.has(applicationId)) {
+      let plink = null;
+      try {
+        const paymentLinkInbox = require('../class/payment-link-inbox');
+        if (paymentLinkInbox.isVendorSender(fromEmail)) {
+          plink = await paymentLinkInbox.handleInbound({ applicationId, fromEmail, subject, text: full.text, html: full.html, inboundId: emailId });
+        }
+      } catch (e) {
+        console.error('[inbound-file-email] payment-link forward failed:', safeErr(e));
+        retryableFailure = retryableFailure || { status: 'forward_failed' };
+        continue;
+      }
+      if (plink && plink.handled) {
+        appResults[applicationId] = 'payment_link_forwarded';
+        anyForwarded = true;
+        if (!plink.duplicate) {
+          forwardedTotal += (plink.to || []).length + (plink.cc || []).length;
+          forwardedRecipients = forwardedRecipients.concat(plink.to || [], plink.cc || []);
+        }
+        continue;
+      }
+    }
     // A prior delivery already decided everyone left was on the email itself —
     // stay quiet on the redelivery, exactly like the 'forwarded' skip above.
     if (appResults[applicationId] === 'on_chain') { lastTerminal = lastTerminal || 'on_chain'; continue; }

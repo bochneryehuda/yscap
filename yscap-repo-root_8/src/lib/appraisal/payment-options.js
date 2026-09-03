@@ -208,7 +208,7 @@ const CAPABILITY = {
   class: {
     PAYMENT_LINK: {
       does: DOES.BACK_OFFICE,
-      says: 'Recorded as the way this one is being paid. Class only emails the borrower a payment link when the order is placed with "payment link" chosen on the order screen — on an order already placed, ask Class to send one.',
+      says: 'Recorded as the way this one is being paid. Every Class order is placed with the payment link: Class emails it to the file mailbox and PILOT forwards it to the borrower, the loan officer and the processor. On an order already placed, ask Class to resend it.',
     },
     CARD_ON_FILE: {
       does: DOES.BACK_OFFICE,
