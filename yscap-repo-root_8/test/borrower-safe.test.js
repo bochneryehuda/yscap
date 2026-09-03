@@ -80,7 +80,7 @@ eq(src.label, 'BlueLake doc', 'scrubFields does not mutate input');
     { level: 'ELIGIBLE', msg: '[Both] $20,000 of the $40,000 assignment fee is financed.', program: 'both' },
     { level: 'ELIGIBLE', msg: 'Sized under the lesser of the Standard and Silver programs.', program: 'speed' },
   ] };
-  const out = B.borrowerSafeQuoteBundle({ inputs: {}, standard: {}, gold: {}, silver: {}, speed });
+  const out = require('../src/lib/borrower-safe').borrowerSafeQuoteBundle({ inputs: {}, standard: {}, gold: {}, silver: {}, speed });
   eq(out.speed.reasons[0].msg, 'Properties in Nevada are not eligible for the Silver Program.', 'a [Silver] tag is dropped for a borrower');
   eq(out.speed.reasons[1].msg, '$20,000 of the $40,000 assignment fee is financed.', 'a [Both] tag is dropped for a borrower');
   eq(out.speed.reasons[2].msg, 'Sized under the lesser of the Standard and Silver programs.', 'an untagged sentence is untouched');

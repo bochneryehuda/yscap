@@ -16,8 +16,8 @@
  *   plus: the assignment wording on a Speed sheet reads the 10% share the engine applied.
  *
  * Run: node scripts/test-speed-studio-card.mjs
- * SKIPs (exit 0) without Playwright/Chromium — CI has no browser, which is why this is not in
- * the `npm test` chain (registered there after the Speed portal suite; it SKIPs green without Chromium).
+ * SKIPs (exit 0) without Playwright/Chromium — CI may have no browser; it is registered in the
+ * `npm test` chain after the Speed portal suite and SKIPs green where Chromium is absent.
  */
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
