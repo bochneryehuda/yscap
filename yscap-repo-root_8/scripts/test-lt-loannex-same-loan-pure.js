@@ -521,7 +521,8 @@ const reg = registryOf.capturedRegistry();
     ok(/\(\(\{ request: _wire, \.\.\.rest \}\) => rest\)\(lpRes\.value\)/.test(src),
       'E1b …and strips the wire body off the board before it is answered');
     ok(/const io = want\.io;/.test(src), 'E2  the option-level filter reads the SAME resolved answer as the programme narrowing');
-    ok(!/nex\s*\.evidence\(scenarioOf\(req\)/.test(src), 'E3  no explain door hands the vendor the raw browser scenario any more');
+    ok(!/nex\s*\.evidence\(scenarioOf\(req\)/.test(src + read('src/longterm/routes/explain-door.js')),
+      'E3  no explain door hands the vendor the raw browser scenario any more');
     /**
      * ⛔ COUNTED AGAINST THE DOORS, NOT AGAINST A NUMBER. This pair used to assert `=== 2`, and a
      * third door — `/loannex/diagnose` — turned it red on 2026-09-03 even though that door does the
@@ -531,12 +532,17 @@ const reg = registryOf.capturedRegistry();
      * refusal through `scenarioRefused`. Add a fourth door tomorrow and this stays green if it is
      * built right, red if it is not — which is what E3 above is for as well.
      */
-    const doors = (src.match(/nex\s*\.evidence\(/g) || []).length;
+    /* ⛔ AND ACROSS BOTH FILES, because the shared `/explain` door was MOVED OUT of this one
+       so the general engine could mount the same one (2026-09-03). Counting only this file
+       would report the move as a door disappearing — the exact "edit the guard" reflex the
+       note above warns about. The rule is about the DOORS, wherever they live. */
+    const doorSrc = src + '\n' + read('src/longterm/routes/explain-door.js');
+    const doors = (doorSrc.match(/nex\s*\.evidence\(/g) || []).length;
     ok(doors >= 3, `E4a there are at least three doors that ask the vendor to itemise a quote (found ${doors})`);
-    ok((src.match(/sc = explainScenario\(req\)/g) || []).length === doors,
-      `E4  EVERY explain door runs the scenario through explainScenario (${(src.match(/sc = explainScenario\(req\)/g) || []).length} of ${doors})`);
-    ok((src.match(/catch \(e\) \{ return scenarioRefused\(res, e\); \}/g) || []).length === doors,
-      `E4b …and every one answers a refusal through scenarioRefused — the one function B12b–e prove (${(src.match(/catch \(e\) \{ return scenarioRefused\(res, e\); \}/g) || []).length} of ${doors})`);
+    ok((doorSrc.match(/sc = explainScenario\(req\)/g) || []).length === doors,
+      `E4  EVERY explain door runs the scenario through explainScenario (${(doorSrc.match(/sc = explainScenario\(req\)/g) || []).length} of ${doors})`);
+    ok((doorSrc.match(/catch \(e\) \{ return scenarioRefused\(res, e\); \}/g) || []).length === doors,
+      `E4b …and every one answers a refusal through scenarioRefused — the one function B12b–e prove (${(doorSrc.match(/catch \(e\) \{ return scenarioRefused\(res, e\); \}/g) || []).length} of ${doors})`);
     const jsx = read('app-v2/src/longterm/LtPricer.jsx');
     ok(/askedLine\(ev\.asked\)/.test(jsx), 'E5  the panel prints what was asked under an empty breakdown');
     ok(!/loannex|LoanNEX/i.test(jsx.slice(jsx.indexOf('function askedLine'), jsx.indexOf('function askedLine') + 1500)), 'E6  …and names no vendor doing it');

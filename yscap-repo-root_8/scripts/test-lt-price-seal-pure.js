@@ -360,7 +360,12 @@ console.log('\nG · no second way in');
    */
   ok(!/[^.\w]priceExact\s*:/.test(qs), 'G2 nothing in the quote shape assigns a readable priceExact as a key');
 
-  const cp = stripComments(read('src/longterm/routes/combined-pricer.js'));
+  /* ⛔ BOTH FILES. The shared `/explain` door was MOVED into `routes/explain-door.js` so the
+     general engine could mount the same one (2026-09-03); the RULE is about every door that
+     reads a quote off a request body, wherever that door lives. Counting one file would have
+     read the move as a door quietly stopping using the one reader. */
+  const cp = stripComments(read('src/longterm/routes/combined-pricer.js'))
+    + '\n' + stripComments(read('src/longterm/routes/explain-door.js'));
   ok(!/b\.quote\s*\|\|\s*b/.test(cp),
     'G3 no explain door reads the body’s quote for itself — a door that forgot to open the seal would ask the sheet a rounded price and get nothing back');
   // `= quoteFromBody(b)` counts the CALLS; a bare name match also counts the definition.

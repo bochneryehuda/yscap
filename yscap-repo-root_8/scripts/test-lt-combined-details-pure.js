@@ -370,8 +370,19 @@ const nexRowOf = (out) => (out.programs || []).find((p) => p.program === 'DSCR 3
     const eng = read('app-v2/src/longterm/pricerEngine.js');
     const pricer = read('app-v2/src/longterm/LtPricer.jsx');
     const api = read('app-v2/src/longterm/api.js');
-    ok(/key: 'general',[\s\S]{0,2000}?explain: null,/.test(eng),
-      'WIRE-1 the GENERAL engine asks nobody — `explain: null`, which is what the panel reads as "there is nothing to fetch", so that board is unchanged');
+    /* ⛔ RE-POINTED, NOT LOOSENED (2026-09-03). This pinned `explain: null` on the general
+       engine, whose subject was "an ordinary Lender Price board never makes a second call".
+       That is still true and is asserted below — but the general board now carries LOANNEX
+       rows too (the owner switched five investors onto that sheet), and a LoanNEX row ships
+       the ladder and explains itself only when ASKED. So the general engine has a door of its
+       OWN now; what must never happen is a SECOND IMPLEMENTATION of it, which is what the
+       next two assertions pin. */
+    ok(/key: 'general',[\s\S]{0,3000}?explain: \(quote, scenario, option\) => ltApi\.dscrExplain\(/.test(eng),
+      'WIRE-1 the GENERAL engine has its own explain door — a LoanNEX row on that board can be asked to itemise itself');
+    ok(/dscrExplain: \(quote, scenario, option\) => ltPost\(lt\('\/dscr\/explain'\)/.test(api),
+      'WIRE-1b …at this engine\'s own path');
+    ok(!/revealSource/.test((api.match(/dscrExplain[\s\S]{0,300}/) || [''])[0]),
+      'WIRE-1c …and it never asks to be shown the vendor — this board is ONE SYSTEM');
     ok(/key: 'combined',[\s\S]{0,3000}?explain: \(quote, scenario, option\) => ltApi\.combinedExplain\(quote, scenario, option\)/.test(eng),
       'WIRE-2 the COMBINED engine points at the door, carrying the row the panel is drawing');
     ok(/combinedExplain: \(quote, scenario, option\) => ltPost\(lt\('\/dscr\/combined\/explain'\)/.test(api)

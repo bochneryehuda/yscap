@@ -772,6 +772,24 @@ function makeRouter() {
   router.get('/login-check', (req, res) => loginCheck(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_login_error' })));
   router.post('/price-brackets', (req, res) => priceBrackets(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_brackets_error' })));
   router.post('/price', (req, res) => price(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_error' })));
+  /**
+   * WHY IS THIS PRICE THIS PRICE — the SAME door the Combined Pricing Engine mounts.
+   *
+   * ⛔ IT IS A MOUNT, NOT A SECOND DOOR (owner-directed 2026-09-03: *"LoanNEX was perfect,
+   * including pulling up the itemization LLPA. I told you to copy it from here and bring in
+   * how it works"*). The itemised breakdown was built and tested against the live rate sheet
+   * on that engine and existed nowhere else, so a LoanNEX row on THIS board could show a
+   * price and never say what was in it. `routes/explain-door.js` is the one definition;
+   * there is no route body here at all, deliberately, so the two engines can never itemise
+   * one quote two ways.
+   *
+   * ⛔ `reveal: false` — ONE SYSTEM, by the owner's own rule. The combined engine is
+   * super-admin only and lets an admin ask which rate sheet a row came from; this board
+   * never names a vendor, so the reveal cannot be asked for here whatever a caller sends.
+   * A Lender Price row still answers instantly with `alreadyExplained` — its itemization
+   * arrived with the search — so this costs an ordinary board nothing.
+   */
+  require('./explain-door').attach(router, { reveal: false });
   // Poll-only ineligible status by searchKey (kicked off by POST /price) — never restarts the search.
   router.get('/disqualifications/:searchKey', (req, res) => disqualifications(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualifications_error' })));
   router.post('/disqualifications', (req, res) => disqualifications(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualifications_error' })));

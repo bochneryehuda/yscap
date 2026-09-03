@@ -61,11 +61,20 @@ export const GENERAL_ENGINE = {
   /* THE INVESTOR ROSTER, already in the shape the picker reads. Normalising here rather than in
      the screen is what lets one picker serve two doors that answer in two shapes. */
   investors: () => ltApi.dscrInvestors().then((r) => (r && r.investors) || []),
-  /* FORK 8 — DOES A ROW HAVE TO BE ASKED TO EXPLAIN ITSELF? Lender Price ships the itemization WITH
-     the search, so on this board a price build is already complete the moment it arrives and asking
-     again would be a call that buys nothing. `null` is what the panel reads as "there is nothing to
-     fetch", which is the general engine's behaviour today, unchanged. */
-  explain: null,
+  /* FORK 8 — DOES A ROW HAVE TO BE ASKED TO EXPLAIN ITSELF? It depends on WHICH SHEET quoted the
+     row, which is why this is no longer `null`.
+     
+     Lender Price ships the itemization WITH the search, so a Lender Price row is already complete
+     the moment it arrives — and the door answers exactly that (`alreadyExplained`, nothing to
+     merge), so an ordinary board still costs no extra call. A LOANNEX row ships the ladder and
+     explains itself only when asked, and since the owner switched five investors onto that sheet
+     this board carries rows that could show a price and never say what was in it (owner-reported
+     2026-09-03: *"LoanNEX was perfect, including pulling up the itemization LLPA. I told you to
+     copy it from here"*).
+     
+     ⛔ THE SAME DOOR THE COMBINED ENGINE USES, at this engine's own path — `routes/explain-door.js`
+     is one definition mounted twice, so the two can never itemise one quote two ways. */
+  explain: (quote, scenario, option) => ltApi.dscrExplain(quote, scenario, option),
   /* WHAT THE BREAKDOWN CALLS THE THING A PRICED LINE CAME FROM — in the three grammatical
      positions the copy actually uses. Three fields rather than one because English needs them:
      "came from X", "X returned no margin lines", "X's own fee fields". Building those from one
