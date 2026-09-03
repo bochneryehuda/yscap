@@ -64,6 +64,57 @@ function expectedFromLoanNex(rows) {
 }
 
 /**
+ * THE PRESENT-INVESTOR ROSTER AND THE STILL-UNNAMED LIST, FOR THE ROUTED BOARD.
+ *
+ * The initial board's screen carries an investor lens (which investors this
+ * answer holds) and a staff-only warning (a lender quoting with no white-label
+ * name yet). Both were built from `investorPrograms.decorate`, which resolves a
+ * LENDER PRICE programme against the Lender Price registry — right for a board of
+ * only Lender Price rows, wrong for this one, which has dropped the turned-off
+ * investors and carries LoanNEX's. So it is derived from the ROUTED programmes
+ * themselves — the exact rows on the board — with the real investor label read
+ * from the merge (`mergedInvestors`, keyed by investor). Same output shape as
+ * `decorate` so the screen reads it unchanged. Pure.
+ */
+function rosterFromRouted(programs, mergedInvestors) {
+  const list = Array.isArray(programs) ? programs : [];
+  const labelByKey = new Map();
+  for (const inv of mergedInvestors || []) {
+    if (inv && inv.key != null) labelByKey.set(inv.key, inv.investor || inv.whiteLabel || inv.key);
+  }
+  // One roster entry per NAMED investor on the board, with its distinct programme
+  // names — exactly the investors a lens may offer to narrow to.
+  const byKey = new Map(); // key -> { whiteLabel, names: Map<program, consumerLabel> }
+  for (const p of list) {
+    if (!p || !p.investorKey || !p.whiteLabel) continue;
+    let g = byKey.get(p.investorKey);
+    if (!g) { g = { whiteLabel: p.whiteLabel, names: new Map() }; byKey.set(p.investorKey, g); }
+    const name = String(p.program || '');
+    if (!g.names.has(name)) g.names.set(name, p.consumerLabel || p.whiteLabel);
+  }
+  const roster = [...byKey.entries()].map(([key, g]) => {
+    const sorted = [...g.names.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    return {
+      key,
+      whiteLabel: g.whiteLabel,
+      investorLabel: labelByKey.get(key) || g.whiteLabel,
+      programCount: sorted.length,
+      programs: sorted.map(([program, consumerLabel]) => ({ consumerLabel, program })),
+    };
+  }).sort((a, b) => String(a.whiteLabel).localeCompare(String(b.whiteLabel)));
+  // A row with no white-label name yet — distinct by WHO it is, so the warning
+  // names each once. `key` present = the registry placed it (off the sheet);
+  // `key` null = it could not be placed at all.
+  const unseen = new Map();
+  for (const p of list) {
+    if (!p || p.whiteLabel) continue;
+    const k = `${p.lender || ''} ${p.investor || ''}`;
+    if (!unseen.has(k)) unseen.set(k, { lender: p.lender || null, investor: p.investor || null, key: p.investorKey || null });
+  }
+  return { roster, unmapped: [...unseen.values()] };
+}
+
+/**
  * THE CONFIGURATION ONE SEARCH RUNS UNDER, READ ONCE.
  *
  * The bracket loop asks the sheets once PER DSCR BAND. Reading the settings inside that
@@ -121,15 +172,22 @@ async function boardForScenario(sc, deps, opts = {}) {
   // ── The Lender Price half, exactly as this screen has always built it ──────
   if (lpRes.status !== 'fulfilled' || !lpRes.value || lpRes.value.ok === false) {
     const v = lpRes.status === 'fulfilled' ? lpRes.value : null;
+    // A Lender Price answer that failed carries its OWN diagnostics — firstHttp /
+    // retryHttp / upstream / provenance / fault — that priceErrorBody surfaces. Pass
+    // them straight through so the FULL initial-board door reports a Lender Price
+    // failure exactly as the summary door does (which errors on the raw `lp.price`
+    // result). Only a REJECTED promise (the vendor threw, no result object) has to be
+    // composed by hand.
+    if (v) return Object.assign({}, v, { ok: false, error: v.error || 'lp_price_failed' });
     return {
       ok: false,
-      error: (v && v.error) || 'lp_price_failed',
-      message: (v && v.message) || (lpRes.status === 'rejected' ? reasonOf(lpRes.reason) : null),
-      http: (v && v.http) || null,
+      error: 'lp_price_failed',
+      message: lpRes.status === 'rejected' ? reasonOf(lpRes.reason) : null,
+      http: null,
     };
   }
   const lpAnswer = lpRes.value;
-  const lpParsed = lp.parseFull(lpAnswer.raw);
+  const lpParsed = lp.parseFull(lpAnswer.raw, { raw: !!opts.raw });
   const deco = investorPrograms.decorate(lpParsed.programs);
   const lpBoard = { source: 'lenderprice', programs: deco.programs };
 
@@ -217,15 +275,37 @@ async function boardForScenario(sc, deps, opts = {}) {
     loannex: { answered: !!nxOk, keys: nxOk ? sightedOn('loannex') : [] },
   };
 
+  /* THE LENS ROSTER AND THE UNNAMED WARNING, for the board actually shown — the
+     initial-board door reads these; the bracket door ignores them and reads the
+     bands. Derived from the routed programmes so it can never describe a different
+     board than the one on screen. */
+  const lens = rosterFromRouted(programs, mergedRaw.investors);
+
+  /* THE COUNTS DESCRIBE THE BOARD THAT IS SHOWN, not the raw Lender Price answer.
+     `lpParsed` counts the pre-routing Lender Price programmes and lenders, so once a
+     shop switches an investor to LoanNEX or turns one off, its `programCount` /
+     `lenderCount` name a board nobody is looking at (LoanNEX rows uncounted, turned-off
+     LP rows still counted). Recompute both from the ROUTED programmes — each carries
+     `lender` (a LoanNEX row's is its investor name), so the lender count is a real
+     distinct-lender count over the mixed board. The bracket door reads only
+     `parsed.programs`, so overriding these counts never reaches the bands. */
+  const routedLenderCount = new Set(programs.map((p) => p && p.lender).filter(Boolean)).size;
+
   return {
     ok: true,
     sightings,
-    parsed: Object.assign({}, lpParsed, { programs }),
+    parsed: Object.assign({}, lpParsed, { programs, programCount: programs.length, lenderCount: routedLenderCount }),
     programs,
     missing,
+    roster: lens.roster,
+    unmapped: lens.unmapped,
     searchKey: lpAnswer.searchKey || null,
     request: lpAnswer.request || null,
     provenance: lpAnswer.provenance || null,
+    recovered: !!lpAnswer.recovered,
+    // Dev diagnostics, only when asked — parity with the summary door (never sent
+    // on an ordinary search, so the board is not bloated with raw vendor payloads).
+    rawSummary: opts.debug ? lp.summarizeRaw(lpAnswer.raw) : undefined,
     nx: nxMeta,
     sources: {
       lenderprice: { ok: true },
@@ -235,4 +315,19 @@ async function boardForScenario(sc, deps, opts = {}) {
   };
 }
 
-module.exports = { boardForScenario, loadConfig, _internals: { reasonOf, expectedFromLoanNex } };
+/* THE PRE-SEARCH INVESTOR PICKER — the investors that CAN appear on the routed board,
+   so the tick-boxes offered BEFORE a search match what a search actually shows
+   (owner-directed 2026-09-03). Derived from the SAME settings `loadConfig`/`boardForScenario`
+   route on, so the picker and the board can never drift: every investor that is ON
+   (`enabled`) and carries a client-facing white label — a LoanNEX-switched investor
+   INCLUDED (it now reaches this engine's board), a turned-off one EXCLUDED, and an unnamed
+   one EXCLUDED (it lands in `unmapped` on the board and cannot be ticked there either).
+   Shape matches `investorPrograms.fullRoster` so the picker component is unchanged. */
+function pickerRoster(cfg) {
+  return settingsOf.roster(cfg.settings, cfg.custom)
+    .filter((r) => r && r.enabled && r.whiteLabel)
+    .map((r) => ({ key: r.key, whiteLabel: r.whiteLabel, investorLabel: r.label }))
+    .sort((a, b) => String(a.whiteLabel).localeCompare(String(b.whiteLabel)));
+}
+
+module.exports = { boardForScenario, loadConfig, pickerRoster, _internals: { reasonOf, expectedFromLoanNex, rosterFromRouted } };

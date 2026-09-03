@@ -38,10 +38,36 @@ const roster = require('./../pricing/investor-roster');
 const vendorMargin = require('./../pricing/vendor-margin');
 const investorConfig = require('./../pricing/investor-config');
 const sightings = require('./../pricing/investor-sightings');
+const investorSettings = require('./../pricing/investor-settings');
 const sourceMisses = require('./../pricing/source-misses');
+const sheetConnection = require('./../pricing/sheet-connection');
 const { whiteLabelOf } = require('../lenderprice/investor-programs');
 
 const reasonOf = (e) => String((e && e.message) || e || 'unknown').slice(0, 300);
+
+/**
+ * IS EACH RATE SHEET SIGNED IN — asked of the client that owns the answer.
+ *
+ * ⛔ LAZY AND CAUGHT, both deliberately. This file is otherwise pure of the
+ * pricing engines, and a settings screen must never fail to draw because a
+ * vendor module would not load. An unreadable answer becomes `null`, which
+ * `sheet-connection` reads as UNKNOWN and says so — never as "connected".
+ *
+ * `configured()` is an environment read on both clients: no network, no vendor
+ * call, nothing spent.
+ */
+function sheetConfigured() {
+  /* PLAIN STRING REQUIRES, ONE PER SHEET — never a computed path. A dynamic
+     require() is the one import shape the product-separation gate cannot follow,
+     and it refuses the file outright (it caught exactly this on the first cut).
+     The repetition is the point: every module this file can reach is readable. */
+  const call = (fn) => { try { return typeof fn === 'function' ? fn() : null; } catch (_) { return null; } };
+  let lenderprice = null;
+  let loannex = null;
+  try { lenderprice = call(require('./../lenderprice/client').configured); } catch (_) { lenderprice = null; }
+  try { loannex = call(require('./../loannex/client').configured); } catch (_) { loannex = null; }
+  return { lenderprice, loannex };
+}
 
 /* The four stored reads, through the ONE module that owns their key strings. */
 const settingsRaw = () => investorConfig.investorsRaw();
@@ -139,9 +165,65 @@ function attach(router) {
       const availability = sightings.availabilityFor(r.key, sight);
       return { ...r, availability, lockedOut: sightings.lockedOutFor(r.key, sight) };
     });
+    /**
+     * THE OWNER'S LIST, NOT OUR WHOLE REGISTRY (owner-reported 2026-09-03: *"the list of
+     * lenders that I put in my settings is way bigger than the list I gave you… I gave you
+     * a list only of ones that have white-labeled names"*).
+     *
+     * The rule lives in `investorSettings.belongsOnSettingsList` — one definition, with the
+     * reasoning — and is applied HERE rather than inside `roster()` on purpose: the board
+     * builds `expectedFromLoanNex` from the full roster, so narrowing that would change
+     * which investors it expects and reports as missing. This narrows the SCREEN only.
+     *
+     * A new investor a rate sheet has actually produced still comes through, off and
+     * unnamed, which is the case the owner asked for by name.
+     */
+    const shown = investorsWithAvailability.filter(
+      (r) => investorSettings.belongsOnSettingsList(r, r.availability),
+    );
+    /**
+     * WHY AN INVESTOR SET TO A RATE SHEET MIGHT NOT REACH THE BOARD AT ALL.
+     *
+     * The pricing page stays silent about a missing investor by the owner's own
+     * direction; this is the screen where that silence is answerable. Counted
+     * over the rows ACTUALLY SHOWN so the sentence and the list agree — a
+     * message reading "6 investors" above five countable rows is the same
+     * self-contradiction the summary block above was fixed for.
+     */
+    const connections = sheetConnection.connectionsFor(
+      sheetConfigured(), sheetConnection.routedCounts(shown),
+    );
+    /* WHEN EACH SHEET LAST ACTUALLY ANSWERED. `configured()` reads the
+       ENVIRONMENT, so a login that is set but WRONG reports connected and still
+       produces nothing; this is the fact that tells those two apart. Read from
+       the register the board already writes — nothing new is recorded. */
+    const lastAnswered = sheetConnection.lastAnsweredAll(sight && sight.boards);
     res.json({
       ok: true, ...d,
-      investors: investorsWithAvailability,
+      investors: shown,
+      connections,
+      lastAnswered,
+      /* THE COUNTS DESCRIBE WHAT IS ON SCREEN. `describeSettings` totals the whole roster,
+         so spreading it unchanged beside a narrowed list would print "43" above 26 rows and
+         make the screen contradict itself. */
+      summary: {
+        ...d.summary,
+        total: shown.length,
+        on: shown.filter((r) => r.enabled).length,
+        off: shown.filter((r) => !r.enabled).length,
+        fromLenderPrice: shown.filter((r) => r.enabled && r.source === 'lenderprice').length,
+        fromLoanNex: shown.filter((r) => r.enabled && r.source === 'loannex').length,
+        fromBoth: shown.filter((r) => r.enabled && r.source === 'both').length,
+        missingWhiteLabel: shown.filter((r) => r.whiteLabelMissing).length,
+        custom: shown.filter((r) => r.custom).length,
+        withExtraHoldback: shown.filter((r) => r.holdbackOrigin === 'setting' && r.holdback !== 0).length,
+      },
+      /* What the screen is NOT showing, and why — so an empty-looking list is never a
+         mystery and nobody goes hunting for an investor that is deliberately absent. */
+      hidden: {
+        count: investorsWithAvailability.length - shown.length,
+        reason: 'no white-label name, never seen on a rate sheet, and no setting of its own',
+      },
       /* Said plainly so a screen can explain an empty column rather than reading a
          cold register as "this investor is on nothing". */
       sightings: {
@@ -153,7 +235,7 @@ function attach(router) {
       // The ones with no client-safe name yet, named out loud so somebody can
       // go and name them — an investor with no white label may never be put in
       // front of a borrower or a broker.
-      needsWhiteLabel: d.investors.filter((r) => r.whiteLabelMissing).map((r) => ({ key: r.key, investor: r.label })),
+      needsWhiteLabel: shown.filter((r) => r.whiteLabelMissing).map((r) => ({ key: r.key, investor: r.label })),
       storedProblem: src.problem || null,
     });
   });

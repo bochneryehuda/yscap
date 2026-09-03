@@ -221,20 +221,21 @@ async function portalLogin(portal, opts = {}) {
   });
 }
 
-/** A live bearer session for a portal, minted or reused. */
-async function getSession(portal, opts = {}) {
-  const { portal: p } = PORTAL_HOST(portal);
-  const now = Date.now();
-  const hit = sessions.get(p);
-  if (!opts.force && hit && hit.expiresAt - TOKEN_SKEW_MS > now) return hit;
-
+/**
+ * SIGN IN AND BUILD A SESSION — the whole cold-cache path, done ONCE.
+ *
+ * This is the work `getSession` dedupes. It is a named function so the
+ * single-flight lock below can wrap exactly one call to it, and so a test can
+ * count how many times it runs under concurrency.
+ */
+async function performLogin(p, opts = {}) {
   // A pasted ticket short-circuits the sign-in (that is how the pipeline was
   // proven end-to-end before stage 1 existed, and it stays the fastest way to
   // run a one-off). Otherwise sign in properly.
   let ticket = opts.tokenKey || process.env.NEX_TOKEN_KEY;
   if (!ticket) ticket = (await portalLogin(p, opts)).tokenKey;
 
-  const body = await request('GET', `/tokens/${encodeURIComponent(ticket)}`, {});
+  const body = await _impl.request('GET', `/tokens/${encodeURIComponent(ticket)}`, {});
   const d = (body && body.data) || {};
   if (!d.authenticationToken) {
     const err = new Error('loannex_token_exchange_failed: the ticket did not yield an authentication token (a tokenKey is single-use and short-lived).');
@@ -246,13 +247,65 @@ async function getSession(portal, opts = {}) {
     portal: p,
     token: d.authenticationToken,
     refreshToken: d.refreshToken || null,
-    expiresAt: claims.expiresAt || (now + 55 * 60 * 1000),
+    expiresAt: claims.expiresAt || (Date.now() + 55 * 60 * 1000),
     userGuid: claims.userGuid,
     organizationId: claims.organizationId,
     portalId: claims.portalId,
   };
   sessions.set(p, session);
   return session;
+}
+
+/* A test seam — the only indirection needed so a pure test can replace the
+   network work (`performLogin`, `request`) and count logins under load without
+   touching the vendor. Production reads straight through it. */
+const _impl = { performLogin, request };
+
+/**
+ * DEDUPE CONCURRENT ASYNC WORK BY KEY — one in-flight promise per key.
+ *
+ * ⛔ THIS IS THE SINGLE-FLIGHT LOCK `bracket-run.js` ALREADY PROMISES EXISTS
+ * ("it holds ONE shared service login behind a single-flight lock … so
+ * concurrent searches don't collide"). It did NOT exist, and that was the bug:
+ * the general engine runs the bracket loop with `CONCURRENCY = 3`, so on a COLD
+ * session cache three `getSession` calls each saw no cached session and each
+ * fired a FULL portal sign-in at the same instant — three simultaneous logins on
+ * one service account, which a form-based portal (antiforgery token + cookie
+ * jar, not a real API) rate-limits or rejects. The bands threw, the LoanNEX half
+ * of the board was dropped, and the reason was swallowed. The COMBINED engine
+ * makes exactly ONE `nex.price` call → one login → never collides, which is why
+ * it worked while the general engine showed nothing. With the lock, the first
+ * caller signs in and the other two await the SAME login.
+ */
+function singleFlight(map, key, fn) {
+  const existing = map.get(key);
+  if (existing) return existing;
+  const promise = Promise.resolve().then(fn);
+  map.set(key, promise);
+  // Clear the slot when it settles — success or failure — but only if it is
+  // still ours, so a later attempt that replaced it is never deleted.
+  const clear = () => { if (map.get(key) === promise) map.delete(key); };
+  promise.then(clear, clear);
+  return promise;
+}
+
+/** In-flight logins, one per portal. */
+const loginFlight = new Map();
+
+/** A live bearer session for a portal, minted or reused. */
+async function getSession(portal, opts = {}) {
+  const { portal: p } = PORTAL_HOST(portal);
+  const now = Date.now();
+  const hit = sessions.get(p);
+  if (!opts.force && hit && hit.expiresAt - TOKEN_SKEW_MS > now) return hit;
+
+  // A deliberate `force` (a session we know is bad) always mints its own fresh
+  // login rather than joining an in-flight one — it wants a NEW token, not the
+  // one somebody else is already fetching.
+  if (opts.force) return _impl.performLogin(p, opts);
+
+  // Every ordinary concurrent caller on a cold cache shares ONE login.
+  return singleFlight(loginFlight, p, () => _impl.performLogin(p, opts));
 }
 
 /** Who the session belongs to — the safe login check. Never returns a token. */
@@ -471,5 +524,6 @@ module.exports = {
     missingIdentity, EVIDENCE_IDENTITY, exactPrice,
     request, assertReadOnly, pathMatches, READ_ONLY_PATHS, scrub, claimsOf,
     tokenKeyFromIframeHtml, portalLogin, PORTAL_HOST, sessions, TOKEN_SKEW_MS, portalLoginMod,
+    performLogin, singleFlight, loginFlight, _impl,
   },
 };

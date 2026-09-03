@@ -192,8 +192,10 @@ async function main() {
       // exactly the kind of door this smoke test exists to open. On a fresh
       // database it answers the DECLARED defaults (source 'standard' throughout).
       '/api/lt/dscr/comp-plan',
-      // The Pricing Engine's white-label roster (owner-directed 2026-08-27) — a
-      // pure read of the committed sheet, no vendor call, no database.
+      // The Pricing Engine's pre-search picker (owner-directed 2026-09-03) — it reads
+      // the saved investor settings so the tick-boxes match the routed board (a
+      // LoanNEX-switched investor offered, a turned-off one not); no vendor call, and it
+      // fails safe to the committed sheet if the config store cannot be read.
       '/api/lt/dscr/investors',
       // …and the signed-in person's saved investor GROUPS (db/634): one indexed
       // SELECT on lt_pricer_investor_groups, so a phantom column there would
