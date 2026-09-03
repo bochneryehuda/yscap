@@ -24,11 +24,12 @@
  * many timers are `unref`'d. The suite had closed its HTTP server and ended
  * RTL's pool, and one Postgres socket nobody owned held it open forever.
  *
- * NOT EVERY app-booting suite hung, and the exceptions are the tell. Measured
- * over five of them with the fix removed: three hung, two exited cleanly — and
- * the two that survived end with an unconditional `process.exit()`. So the
- * ones that hung are exactly the ones that rely on a NATURAL exit, which is
- * most of them, and which is the correct behaviour to protect.
+ * NOT EVERY app-booting suite hung, and the exceptions are the tell. Measured over
+ * THIRTY of them with the fix removed: 5 hung, 25 exited cleanly — about 17%, not
+ * the "most" a first sample of five suggested. The ones that hung are exactly the
+ * ones that rely on a NATURAL exit; the ones that survive end with an
+ * unconditional `process.exit()`. Seventeen per cent is still every build, because
+ * `npm test` is an `&&` chain and it stops at the first one.
  *
  * `allowExitOnIdle` on Long-Term's pool is the fix: "when every client is idle,
  * do not hold the process open".
@@ -60,15 +61,21 @@
  * inside either child's require graph — and `src/longterm/index.js` is
  * precisely the module the server mounts.
  *
- * Hence case 3, which requires WHAT THE APPLICATION REQUIRES rather than a
- * model of it. It is the case that actually holds the claim in this header, and
- * it is why the claim now names what the children reach instead of promising
- * something no child could see.
+ * Hence case 3, which requires the whole long-term module rather than a model of
+ * it — and hence case 4, which requires WHAT THE APPLICATION REQUIRES: case 3 was
+ * described that way and was not, because the application requires
+ * `src/server.js`, not `src/longterm/index.js`. Case 4 boots the server and serves
+ * a request, which is the only way to catch a pool built on FIRST USE rather than
+ * at require time — the shape `src/lib/dashboards/run.js` already has.
  *
  * Each case checks THREE things, because "the child exited" on its own is a
  * result a crash produces too:
- *   · it printed a marker carrying a VALUE ONLY THE DATABASE COULD HAVE
- *     RETURNED, so the child is known to have made a real round trip,
+ *   · it printed its marker — and for the two children that assert a round trip
+ *     that marker carries a VALUE ONLY THE DATABASE COULD HAVE RETURNED. The
+ *     module-loading children prove only that the module loaded, which is all an
+ *     exit test needs from them; an earlier version of this line said every case
+ *     proved a round trip, and an audit passed one of them with the pool stubbed
+ *     so no socket ever opened,
  *   · it exited with status 0,
  *   · it exited inside the budget.
  *
@@ -125,7 +132,11 @@ function runChild(body, budgetMs) {
     const child = spawn(process.execPath, ['-e', body], {
       cwd: ROOT,
       env: { ...process.env, DATABASE_URL: process.env.DATABASE_URL },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // ⛔ 'pipe', NOT 'ignore'. With 'ignore' the child's stdin is /dev/null and reaches EOF
+      // at once, so a child held open by `process.stdin.resume()` was invisible to this
+      // harness while hanging the real runner, whose stdin is a pipe (post-merge audit).
+      // Left open and unwritten, exactly as the runner leaves it.
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
     const t0 = Date.now();
     let out = '';
@@ -215,7 +226,43 @@ function runChild(body, budgetMs) {
     ok(!c.timedOut, `a child that requires the whole long-term module EXITS (took ${c.ms}ms, budget ${BUDGET_MS}ms)`);
     ok(c.code === 0, `it exits cleanly (code ${c.code}${c.signal ? ', signal ' + c.signal : ''})`);
 
-    // ---- 4. THE BUDGET IS A REAL DEADLINE, NOT A FORMALITY ------------------
+    // ---- 4. WHAT THE SERVER ACTUALLY LOADS, AND A REQUEST THROUGH IT --------
+    // The three children above reach `src/longterm/**` and nothing else, so two whole
+    // families of handle escaped them (post-merge audit):
+    //   · a handle taken anywhere in the RTL half — the application requires
+    //     `src/server.js`, which loads both products; a second pool at require time
+    //     there left this suite at 10/10 while the real db suite showed the exact CI
+    //     signature (14 assertions, then killed at 60s);
+    //   · a pool created LAZILY on first use rather than at require time, because no
+    //     child ever made a REQUEST. That is not hypothetical:
+    //     `src/lib/dashboards/run.js` is exactly that shape today.
+    // This child does what a database suite does — require the server, listen, make one
+    // request, close, end RTL's pool — and then has to exit like any of them.
+    const booted = `
+      const http = require('http');
+      const app = require('./src/server');
+      const server = http.createServer(app);
+      server.listen(0, async () => {
+        const port = server.address().port;
+        // One real request through a real router, so a pool built on first use is built.
+        let status = 0;
+        try {
+          const res = await fetch('http://127.0.0.1:' + port + '/api/health');
+          status = res.status;
+        } catch (e) { status = -1; }
+        console.log('SERVED status=' + status);
+        server.close();
+        try { await require('./src/db').pool.end(); } catch (_) {}
+      });
+    `;
+    const d = await runChild(booted, BUDGET_MS);
+    ok(/SERVED status=\d+/.test(d.out),
+      `the child really booted the server and served a request (${(d.out.match(/SERVED status=-?\d+/) || ['no marker'])[0]})`
+      + (d.err ? ` — stderr: ${d.err.trim().slice(0, 200)}` : ''));
+    ok(!d.timedOut, `a child that boots the whole app and serves a request EXITS (took ${d.ms}ms, budget ${BUDGET_MS}ms)`);
+    ok(d.code === 0, `it exits cleanly (code ${d.code}${d.signal ? ', signal ' + d.signal : ''})`);
+
+    // ---- 5. THE BUDGET IS A REAL DEADLINE, NOT A FORMALITY ------------------
     // A `runChild` that never timed anything out would make both cases above
     // pass by construction. This proves the harness kills a child that genuinely
     // will not end, so "it exited" above is a fact about the pool and not about

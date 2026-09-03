@@ -258,9 +258,12 @@ router.use('/ppe', require('./routes/ppe'));
 // keeps the whole of Long-Term behind that one door. A second call from server.js
 // would be a second seam — exactly what the separation gate refuses.
 //
-// OFF by default (`LT_SYNC_ENABLED`), and it says so in the log either way. With
-// the switch off nothing is scheduled, so requiring this module — which a test or
-// a script may do — starts no timers and reads nothing.
+// ON by default since 2026-08-23 (`LT_SYNC_ENABLED=0` turns it off), and it says so
+// in the log either way — this said "OFF by default … starts no timers and reads
+// nothing", which `sync/worker.js` has contradicted since that date and which every
+// child of `test-lt-pool-exit-db` disproves out loud with its `[lt-sync] on` line.
+// The timers it arms are `unref`'d, so requiring this module still lets a test or a
+// script exit; what it does NOT do is stay silent.
 require('./sync/worker').start();
 
 /* `warmth.ready` resolves on the first CLEAN company read. Exported so a caller
