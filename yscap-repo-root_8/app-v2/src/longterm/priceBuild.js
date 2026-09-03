@@ -291,6 +291,33 @@ export function baseOf(priceBuild) {
   };
 }
 
+/**
+ * THE TERM, IN ONE UNIT, WHATEVER UNIT THE SHEET STATED IT IN.
+ *
+ * ⛔ THE SAME LOAN WAS READING TWO WAYS SIDE BY SIDE. Lender Price states a term in YEARS and the
+ * panel drew "30 years"; LoanNEX states it in MONTHS and the panel drew "360 months" — the same
+ * thirty-year loan, on two rows of one board, in numbers an officer has to convert in their head
+ * before they can compare them. Measured on the recorded answers of both vendors, not assumed.
+ *
+ * The parser already carries both halves for a sheet that states months (`termYears` beside
+ * `termMonths`), so nothing here is derived that the server did not already work out; this only
+ * decides which of them to SAY. Years win when the term is a whole number of them, because that is
+ * how these loans are spoken about — "a thirty-year fixed" — and it is what Lender Price rows have
+ * always shown. A term that is not a whole number of years keeps its months, because rounding
+ * "342 months" to "29 years" would be an invented fact rather than a tidier one.
+ */
+export function termText(terms) {
+  const t = terms || {};
+  const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+  const years = num(t.termYears);
+  if (years != null && years > 0 && Number.isInteger(years)) return `${years} years`;
+  const stated = num(t.term);
+  if (stated == null) return null;
+  // The sheet stated years already — say them, exactly as this row has always said them.
+  if (!t.termInMonths) return `${stated} years`;
+  return `${stated} months`;
+}
+
 /** What the two base rows should say about themselves, in the reader's own words. */
 export const BASE_NOTE = {
   price_from_points: {

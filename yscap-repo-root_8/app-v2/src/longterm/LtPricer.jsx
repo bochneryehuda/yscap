@@ -5,7 +5,7 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // The pure rules that decide what a fee/comp figure MEANS live in their own plain-JS module
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
-import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor, ambiguousProgramLabels, programLabelKey, programLine, baseOf, baseNote } from './priceBuild.js';
+import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor, ambiguousProgramLabels, programLabelKey, programLine, baseOf, baseNote, termText } from './priceBuild.js';
 // The compensation OVERLAY (owner-directed 2026-08-23) — display math on top of the numbers
 // Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
 // decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
@@ -1132,8 +1132,10 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
             which stays an em dash. */}
         <Track title="Terms">
           <Row k="Loan amount" v={money(o && o.terms && o.terms.loanAmount)} />
-          <Row k="Term" v={o && o.terms && nn(o.terms.term)
-            ? `${o.terms.term} ${o.terms.termInMonths ? 'months' : 'years'}` : '—'} />
+          {/* ONE UNIT FOR ONE LOAN — see `termText`. This row used to print the sheet's own unit,
+              so a thirty-year loan read "30 years" on a Lender Price row and "360 months" on the
+              LoanNEX row beside it. */}
+          <Row k="Term" v={termText(o && o.terms) || '—'} />
           {/* ⛔ AN UNSTATED INTEREST-ONLY FLAG IS AN EM DASH, NEVER "FULLY AMORTISING". `null` on this
               key means the rate sheet did not say, and printing the amortising answer turns a
               silence into a claim about the loan. Lender Price fills it with `!!leaf.isInterestOnly`

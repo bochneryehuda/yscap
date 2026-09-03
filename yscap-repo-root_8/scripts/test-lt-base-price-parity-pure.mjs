@@ -231,5 +231,69 @@ console.log('\n\u2500\u2500 D. WHEN BOTH HALVES ARE FILLED, THE SHEET\'S OWN ANS
     'BASE-33 …and a Lender Price build, which states no base price, gains no invented one');
 }
 
+console.log('\n\u2500\u2500 E. ONE LOAN, ONE UNIT \u2500\u2500');
+{
+  /* ⛔ THE SAME THIRTY-YEAR LOAN READ TWO WAYS ON ONE BOARD. Lender Price states a term in YEARS
+     and the Terms row drew "30 years"; LoanNEX states it in MONTHS and the row beside it drew
+     "360 months". Nothing was wrong with either number — an officer simply had to convert one of
+     them in their head before the two rows could be compared, on the panel whose whole job is to
+     put them side by side. Measured below on what the REAL builders emit, not on hand-typed
+     shapes, so a change to either vendor's terms builder is what fails this. */
+  const { termText } = await import('../app-v2/src/longterm/priceBuild.js');
+  const quoteShape = require('../src/longterm/pricing/quote-shape.js');
+
+  // The LoanNEX side, straight out of the board builder.
+  const nexRows = quoteShape.programsFromLoanNex({ programs: [{
+    lender: 'X', investor: 'X', program: 'P', product: '30 Yr Fixed',
+    termInMonths: 360, isInterestOnly: false, amortizationType: 'Fixed',
+    rungs: [{ rate: 7, price: 101.5, lockDays: 30, priceHashKey: 'h' }],
+  }] }, { investorKey: 'x', loanAmount: 375000 });
+  // `programsFromLoanNex` answers PROGRAMMES carrying options, the same shape a Lender Price
+  // programme has — the panel draws an OPTION, so that is what this reads.
+  const nexTerms = (((nexRows[0] || {}).options || [])[0] || {}).terms || {};
+  // The Lender Price side, straight out of the recorded live answer.
+  const cap = require('../scripts/fixtures/lt-pricer-live-capture.json');
+  const findOpt = (o, d = 0) => {
+    if (d > 6 || !o || typeof o !== 'object') return null;
+    if (Array.isArray(o)) { for (const x of o) { const r = findOpt(x, d + 1); if (r) return r; } return null; }
+    if (o.priceBuild && o.terms) return o;
+    for (const k of Object.keys(o)) { const r = findOpt(o[k], d + 1); if (r) return r; }
+    return null;
+  };
+  const lpTerms = (findOpt(cap) || {}).terms || {};
+
+  ok(nexTerms.termYears === 30 && nexTerms.termMonths === 360,
+    `E-1 the LoanNEX builder really does carry both halves of the term (${nexTerms.termYears}y / ${nexTerms.termMonths}m)`);
+  ok(lpTerms.term === 30 && lpTerms.termInMonths === false,
+    `E-2 …and the recorded Lender Price answer really does state its term in years (${lpTerms.term}, termInMonths=${lpTerms.termInMonths})`);
+  ok(termText(lpTerms) === '30 years',
+    `E-3 a Lender Price row reads "30 years" — unchanged, which is the row this had to match (got "${termText(lpTerms)}")`);
+  ok(termText(nexTerms) === '30 years',
+    `E-4 …and the LoanNEX row beside it now reads the same, not "360 months" (got "${termText(nexTerms)}")`);
+  ok(termText(lpTerms) === termText(nexTerms),
+    'E-5 …so one loan reads ONE way on one board, which is the whole of this section');
+
+  ok(termText({ term: 342, termInMonths: true, termMonths: 342, termYears: 28.5 }) === '342 months',
+    'E-6 a term that is NOT a whole number of years keeps its months — rounding it would invent a fact');
+  ok(termText({ term: 15, termInMonths: false }) === '15 years'
+    && termText({ term: 180, termInMonths: true, termMonths: 180, termYears: 15 }) === '15 years',
+    'E-7 the same holds on a fifteen-year loan, so this is a rule and not a fixture');
+  ok(termText({}) === null && termText(null) === null && termText(undefined) === null,
+    'E-8 no term stated is NULL, so the panel draws its em dash rather than a made-up one');
+  ok(termText({ term: 0, termInMonths: true, termYears: 0 }) === '0 months'
+    || termText({ term: 0, termInMonths: true, termYears: 0 }) === null,
+    'E-9 a zero term is never dressed up as "0 years"');
+
+  // SOURCE GUARD: no unit test can see whether the PANEL calls this.
+  const fs2 = require('fs');
+  const path2 = require('path');
+  const ROOT2 = path2.join(path2.dirname(new URL(import.meta.url).pathname), '..');
+  const jsx = fs2.readFileSync(path2.join(ROOT2, 'app-v2/src/longterm/LtPricer.jsx'), 'utf8');
+  ok(/<Row k="Term" v=\{termText\(/.test(jsx),
+    'E-10 the Terms row draws the shared formatter, not its own unit');
+  ok(!/termInMonths \? 'months' : 'years'/.test(jsx),
+    'E-11 …and the old per-vendor unit is gone from the panel entirely');
+}
+
 console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);
 process.exit(fail ? 1 : 0);
