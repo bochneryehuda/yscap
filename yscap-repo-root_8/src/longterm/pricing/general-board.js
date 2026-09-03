@@ -195,7 +195,25 @@ async function boardForScenario(sc, deps, opts = {}) {
   const lpAnswer = lpRes.value;
   const lpParsed = lp.parseFull(lpAnswer.raw, { raw: !!opts.raw });
   const deco = investorPrograms.decorate(lpParsed.programs);
-  const lpBoard = { source: 'lenderprice', programs: deco.programs };
+  /* ⛔ AN INVESTOR'S OWN HOLDBACK APPLIES ON THIS SHEET TOO (owner-reported 2026-09-03).
+     The LoanNEX half went through `vendorMargin.applyToBoard` and the Lender Price half went
+     through nothing at all — so a per-investor holdback set in the settings was silently
+     ignored on every Lender Price row of this board, while the COMBINED engine had been
+     applying it to both sheets all along (`combined-pricer.js`, its lenderprice and loannex
+     calls). One setting doing two different things on two screens is the split this engine
+     keeps being caught by.
+
+     ⛔ AND IT CANNOT TAKE OUR MARGIN TWICE. Lender Price's own base is ZERO BY DESIGN —
+     "Lender Price's feed ALREADY carries our holdback, so a second GLOBAL one here would take
+     it twice", which is a fact about the feed and is why no global holdback is offered for it.
+     `resolveHoldback` therefore adds nothing here unless an investor carries an EXTRA of its
+     own, which is a different decision and does apply. `applyToBoard` also refuses a board it
+     has already stamped, so passing one through twice cannot double it either. */
+  const lpBoard = vendorMargin.applyToBoard(
+    { source: 'lenderprice', programs: deco.programs },
+    'lenderprice',
+    { extraFor: opts.extraFor },
+  );
 
   /* ── The LoanNEX half, shaped by the SAME code the combined engine uses ─────
      ⛔ ALL FOUR DIMENSIONS, NOT ONLY THE ARM ONE (owner-reported 2026-09-03: *"LoanNEX was

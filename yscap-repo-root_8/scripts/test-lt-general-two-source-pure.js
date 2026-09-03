@@ -540,6 +540,73 @@ const byInvestor = (programs) => {
       'PAIR-8 …and the pricer remembers it, which is how the SETTINGS screen gets a board to link from');
   }
 
+  /* ═════════════════════════════════════════════════════════════════════════
+     HOLD · AN INVESTOR'S OWN HOLDBACK APPLIES ON BOTH SHEETS.
+
+     Owner-reported 2026-09-03. The LoanNEX half went through
+     `vendorMargin.applyToBoard` and the Lender Price half went through nothing at
+     all, so a per-investor holdback set in the settings was silently ignored on
+     every Lender Price row of this board — while the COMBINED engine had been
+     applying it to both sheets all along. One setting doing two different things
+     on two screens is the split this engine keeps being caught by.
+     ═════════════════════════════════════════════════════════════════════════ */
+  {
+    const lpOnly = { price: async () => ({ ok: true, raw: LP_RAW, searchKey: 'k1', request: {}, provenance: null }), parseFull: lpModel.parseFull };
+    const nexNone = { price: async () => ({ board: null }) };
+    const priceOf = (b) => {
+      const o = ((b.programs || [])[0] || {}).options || [];
+      return o[0] ? o[0].priceBuild.price : null;
+    };
+    const plain = await gb.boardForScenario(SC, { lp: lpOnly, nex: nexNone, investorPrograms },
+      { wantLoanNex: false, extraFor: null });
+    const held = await gb.boardForScenario(SC, { lp: lpOnly, nex: nexNone, investorPrograms },
+      { wantLoanNex: false, extraFor: () => 0.5 });
+    ok(priceOf(plain) != null, `HOLD-0 CONTROL: a Lender Price row carries a price to move (${priceOf(plain)})`);
+    ok(priceOf(held) === priceOf(plain) - 0.5,
+      `HOLD-1 a 0.5 holdback for this investor moves its Lender Price price by exactly 0.5 (${priceOf(plain)} → ${priceOf(held)})`);
+
+    /* ⛔ AND IT CANNOT TAKE OUR MARGIN TWICE. Lender Price's own base is ZERO BY DESIGN —
+       its feed already carries our holdback — so a board with no per-investor extra must
+       be byte-identical to one built without this call at all. */
+    ok(priceOf(plain) === 99,
+      `HOLD-2 with no holdback set the price is untouched (${priceOf(plain)}) — the feed's own margin is never taken twice`);
+    /* ⛔ HOLD-3 WAS A TAUTOLOGY AND IS RE-POINTED. It applied the holdback twice and
+       asserted the price had not moved, claiming to prove the module's "already done is
+       done" guard. It does not: removing that guard leaves the price EXACTLY the same
+       (measured), because the option price is anchored on the vendor's own `vendorPrice`
+       and is idempotent by construction — a different mechanism entirely. An assertion
+       that cannot fail for the reason it names proves nothing.
+
+       So the two real properties are asserted instead: the ANCHOR that makes a second
+       pass harmless, and the "called once per board per vendor" invariant the module's
+       own header depends on — which is exactly what adding a second `applyToBoard` call
+       to this builder could have broken. */
+    const vm = require(path.join(ROOT, 'src/longterm/pricing/vendor-margin.js'));
+    const b1 = vm.applyToBoard({ source: 'lenderprice', programs: [{ lender: 'X', options: [{ priceBuild: { price: 99 } }] }] },
+      'lenderprice', { extraFor: () => 0.5 });
+    ok(b1.programs[0].options[0].priceBuild.vendorPrice === 99,
+      'HOLD-3 the option keeps the vendor\'s OWN price as its anchor — which is what makes the shift idempotent');
+    const b2 = vm.applyToBoard({ ...b1, marginHoldback: undefined }, 'lenderprice', { extraFor: () => 0.5 });
+    ok(b2.programs[0].options[0].priceBuild.price === b1.programs[0].options[0].priceBuild.price,
+      'HOLD-3a …so even with the already-done guard bypassed, the price cannot be held back twice');
+    /* The module states plainly that the LADDER's own points have NO anchor and would drift,
+       and that this is safe only because the door is called once per board per vendor. This
+       change added a call, so that count is now pinned rather than assumed. */
+    const gbCalls = (require('fs').readFileSync(path.join(ROOT, 'src/longterm/pricing/general-board.js'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+      .match(/vendorMargin\.applyToBoard\(/g) || []).length;
+    ok(gbCalls === 2,
+      `HOLD-3b the board applies the holdback exactly ONCE per sheet — two calls, two boards (${gbCalls})`);
+
+    /* THE BOARD MUST ACTUALLY GO THROUGH THAT DOOR — a rule the builder does not call
+       is a rule nobody is following, which is exactly what this defect was. */
+    const gbSrc = require('fs').readFileSync(path.join(ROOT, 'src/longterm/pricing/general-board.js'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    ok(/vendorMargin\.applyToBoard\(\s*\{ source: 'lenderprice'/.test(gbSrc)
+      || /applyToBoard\([\s\S]{0,120}'lenderprice'/.test(gbSrc),
+      'HOLD-4 the Lender Price half is built through the shared holdback door, same as the LoanNEX half');
+  }
+
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('THREW', (e && e.stack) || e); process.exit(1); });
