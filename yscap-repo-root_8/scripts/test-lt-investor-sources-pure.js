@@ -42,7 +42,7 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 /* Every "must not appear" check reads the COMMENT-STRIPPED source: the code that explains why a
    rule exists necessarily names the thing it forbids, and a guard that read comments would fail on
    its own explanation and then get "fixed" by deleting the explanation. */
-const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+const { stripComments: strip } = require(path.join(ROOT, 'scripts/lib/strip-comments'));
 
 const T1 = '2026-09-03T10:00:00.000Z';
 const T2 = '2026-09-03T12:00:00.000Z';

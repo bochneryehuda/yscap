@@ -670,8 +670,10 @@ const byInvestor = (programs) => {
       const start = all.indexOf('async function boardForScenario');
       const after = all.slice(start + 1);
       const nextDecl = after.search(/\n(?:async )?function [A-Za-z_]|\nmodule\.exports/);
-      const body = (nextDecl === -1 ? after : after.slice(0, nextDecl))
-        .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      /* Through the SHARED stripper — the two-regex idiom is a skeleton key that can
+         swallow a whole file and make a "must not appear" rule pass over nothing. */
+      const { stripComments } = require(path.join(ROOT, 'scripts/lib/strip-comments'));
+      const body = stripComments(nextDecl === -1 ? after : after.slice(0, nextDecl));
       const readKeys = Array.from(new Set((body.match(/opts\.[A-Za-z_]+/g) || [])
         .map((m) => m.slice(5)))).sort();
       const PER_CALL = ['debug', 'raw', 'staticRequest'];

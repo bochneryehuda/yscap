@@ -714,7 +714,12 @@ async function main() {
 
     /* ONE DOOR, both places this file settles a ratio. A bare round in `sendRatioFor`
        would let the two answer differently the day either side gains a third decimal. */
-    const strippedBb = bbSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    /* Through the SHARED stripper. The two-regex idiom this file used elsewhere is a
+       SKELETON KEY: it strips block comments first, so it cannot tell a `/*` inside a line
+       comment or a string from a real one, and a "must not appear" rule PASSES over a file
+       it swallowed (main, 2026-09-03). */
+    const { stripComments } = require('./lib/strip-comments');
+    const strippedBb = stripComments(bbSrc);
     ok(/tierRounding\.sendAs\('dscr'/.test(strippedBb) && !/Math\.round\(best \* 100\)/.test(strippedBb),
       'N8 both places go through the one rounding door — no bare round-to-nearest is left in the board');
     ok(!/computeDscr/.test(strippedBb),
