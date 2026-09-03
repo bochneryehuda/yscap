@@ -766,3 +766,93 @@ number in the request, so the test replaces `global.fetch` and reads it.
 
 **What this does not change.** `vendor_returned_no_evidence` stays a real answer with a real message
 — a sheet genuinely can have nothing for a quote. It should now be rare rather than routine.
+
+---
+
+## Update, 2026-09-03 (second pass) — the one-definition drifts the audit left open
+
+Four rules were each written out in more than one place, and in three of the four the
+copies had already drifted. None was a live defect; all four were a live *hazard*, which
+is the thing this file exists to record rather than to leave in a task list.
+
+### `points = 100 − price` — TWELVE copies, four roundings
+
+`pricing/price-points.js` is the one definition now. The copies did not merely duplicate
+the rule, they answered differently:
+
+| where | `null` in | non-finite in |
+|---|---|---|
+| `loannex/parse.js` `round3` | `null` | `NaN` |
+| `pricing/breakdown.js` `round3` | `null` | `null` |
+| `pricing/quote-shape.js` `round3` | `null` | `null` |
+| `pricing/vendor-margin.js` `r3` | `NaN` | `NaN` |
+| `lenderprice/client.js` (inline) | — | no guard at all |
+
+`NaN` is the worse answer at every one of those sites: it survives `!= null`, prints as
+"NaN" on a rate board, and loses every numeric comparison in silence rather than reading
+as *the sheet did not state this*. A blank was worse still — `Number('')` is `0`, so an
+empty price read as a confident **100 points**.
+
+**Proven neutral on every real number** — the four old spellings and the new module over
+every thousandth from 90 to 110, 60,024 comparisons, nothing moved. A figure already at
+the published precision round-trips to itself; one carrying a fourth decimal cannot, by
+arithmetic, which is exactly why `priceExact` (above) must never go through it.
+
+**The sweep is the deliverable, not the module.** `test-lt-price-points-pure` section D
+walks the whole Long-Term server tree for a re-inlined identity — and found the two
+`lenderprice/client.js` sites, which the audit that raised this drift had never counted.
+
+**And a surviving mutation found a real gap.** `vendor-margin`'s header has always said a
+holdback SHIFTS the points rather than re-deriving them from the rounded price, and
+nothing enforced it: swapping the shift for a recompute passed every suite in the repo.
+Measured over 1,200,006 combinations, the two land a thousandth apart on **53,631 of them
+(4.47%)** — so the rule is load-bearing, not stylistic. Section F pins it on three vendor
+prices that genuinely diverge, and asserts each one diverges so it cannot pass for free.
+
+### What we call a rate sheet — SEVEN copies, one of them wrong
+
+`merge.js` answered `src === 'loannex' ? 'LoanNEX' : 'Lender Price'`, so any source that
+is not LoanNEX was called **Lender Price** — a vendor's name over a price that vendor
+never quoted. `pricing/sources.js` + `app-v2/src/longterm/sourceLabel.js` are the one
+definition and its browser mirror; an unknown source is **named, never guessed**.
+
+`both` deliberately stays out of the shared map: it is a SETTING a person picks, never a
+sheet that answered.
+
+### Why there is no breakdown — seven reasons on the server, four in the browser
+
+The browser's fallback was missing exactly the two that describe a sheet which answered
+badly — `vendor_returned_no_evidence` and `unrecognised_answer_shape` — so both fell
+through to the generic *"no breakdown could be read"*, losing the one fact the reader
+opened the panel for. That first one is the sentence the owner reported twice this week.
+
+Both vocabularies are mirrored and held together by `test-lt-source-vocabulary-pure`,
+which fails the moment they disagree, the server grows a reason the browser cannot word,
+or anybody re-inlines the label ternary.
+
+### The program name — a door with a lock on one leaf
+
+`termsheet/snapshot.resolveProgramName` refused a TYPED name that names an investor
+(rule 10) and accepted the **registry** name one line above with no check at all — but
+`sel` is the client's own post, and nothing at that door can tell a label the server
+resolved from a string a caller typed into that field. The registry's own labels are safe
+by construction (`investor-roster.whiteLabelProblem` runs the same scrub on both the write
+door and the read), which is exactly what makes the check safe to add: it is a no-op on
+every real white label and bites only on a forged one. All 129 recorded investor spellings
+are now refused through both leaves; 324 plausible white labels still pass.
+
+### The units rule — pinned as a literal, claimed as a mirror
+
+The browser SHAPES the units control and `search-model.validateInputs` REFUSES a
+contradiction. The guard pinned the browser's numbers as literals and only a comment
+claimed they matched, so the day the server's rule moved the control would have offered a
+number the server refuses — a dead end nobody can get out of. `test-lt-pricer-fields`
+now runs the **server's own validator** over what the control can produce, in both
+directions, plus a check that the server still refuses a conflict at all (without it both
+halves pass vacuously).
+
+**Still open, deliberately:** the FOUR `SOURCES` arrays — in `investor-links`,
+`investor-settings`, `investor-sightings` and `merge` — are NOT consolidated. They have
+different memberships on purpose — `investor-settings` carries `both`, which is a setting
+rather than a sheet — so folding them together would be a behaviour change dressed as a
+tidy-up. The LABEL was the drift; the lists are four different questions.
