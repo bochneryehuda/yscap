@@ -191,7 +191,22 @@ function normaliseLinks(raw) {
   return out;
 }
 
-export default function LtInvestorLinks({ pairing = null, onChanged = null, onAddInvestor = null }) {
+/**
+ * ⛔ THE DOORS ARE A PROP, AND THE DEFAULT IS THE COMBINED ENGINE'S — so every existing caller is
+ * byte-for-byte what it was. The General Pricing Engine's settings mount this SAME component
+ * pointed at its own path (owner-directed 2026-09-03: *"full linking"* in the general engine's
+ * settings). The two paths reach ONE definition of the doors on the server
+ * (`routes/investor-settings-routes.js`), so a link recorded on either screen is the one link both
+ * boards read — a second copy of this block is how one screen comes to show a link the other does
+ * not honour.
+ */
+const DEFAULT_LINK_API = {
+  get: (...a) => ltApi.combinedInvestorLinks(...a),
+  save: (...a) => ltApi.combinedSaveInvestorLinks(...a),
+  suggest: (...a) => ltApi.combinedLinkSuggest(...a),
+};
+
+export default function LtInvestorLinks({ pairing = null, onChanged = null, onAddInvestor = null, api = DEFAULT_LINK_API }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [saved, setSaved] = useState(null);
@@ -206,7 +221,7 @@ export default function LtInvestorLinks({ pairing = null, onChanged = null, onAd
 
   const load = useCallback(() => {
     setErr(null);
-    ltApi.combinedInvestorLinks()
+    api.get()
       .then((r) => { setData(r); setDraft(normaliseLinks(r.links)); })
       .catch((e) => setErr((e && e.message) || 'The links could not be read.'));
   }, []);
@@ -256,7 +271,7 @@ export default function LtInvestorLinks({ pairing = null, onChanged = null, onAd
     if (!dirty) { setNote('Nothing has changed since this was last saved, so there is nothing to send.'); return; }
     setBusy(true); setErr(null); setSaved(null); setNote(null);
     try {
-      const out = await ltApi.combinedSaveInvestorLinks(links);
+      const out = await api.save(links);
       setData((d) => ({ ...(d || {}), links: out.links || {} }));
       setDraft(normaliseLinks(out.links));
       setSaved(`Saved. ${out.saved} spelling${out.saved === 1 ? '' : 's'} linked.`);
@@ -264,7 +279,7 @@ export default function LtInvestorLinks({ pairing = null, onChanged = null, onAd
     } catch (e) {
       // A refusal NAMES each row, so the person fixes the one that is wrong
       // rather than being told the form is bad. Nothing was stored.
-      const problems = e && e.body && Array.isArray(e.body.problems) ? e.body.problems : null;
+      const problems = e && e.data && Array.isArray(e.data.problems) ? e.data.problems : null;
       setErr(problems
         ? `Not saved — nothing was stored. ${problems.map((p) => p.message || p.problem).join(' · ')}`
         : (e && e.message) || 'The links could not be saved.');
@@ -276,7 +291,7 @@ export default function LtInvestorLinks({ pairing = null, onChanged = null, onAd
     const n = String(name || '').trim();
     if (!n) return;
     try {
-      const r = await ltApi.combinedLinkSuggest(n);
+      const r = await api.suggest(n);
       setTypedSuggestions(r.suggestions || []);
     } catch { setTypedSuggestions([]); }
   }

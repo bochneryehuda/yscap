@@ -26,12 +26,14 @@ const settingsStore = require('../settings/store');
 const routing = require('./investor-routing');
 const investorLinks = require('./investor-links');
 const rosterContext = require('./roster-context');
+const sightings = require('./investor-sightings');
 
 /** The stored keys, named once. */
 const KEYS = {
   investors: 'pricing.combinedInvestors',
   marginHoldback: 'pricing.combinedMarginHoldback',
   links: investorLinks.SETTING_KEY,
+  sightings: sightings.SETTING_KEY,
 };
 
 const reasonOf = (e) => String((e && e.message) || e || 'unknown').slice(0, 200);
@@ -70,4 +72,50 @@ async function customRaw() {
   return rosterContext.loadCustom();
 }
 
-module.exports = { KEYS, investorsRaw, holdbackRaw, linksRaw, customRaw, _internals: { reasonOf } };
+/** Which rate sheet has produced which investor — the measured "available on" register. */
+async function sightingsRaw() {
+  try {
+    const stored = await settingsStore.get(KEYS.sightings, 'company');
+    return { ...sightings.read(stored), problem: null };
+  } catch (e) {
+    return { ...sightings.read(null), problem: reasonOf(e) };
+  }
+}
+
+/**
+ * RECORD WHAT A BOARD ACTUALLY RETURNED — the ONE writer of the sightings register.
+ *
+ * ⛔ THE ONLY WRITE IN A MODULE OF READS, AND IT IS DELIBERATE. The keys live here (see
+ * the header), and a second module writing `pricing.investorSightings` would be a second
+ * place that string can drift from the readers. So the write stays beside its key.
+ *
+ * ⛔ IT MAY NEVER COST A BOARD. A search has already happened by the time this runs; a
+ * settings store that is briefly unwritable must cost the "available on" column and
+ * nothing else, so every failure is swallowed and reported in the return value. It also
+ * refuses a source that did not ANSWER — a vendor outage is no evidence about any
+ * investor, and recording one would lock out every investor that sheet normally carries.
+ */
+async function recordSightings(observed, opts = {}) {
+  const at = opts.at || new Date().toISOString();
+  try {
+    const stored = await settingsStore.get(KEYS.sightings, 'company');
+    let next = stored;
+    for (const source of sightings.SOURCES) {
+      const o = observed && observed[source];
+      if (!o || o.answered === false) continue;
+      next = sightings.record(next, { source, keys: o.keys || [], at, answered: true });
+    }
+    if (next === stored) return { ok: true, wrote: false };
+    await settingsStore.save({ [KEYS.sightings]: next }, {
+      scope: 'company', staffId: opts.staffId || null,
+    });
+    return { ok: true, wrote: true };
+  } catch (e) {
+    return { ok: false, wrote: false, problem: reasonOf(e) };
+  }
+}
+
+module.exports = {
+  KEYS, investorsRaw, holdbackRaw, linksRaw, customRaw, sightingsRaw, recordSightings,
+  _internals: { reasonOf },
+};

@@ -193,8 +193,33 @@ async function boardForScenario(sc, deps, opts = {}) {
      would bury the one thing worth knowing. `sources.loannex` carries that case. */
   const missing = nxOk ? expected.filter((k) => !present.has(k)) : [];
 
+  /* ── WHICH SHEET ACTUALLY PRODUCED WHOM ────────────────────────────────────
+     Owner-directed 2026-09-03: the side-by-side list shows *"which systems that
+     investor is available on"*, and *"If you see a new investor populating in any
+     of the systems, just add that to the list."*
+
+     Read off the MERGE, before the routing, because that is the only place both
+     halves still exist side by side — `presentIn` is the merge's own answer to
+     "which sheets carried this investor", resolved through the same registry, the
+     same links and the same hand-added roster the board is built with. Counting it
+     again here would be a second answer to a question already settled.
+
+     ⛔ REPORTED, NOT WRITTEN. This module touches no database (see the header), so
+     it hands the observation out and the route records it. And it says whether each
+     sheet ANSWERED at all: a sheet that refused is no evidence about any investor,
+     and treating an outage as "these investors are not on LoanNEX" would lock out
+     the five the owner switched over. */
+  const sightedOn = (src) => (mergedRaw.investors || [])
+    .filter((x) => x && Array.isArray(x.presentIn) && x.presentIn.includes(src))
+    .map((x) => x.key);
+  const sightings = {
+    lenderprice: { answered: true, keys: sightedOn('lenderprice') },
+    loannex: { answered: !!nxOk, keys: nxOk ? sightedOn('loannex') : [] },
+  };
+
   return {
     ok: true,
+    sightings,
     parsed: Object.assign({}, lpParsed, { programs }),
     programs,
     missing,

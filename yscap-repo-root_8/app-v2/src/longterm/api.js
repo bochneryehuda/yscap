@@ -281,6 +281,32 @@ export const ltApi = {
   combinedSaveCustomInvestors: (investors) => ltPut(lt('/dscr/combined/custom-investors'), { investors }),
   // Is each program configured? No login attempted, no vendor reached.
   combinedHealth: () => ltGet(lt('/dscr/combined/health')),
+
+  /**
+   * THE GENERAL PRICING ENGINE'S OWN INVESTOR SOURCES — the side-by-side list that lives
+   * in the general engine's SETTINGS (owner-directed 2026-09-03).
+   *
+   * ⛔ A DIFFERENT PATH, THE SAME DOORS. The server mounts ONE definition of these four
+   * settings on both engines (`routes/investor-settings-routes.js`), so a save made here
+   * and a save made on the combined engine's screen are byte-for-byte the same operation.
+   * The paths differ only so switching the combined engine off cannot take the general
+   * engine's settings screen down with it.
+   *
+   * Every one of these is a free read or write of OUR OWN server — no rate sheet is asked
+   * anything — so a screen may fetch them from an effect.
+   */
+  sourceInvestors: () => ltGet(lt('/dscr/investor-sources/investors')),
+  // The WHOLE map, always — a per-key patch could not express "take this setting back off
+  // and let the investor answer to the pre-fill again", which is the one thing somebody
+  // auditing this does most often.
+  sourceSaveInvestors: (investors) => ltPut(lt('/dscr/investor-sources/investors'), { investors }),
+  sourceMarginHoldback: () => ltGet(lt('/dscr/investor-sources/margin-holdback')),
+  sourceSaveMarginHoldback: (points) => ltPut(lt('/dscr/investor-sources/margin-holdback'), { points }),
+  sourceInvestorLinks: () => ltGet(lt('/dscr/investor-sources/investor-links')),
+  sourceSaveInvestorLinks: (links) => ltPut(lt('/dscr/investor-sources/investor-links'), { links }),
+  sourceLinkSuggest: (name) => ltGet(lt(`/dscr/investor-sources/investor-links/suggest?name=${encodeURIComponent(name)}`)),
+  sourceCustomInvestors: () => ltGet(lt('/dscr/investor-sources/custom-investors')),
+  sourceSaveCustomInvestors: (investors) => ltPut(lt('/dscr/investor-sources/custom-investors'), { investors }),
   // THE SIGNED-IN PERSON'S OWN SAVED SCENARIOS (owner-directed 2026-08-31). A
   // scenario is INPUTS — never a price — so none of these calls asks Lender Price
   // anything: re-running a saved scenario goes back through `dscrPrice` like any

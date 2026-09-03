@@ -214,7 +214,7 @@ export default function LtCombinedSettings() {
       // roster, so an investor added here has to reach them without a reload.
       load();
     } catch (e) {
-      const problems = e && e.body && Array.isArray(e.body.problems) ? e.body.problems : null;
+      const problems = e && e.data && Array.isArray(e.data.problems) ? e.data.problems : null;
       setCiErr(problems
         ? `Not saved — nothing was stored. ${problems.map((x) => x.message || x.problem).join(' · ')}`
         : (e && e.message) || 'That could not be saved.');
@@ -305,7 +305,7 @@ export default function LtCombinedSettings() {
     } catch (e) {
       // A refusal names the rows it refused, so the person can fix the one that
       // is wrong rather than being told the form is bad.
-      const problems = e && e.body && Array.isArray(e.body.problems) ? e.body.problems : null;
+      const problems = e && e.data && Array.isArray(e.data.problems) ? e.data.problems : null;
       setErr(problems
         ? `Not saved. ${problems.map((p) => `${p.investor || 'a row'}: ${p.message || p.error}`).join(' · ')}`
         : (e && e.message) || 'The settings could not be saved.');

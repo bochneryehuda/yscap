@@ -19,6 +19,7 @@ const lp = require('../lenderprice/client');
 // the screen, and the search always asks for everything.
 const investorPrograms = require('../lenderprice/investor-programs');
 const generalBoard = require('../pricing/general-board');
+const investorConfig = require('../pricing/investor-config');
 /* THE SECOND RATE SHEET. Required here so the bracket loop can hand both clients to
    `generalBoard`; it is never called unless an investor is routed to it, and a portal
    with no credentials simply refuses, which leaves the board Lender Price's alone —
@@ -341,6 +342,16 @@ async function priceBrackets(req, res) {
     routes: body.routes, links: body.links, marginHoldback: body.marginHoldback,
   });
 
+  /* WHAT EACH SHEET ACTUALLY PRODUCED, ACROSS THE WHOLE SEARCH. One search asks the sheets
+     once per DSCR band, and an investor that answers in one band and not another is still an
+     investor that sheet CARRIES — so the bands are unioned and the register is written ONCE at
+     the end. Writing per band would spend a settings round trip per band and, worse, would
+     record a narrow band's silence as evidence about the sheet. */
+  const sighted = {
+    lenderprice: { answered: false, keys: new Set() },
+    loannex: { answered: false, keys: new Set() },
+  };
+
   const runSearch = async (dscr) => {
     // A null ratio is the officer's own scenario, untouched — the probe.
     const one = dscr == null ? sc : Object.assign({}, sc, { dscr });
@@ -350,6 +361,12 @@ async function priceBrackets(req, res) {
     const r = await generalBoard.boardForScenario(one, { lp, nex, investorPrograms }, cfg);
     if (!r.ok) return { ok: false, error: r.error || 'lp_price_failed', message: r.message || null, http: r.http || null };
     if (firstRequest == null) { firstRequest = r.request; provenance = r.provenance || null; }
+    for (const src of ['lenderprice', 'loannex']) {
+      const o = r.sightings && r.sightings[src];
+      if (!o || !o.answered) continue;
+      sighted[src].answered = true;
+      for (const k of o.keys || []) sighted[src].keys.add(k);
+    }
     /* ⛔ THE FULL PARSE, NOT THE SUMMARY — done inside `boardForScenario`, which returns
        the same `parseFull` answer with only its programme list replaced. A band has to
        render with the SAME code the whole board renders with (the owner: *"Every rate and
@@ -385,6 +402,17 @@ async function priceBrackets(req, res) {
        than the band's floor). Optional by design: the loop works without them. */
     seenQuotes: Array.isArray(body.seenQuotes) ? body.seenQuotes : [],
   });
+  /* ⛔ RECORD WHAT THE SHEETS PRODUCED — ONCE, AFTER THE SEARCH, AND NEVER AT ITS COST.
+     Owner-directed 2026-09-03: the side-by-side list shows *"which systems that investor is
+     available on"*, and *"If you see a new investor populating in any of the systems, just add
+     that to the list."* This is the only place that register is written from a general-engine
+     search; `recordSightings` swallows its own failures, so a settings store that is briefly
+     unwritable costs a column on a settings screen and never a board. */
+  await investorConfig.recordSightings({
+    lenderprice: { answered: sighted.lenderprice.answered, keys: [...sighted.lenderprice.keys] },
+    loannex: { answered: sighted.loannex.answered, keys: [...sighted.loannex.keys] },
+  }, { staffId: (req.actor && req.actor.id) || null });
+
   if (!out.ok) {
     // A refusal here is about the DEAL (not enough figures to bracket by) or the
     // vendor (the first search did not answer). Those need different actions, so
