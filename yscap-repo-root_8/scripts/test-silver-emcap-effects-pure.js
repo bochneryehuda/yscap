@@ -91,4 +91,11 @@ ok(snap.notes.some((n) => /2 months of bank statements/.test(n)), 'AUS snapshot 
 const snapStd = programGuidelineSnapshot('standard', { noteBuyer: 'EMCAP Financial' });
 eq(snapStd.bankStatementMonths, 2, 'AUS snapshot: a Standard file with the EMCAP buyer reads 2 months');
 
+// ── the Speed Program (2026-09-03) — its own name, two months, never a buyer, never a parent ──
+const speedLine = bankStatementLine('speed', null, 'EMCAP Financial');
+ok(/the Speed Program requires two months/.test(speedLine), 'Speed line names the Speed Program and two months');
+ok(!/emcap|fidelis/i.test(speedLine), 'Speed wording never names either buyer it may be sold to');
+ok(!/Silver Program|Standard Program/.test(speedLine), 'and never a parent\'s name — the borrower sees the program they were quoted');
+eq(bankStatementMonths('speed'), 2, 'Speed = 2 months (both parents are 2)');
+
 console.log(`test-silver-emcap-effects-pure: OK (${passed} assertions)`);

@@ -24,8 +24,9 @@ const OWNERSHIP_PRONG_PCT = 25;   // FinCEN CDD default / fallback: identify eve
 
 // The beneficial-owner verification threshold + treatment is PROGRAM-DEPENDENT (owner-directed
 // 2026-07-21): the tighter the program, the LOWER the ownership % that must be verified and brought
-// onto the file. Standard >=15%, Manual >=20%, Gold >=25%. Absent a registered program, fall back to
-// the FinCEN CDD 25% baseline (never guess a stricter threshold than we can justify).
+// onto the file. Standard >=15%, Manual >=20%, Gold >=25%, Silver >=25%, Speed = the stricter of
+// Standard and Silver (derived below). Absent a registered program, fall back to the FinCEN CDD 25%
+// baseline (never guess a stricter threshold than we can justify).
 const PROGRAM_OWNER_RULES = {
   standard: { pct: 15, label: 'Standard', treatment: 'verified and added to the file as a co-borrower' },
   manual:   { pct: 20, label: 'Manual', treatment: 'brought onto the file as a co-borrower, guarantor, and signer, with a government ID' },
@@ -34,6 +35,16 @@ const PROGRAM_OWNER_RULES = {
   // entity ownership at 25% or more (operating agreements / entity docs).
   silver:   { pct: 25, label: 'Silver', treatment: 'verified through entity documentation (operating agreement / entity docs) and added to the file' },
 };
+// THE SPEED PROGRAM (owner-directed 2026-09-03) is the STRICTER of Standard and Silver on every
+// axis, and that includes this one: its threshold is the LOWER of its two parents' percentages,
+// with that parent's treatment — DERIVED at load, never a fifth hand-typed number, so a change
+// to either parent's row moves Speed with it (the same "no second copy" rule the caps follow in
+// underwriting/metrics.js).
+PROGRAM_OWNER_RULES.speed = (() => {
+  const donor = [PROGRAM_OWNER_RULES.standard, PROGRAM_OWNER_RULES.silver]
+    .reduce((a, b) => (b.pct < a.pct ? b : a));
+  return { pct: donor.pct, label: 'Speed', treatment: donor.treatment };
+})();
 function ownerRuleFor(program) {
   const p = String(program || '').toLowerCase().trim();
   return PROGRAM_OWNER_RULES[p] ||

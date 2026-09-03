@@ -161,19 +161,22 @@ const FIELDS = {
     fromExtra: { 'starting': 'file_intake', 'started': 'file_intake' },
   },
   // Registered product -> ClickUp "RTL Loan Program" field (Standard / Gold /
-  // Silver / Manual). Portal-authoritative, one-way (§7.1/7.5).
+  // Silver / Speed / Manual). Portal-authoritative, one-way (§7.1/7.5).
   registered_program: {
     id: 'aae034e4-633c-40db-85b4-7d8cfe33501b',
-    to: { standard: 'The Standard program', gold: 'The Gold program', silver: 'The Silver program', manual: 'The Manual program', none: null },
+    to: { standard: 'The Standard program', gold: 'The Gold program', silver: 'The Silver program', speed: 'The Speed program', manual: 'The Manual program', none: null },
     // ALTERNATE spellings tried when the primary label isn't in the live dropdown.
     // The Silver + Manual options are created BY HAND in ClickUp (owner-directed
     // 2026-07-29: "I'm adding the click up label for the silver program … I added
     // in click up the manual program"), so the exact wording may differ from ours
     // ("Silver Program" vs "The Silver program"). CLOSED per-value lists consumed
     // by resolveWriteId — never a fuzzy match; an unmatched label still no-ops
-    // safely (we never invent ClickUp dropdown options).
+    // safely (we never invent ClickUp dropdown options). The Speed option
+    // (2026-09-03) is likewise added BY HAND in ClickUp — until it exists there the
+    // write no-ops, exactly as Silver's did before the owner added its label.
     toAlt: {
       silver: ['Silver program', 'Silver'],
+      speed: ['Speed program', 'Speed'],
       manual: ['Manual program', 'Manual'],
       standard: ['Standard program'],
       gold: ['Gold program', 'Gold Standard program'],

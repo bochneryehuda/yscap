@@ -1138,7 +1138,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         code: 'econ_version_conflict',
       }, 'econ_version_conflict', { sent: String(b.econVersion).slice(0, 32) });
     }
-    const program = b.program === 'gold' ? 'gold' : b.program === 'silver' ? 'silver' : 'standard';
+    // ONE normalizer for every door (manual-program.requestedProgramKey) —
+    // standard / gold / silver / speed; anything else is Standard.
+    const program = manualProgram.requestedProgramKey(b.program);
     const overrides = borrowerPricingOverrides(b.overrides || {});
     // A REGISTERED product is authoritative terms. A BORROWER never injects the
     // claimed-experience counts on register — they must not beat the verified
@@ -1207,7 +1209,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         field: 'asIsValue' });
     }
     // Term-sheet options (owner-directed 2026-07-22) — display/record only. A
-    // borrower self-registers Standard/Gold/Silver only (never manual), so
+    // borrower self-registers Standard/Gold/Silver/Speed only (never manual), so
     // min-interest defaults OFF here unless explicitly set.
     const rawTermOptions = (b.termOptions && typeof b.termOptions === 'object') ? b.termOptions : {};
     // Effective closing date = studio's, else the file's existing — so a re-register

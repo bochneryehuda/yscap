@@ -470,7 +470,10 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
             -- THE REGISTERED PROGRAM CHOOSES THE NOTE BUYER (owner-directed
             -- 2026-08-06: "Fidelis for the standard, Blue Lake for the gold,
             -- EMCAP for the silver … whenever it's a manual program you leave it
-            -- untouched"). Derived rather than picked — the Term Sheet Generator
+            -- untouched"). The Speed Program (2026-09-03) is sold to Fidelis OR
+            -- EMCAP, so it implies no single buyer and is left untouched exactly
+            -- like Manual ($24 is NULL — note-buyer-for-program). Derived rather
+            -- than picked — the Term Sheet Generator
             -- has no note-buyer field, and the pairing is already the backend's
             -- own knowledge (tapes/program-provider, the same table the tape
             -- export gate enforces), so a picker would just be a second place for

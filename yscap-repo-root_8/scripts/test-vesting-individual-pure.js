@@ -267,5 +267,15 @@ console.log('\nF. the affidavit is a CONDITION now, not a prerequisite of markin
     '…and an LLC on the file wins, exactly as everywhere else');
 }
 
+console.log('\nE. the Speed Program (2026-09-03) is a program the ONE normalizer knows — and Gold\'s rule stays Gold\'s');
+ok(V.programKey('speed') === 'speed', "programKey('speed') → 'speed'");
+ok(V.programKey('Speed Program') === 'speed', "programKey('Speed Program') → 'speed' (the engine\'s own label)");
+ok(V.programKey('Standard Program') === 'standard' && V.programKey('Silver Program') === 'silver' && V.programKey('Gold Standard Program') === 'gold',
+  'the parents still normalize exactly as before');
+ok(V.registrationRefusal({ personal_name_purchase: true, llc_id: null }, 'speed') === null,
+  'an individual may register into Speed — the refusal is Gold-only, and neither Speed parent carries it');
+ok(V.markIndividualRefusal({ registeredProgram: 'speed', noteBuyer: null }) === null,
+  '…and a Speed file may be marked individual');
+
 console.log(fail ? `\n${fail} FAILURE(S)` : '\nOK  vesting-individual: the choice is free, the affidavit is a condition, and Gold refuses — outside the frozen engines');
 process.exit(fail ? 1 : 0);

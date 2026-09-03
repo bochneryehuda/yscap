@@ -252,5 +252,12 @@ eq('pivot in-range year untouched', t.pivotSuspectYear('1999-01-15', 'dob'), nul
 eq('pivot 3-digit year no guess', t.pivotSuspectYear('0203-01-15', 'closing'), null);
 eq('pivot garbage null', t.pivotSuspectYear('nonsense', 'dob'), null);
 
+// registered_program → ClickUp "RTL Loan Program": the Speed Program (2026-09-03) maps exactly as Silver does
+eq('crosswalk speed → The Speed program', x.toClickUpLabel('registered_program', 'speed'), 'The Speed program');
+eq('crosswalk speed alt spellings (hand-made option)', x.FIELDS.registered_program.toAlt.speed, ['Speed program', 'Speed']);
+eq('crosswalk speed resolveWriteId via the alt spelling', x.resolveWriteId('registered_program', 'speed', [{ id: 'u1', name: 'The Silver program' }, { id: 'u2', name: 'Speed Program' }]), 'u2');
+eq('crosswalk speed with no live option → null (never invents a dropdown option)', x.resolveWriteId('registered_program', 'speed', [{ id: 'u1', name: 'The Silver program' }]), null);
+eq('crosswalk inverse: "The Speed program" reads back as speed', x.fromClickUpLabel('registered_program', 'The Speed program'), 'speed');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

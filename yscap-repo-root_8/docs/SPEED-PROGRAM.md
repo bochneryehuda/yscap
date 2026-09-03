@@ -73,7 +73,15 @@ frozen waterfall. Measured: the shortcut over-lends by $9,424 and $13,331 on two
   registration stamps no buyer (the team chooses when the loan is placed, like Manual); once the file's buyer is
   set, that buyer's tape may be exported. Borrower copy says "Speed Program", never a buyer name.
 - **Availability.** `program-availability.PROGRAM_KEYS` = standard, gold, silver, speed — togglable company-wide
-  and per file like the others.
+  and per file like the others. Every other server list now DERIVES from it (`intake-auto-register` and
+  `term-sheet-offer` program sets, the six register doors through `manual-program.requestedProgramKey`, the
+  TPO own-stamp loop, the "pick a real program" wording).
+- **Derived, never re-typed, on the underwriting side.** The owner-KYC threshold for Speed
+  (`underwriting/entity-chain.js PROGRAM_OWNER_RULES.speed`) is derived at load as the lower-percentage parent
+  (Standard's 15% and its treatment); the advisory fallback caps (`underwriting/metrics.js`) are the frozen
+  elementwise MIN of the Standard and Silver rows. `tapes/buyer-rule.programsForProvider(buyer)` derives
+  "which programs may export this buyer's tape" from `programMatchesBuyer`, so the tape picker and its
+  mismatch messages read "Standard or Speed" / "Silver or Speed" without a second list.
 
 ## 3. Where it is wired (system inventory)
 

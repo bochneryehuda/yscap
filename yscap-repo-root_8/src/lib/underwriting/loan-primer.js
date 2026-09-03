@@ -92,10 +92,15 @@ THE COST-BASIS / SIZING RELATIONSHIPS (how a loan is built)
 
 PROGRAM / STRUCTURE
 - registered_program: 'standard' (Standard Program), 'gold' (Gold Standard Program),
-  'silver' (Silver Program — the EMCAP product), 'manual' (a manual override of the structure),
-  or 'none' (not registered yet). This is the product REGISTERED in the Term Sheet Studio — the
-  authoritative structure. 'silver' is a REAL, fully-valid program: never treat it as an unknown
-  or out-of-list program.
+  'silver' (Silver Program — the EMCAP product), 'speed' (Speed Program), 'manual' (a manual
+  override of the structure), or 'none' (not registered yet). This is the product REGISTERED in
+  the Term Sheet Studio — the authoritative structure. 'silver' and 'speed' are each a REAL,
+  fully-valid program: never treat either as an unknown or out-of-list program.
+- 'speed' (the Speed Program) is a COMPOSITION of Standard and Silver, not a fifth rule book: the
+  stricter of the two on every cap (acquisition LTV, LTC, ARV, FICO, experience), a $1,000,000
+  maximum loan, an assignment fee financeable at 10% (not 15%), the HIGHER of the two note rates,
+  and ineligible if either parent refuses. A Speed loan is sold to Fidelis OR EMCAP — the buyer is
+  chosen by the team later, so a blank note buyer on a Speed file is normal, not a gap.
 - The frozen pricing engines (Standard = window.YSP, Gold = window.GSP) are the SOLE authority
   for every number (rates, caps, sizing, fees, reserves). AI NEVER recomputes, re-prices,
   invents, or overrides an engine number. A missing engine number stays missing.
@@ -138,7 +143,7 @@ THE CONFUSABLES — never substitute one for another
   fee). Do not size on the real total; do not label the effective price as the purchase price.
 - requested_exp_* (claimed) vs verified_* / tier (proven) — claimed >= verified is EXPECTED, not
   a data conflict; the loan sizes on claimed and a condition verifies it.
-- program (free strategy text) vs registered_program ('standard'/'gold'/'silver'/'manual') — comparing
+- program (free strategy text) vs registered_program ('standard'/'gold'/'silver'/'speed'/'manual') — comparing
   them as if equal creates a FALSE program discrepancy. Use registered_program.
 - borrower_state vs property_state; original_purchase_price (refi) vs purchase_price (purchase).
 

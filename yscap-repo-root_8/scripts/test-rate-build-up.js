@@ -48,7 +48,14 @@ const BASE = {
   term: '12', property_address: { state: 'NJ', city: 'Newark', oneLine: '1 Test St, Newark, NJ 07102' },
 };
 const EXP = { flips: 3, holds: 0, ground: 0 };
-const PROGRAMS = ['standard', 'gold', 'silver', 'manual'];
+// 'speed' (the Speed Program, 2026-09-03) composes the Standard and Silver engines, so its
+// build-up is measured on BOTH — and §2's leak check now covers a composition that sets two
+// engines' hooks in one quote.
+const PROGRAMS = ['standard', 'gold', 'silver', 'speed', 'manual'];
+// The matrix must cover EVERY program the wrapper labels — a fifth program cannot be added to
+// pricing.js without this file measuring its build-up too.
+ok(Object.keys(P.PROGRAM_LABEL).every((k) => PROGRAMS.includes(k)),
+  `the matrix covers every program pricing.PROGRAM_LABEL names (${Object.keys(P.PROGRAM_LABEL).join(', ')})`);
 // A manual product prices on the Standard engine and is only ever recorded as
 // Manual when a STRUCTURAL basis override is present (manual-program.resolveProgram),
 // so every manual quote here carries one.
@@ -106,7 +113,9 @@ console.log('\n2. THE SAFETY PROPERTY — measuring leaves the engines exactly a
   // `node -e` require is the only genuinely untouched engine state available.
   const { execFileSync } = require('child_process');
   const inp = P.buildInputs(BASE, EXP, null);
-  const engines = ['standard-program', 'gold-standard', 'silver-program'];
+  // speed-program.js is the composition over the first and third — it sets BOTH parents' hooks
+  // in one quote, so it is in the pristine set too: a missed restore on either side shows here.
+  const engines = ['standard-program', 'gold-standard', 'silver-program', 'speed-program'];
   const child = `
     const out = {};
     for (const n of ${JSON.stringify(engines)}) {
@@ -253,6 +262,16 @@ console.log('\n6. FROZEN CANARIES — the rate and the sizing did not move');
       && q.liquidityRequired === e.liq && q.closingCosts.dueAtClosing === e.cc,
       `${prog}: rate ${q.noteRate}, loan ${s.totalLoan}, cash-to-close ${q.cashToClose}, liquidity ${q.liquidityRequired} — unchanged`);
   }
+  // THE SPEED PROGRAM (2026-09-03) has no canary of its own to type: it is DERIVED from the two
+  // parents just proven — the HIGHER of their note rates, a total loan no larger than the SMALLER
+  // of theirs, an initial advance no larger than either — so the check is the composition
+  // contract against those canaries, never a fifth hand-typed row.
+  const sp = quote('speed');
+  ok(sp.noteRate === Math.max(expected.standard.rate, expected.silver.rate),
+    `speed: rate ${sp.noteRate} is the higher parent's — derived from the canaries above, not typed`);
+  ok(sp.sizing.totalLoan <= Math.min(expected.standard.total, expected.silver.total)
+    && sp.sizing.initialAdvance <= Math.min(expected.standard.initial, expected.silver.initial),
+    `speed: loan ${sp.sizing.totalLoan} / initial ${sp.sizing.initialAdvance} never exceed the smaller parent`);
 }
 
 console.log('\n7. The page can build every total it shows out of the engine, never by adding up');
