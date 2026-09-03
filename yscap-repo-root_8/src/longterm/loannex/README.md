@@ -187,18 +187,39 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
    |---|---|---|
    | `citizenship` | moves ✅ | moves ✅ |
    | `dscr` | moves ✅ | moves ✅ |
-   | `prepayMonths` → 36 | **stays "60 Months"** ❌ | moves to 36 |
+   | `prepayMonths` → 36 | moves to "36 Months" ✅ *(see the correction below)* | moves to 36 |
    | `reservesMonths` → 6 | **stays `Reserves_24`** ❌ | moves to 6 |
    | `propertyType` → Condo | **stays SingleFamily** ❌ | moves to Condominium |
+
+   > ⛔ **THE PREPAY ROW WAS WRONG, AND IT WAS THE ALARMING ONE (corrected 2026-09-02).** It read
+   > *"stays 60 Months"*, and the paragraph below it called the prepay term *"the one that matters"*
+   > and warned that moving the shared default would price a 36-month penalty on one program and a
+   > 60-month penalty on the other. Re-measured, both ways round:
+   >
+   > | when the shared default is changed | Lender Price sends |
+   > |---|---|
+   > | before `search-model` is loaded — i.e. **edit the file and deploy**, which is how a person actually changes a default | `PrepayTerm: "36 Months"` ✅ |
+   > | after it is loaded — a **runtime mutation of the profile object**, which nothing does | `PrepayTerm: "60 Months"` |
+   >
+   > So `DEFAULT_PREPAY_MONTHS = SHARED_PROFILE.prepayMonths` is a module-load snapshot, and that is
+   > all it is: on any normal deploy the two programs move together. The original row measured the
+   > runtime case and reported it as the general one. **`reservesMonths` and `propertyType` were
+   > measured again and both ❌ rows are correct** — they stay put either way, because
+   > `search-model` hard-codes `SFR_PROP` and `|| 'Reserves_24'` rather than reading the profile at
+   > all. Two genuine drifts, not three, and the one the paragraph called most dangerous is not one
+   > of them. A number that indicts the most important-looking row is worth re-measuring before it
+   > is believed.
 
    Lender Price keeps three private copies: `search-model.js:67`
    (`const DEFAULT_PREPAY_MONTHS = SHARED_PROFILE.prepayMonths` — a MODULE-LOAD SNAPSHOT, the
    identical shape DEF-4 was written to catch for the citizenship and which it caught there),
    `search-model.js:205` (`SFR_PROP` hard-codes the property type) and `search-model.js:861`
-   (`|| 'Reserves_24'`). **The prepay term is the one that matters**: it is a real pricing input, so
-   moving the shared default would silently price a 36-month penalty on one program and a 60-month
-   penalty on the other and present the difference as an execution advantage — precisely the failure
-   `scenario-defaults.js` says in its own header that it exists to prevent. Nothing tests it.
+   (`|| 'Reserves_24'`). **The two that matter are the reserves and the property type** — corrected
+   from an earlier draft that named the prepay term. Those two are hard-coded rather than read from
+   the profile, so moving the shared default moves LoanNEX and leaves Lender Price where it was, and
+   the difference would present as an execution advantage — precisely the failure
+   `scenario-defaults.js` says in its own header that it exists to prevent. The prepay term is a
+   module-load snapshot, which follows the profile on any normal deploy. Nothing tests any of it.
    Not fixed here because it is a change to the GENERAL engine's own defaults, which is the owner's
    call, not an audit finding's — recorded rather than quietly widened.
 

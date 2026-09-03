@@ -244,14 +244,22 @@ console.log('\n── THE BASE, said two ways, read one way ──');
 {
   // TWO COPIES OF ONE IDENTITY, and this is what stops them drifting. LoanNEX
   // states the base as a PRICE and `attachEvidence` works its points out on the
-  // spot (the option shape has carried `basePoints` since long before this
-  // module), so by the time the breakdown reads it there is nothing left to
-  // derive — `baseDerived: null` is the honest answer, not a gap. What must
-  // never happen is the two arriving at different numbers.
+  // spot, so by the time the breakdown reads it BOTH halves are filled and there
+  // is nothing left for this module to derive.
+  //
+  // ⛔ AND "NOTHING LEFT TO DERIVE" IS NOT THE SAME AS "THE SHEET STATED BOTH",
+  // which is what this check used to assert. Absence cannot tell the two apart
+  // once both halves are present, so the panel captioned the points WE worked out
+  // as "the base points the rate sheet quotes" on every explained LoanNEX row —
+  // while the Lender Price row beside it said "Derived" about its price, honestly.
+  // The mapper now says which half the sheet published (`baseStated`) and this
+  // reads it, so a LoanNEX row and a Lender Price row describe their own base the
+  // same way round. The identity below is unchanged and still the thing that must
+  // never break: whichever way it was worked out, the two numbers agree.
   ok(NEX.price.basePrice === 97.5 && NEX.price.basePoints === 2.5,
     'BASE-1 a vendor that states the base as a PRICE has its points on the row too, and the pair agrees to the cent');
-  ok(NEX.price.baseDerived === null && Math.abs(NEX.price.basePrice + NEX.price.basePoints - 100) < 5e-4,
-    'BASE-1b …and the mapper\'s own derivation obeys the SAME identity this module would have applied — the two copies can never drift');
+  ok(NEX.price.baseDerived === 'points_from_price' && Math.abs(NEX.price.basePrice + NEX.price.basePoints - 100) < 5e-4,
+    'BASE-1b …the POINTS are reported as ours and the pair still obeys the one identity — the two copies can never drift');
   ok(LP.price.basePrice === 97.5 && LP.price.basePoints === 2.5 && LP.price.baseDerived === 'price_from_points',
     'BASE-2 a vendor that states it as POINTS gets its price worked out — the same deal reads the same on both');
   ok(BD.breakdown(quoteShape.emptyOption()).price.baseDerived === null,

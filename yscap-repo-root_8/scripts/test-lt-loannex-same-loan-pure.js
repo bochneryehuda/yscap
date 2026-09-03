@@ -75,6 +75,13 @@ nexClient.evidence = async (sc, quote, opts) => {
     transactionId: (opts || {}).transactionId || 'MINTED' };
 };
 
+/* THE SAVED SETTINGS, so a "what-if versus what is stored" question can be asked at all. Stubbed
+   at the store rather than in the route, so the route resolves the figure exactly as it does live. */
+const settingsStore = require(path.join(ROOT, 'src/longterm/settings/store'));
+const SAVED = { 'pricing.combinedMarginHoldback': undefined };
+settingsStore.get = async (key) => SAVED[key];
+settingsStore.load = async () => ({ settings: { ...SAVED }, degraded: false, stored: new Set(), source: 'stub' });
+
 const routeMod = require(path.join(ROOT, 'src/longterm/routes/combined-pricer'));
 const { priceBoth, explainScenario, askedOf, scenarioRefused } = routeMod._internals;
 
@@ -389,6 +396,110 @@ const reg = registryOf.capturedRegistry();
       'D15 an admin who ASKS still gets the whole provenance block back — nothing was thrown away');
     ok(JSON.stringify(shown).includes('loannex'),
       'D16 …and the revealed answer does name the vendor, which is what makes D14 a decision rather than an accident');
+  }
+
+  /* ── D4. THREE DOORS, ONE NUMBER — OVER REAL HTTP (audit F7) ───────────────────────────────
+     Every other assertion in this file calls `priceBoth` directly, and that is precisely why this
+     defect survived: the HTTP door forwarded `shape`, `routes`, `revealSource` and the portal —
+     and NOT `marginHoldback` or `links`. `priceBoth`'s own comment promises the opposite ("an
+     explicit value in the request still wins so a caller can price a what-if without saving it"),
+     and both SIBLING doors honour it, so one number resolved two ways: the BOARD priced on the
+     saved figure while the EXPLAIN itemised the what-if — asking the vendor about a price it never
+     quoted, and leaving the Details panel with an unexplained gap between its running total and
+     `adjustedPoints`. Those are the two defects README item 10 records fixing.
+
+     So this section goes through the WIRE. A door-level defect needs a door-level test. */
+  {
+    const express = require('express');
+    const app = express();
+    app.use(express.json({ limit: '4mb' }));
+    app.use((q, _r, n) => { q.actor = { kind: 'staff', role: 'super_admin', id: 'x' }; n(); });
+    app.use('/lt', routeMod.makeRouter({ superAdminOnly: false }));
+    const srv = app.listen(0);
+    await new Promise((r) => srv.once('listening', r));
+    const port = srv.address().port;
+    const post = (path_, body) => fetch(`http://127.0.0.1:${port}/lt/${path_}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }).then((r) => r.json());
+
+    const bestOf = (answer) => {
+      let best = null;
+      for (const p of answer.programs || []) for (const o of p.options || []) {
+        const pr = o.priceBuild && o.priceBuild.price;
+        if (pr != null && (best == null || pr > best)) best = pr;
+      }
+      return best;
+    };
+
+    SAVED['pricing.combinedMarginHoldback'] = 0.5;
+    const saved = await post('price', { scenario: BROWSER, routes: ALL_NEX, links: {} });
+    const whatif = await post('price', { scenario: BROWSER, routes: ALL_NEX, links: {}, marginHoldback: 0.75 });
+    ok(saved.ok === true && whatif.ok === true, 'D17a both boards priced over HTTP');
+    const a = bestOf(saved); const b = bestOf(whatif);
+    ok(a != null && b != null && Math.abs((a - b) - 0.25) < 1e-6,
+      `D17 THE ONE THAT MATTERS: a what-if holdback sent to the PRICE DOOR moves the board (saved 0.5 -> ${a}, what-if 0.75 -> ${b}, a difference of ${(a - b).toFixed(3)}) — before this the door dropped it and both boards came back identical`);
+
+    // …and the EXPLAIN door, which always honoured it, now agrees with the board rather than
+    // contradicting it. Asked over the wire with the same what-if.
+    const handle = ((whatif.programs || []).flatMap((p) => p.options || []).find((o) => o.explain) || {}).explain;
+    ok(!!handle, 'D18a the what-if board carries an explain handle to ask with');
+    asked = null;
+    await post('explain', { quote: handle, scenario: BROWSER, option: {}, marginHoldback: 0.75 });
+    ok(asked && asked.quote && Math.abs(asked.quote.price - (handle.price + 0.75)) < 1e-6,
+      `D18 …and the EXPLAIN door adds back the SAME what-if before asking the vendor (row ${handle && handle.price}, asked ${asked && asked.quote && asked.quote.price}) — one number, one resolution across both doors`);
+
+    /* AND THE LINKS HALF, which the door dropped for the same reason. The observable had to be
+       chosen with care: on this board the registry already resolves every investor, so a link
+       changes no PRICE and an assertion about prices would have been inert — Y2 proved exactly
+       that when the first cut passed `links: {}` and dropping the forward left the suite green.
+       `investorPairing` is what a link genuinely moves: an investor matched by PREFIX (a guess the
+       screen asks a person to confirm) becomes matched by LINK (a decision they made). */
+    const noLinks = await post('price', { scenario: BROWSER, routes: ALL_NEX, links: {} });
+    const linked = await post('price', {
+      scenario: BROWSER, routes: ALL_NEX,
+      links: { 'Acra Lending - Corr': { key: 'acra', source: 'loannex', linkedBy: 'test' } },
+    });
+    const acraRow = (ans) => ((ans.investorPairing || {}).rows || []).find((r) => /acra/i.test(r.investor || ''));
+    const before = acraRow(noLinks); const after = acraRow(linked);
+    ok(before && after
+      && (noLinks.investorPairing || {}).linkCount === 0 && (linked.investorPairing || {}).linkCount === 1,
+      `D19a the link count moves through the door (${(noLinks.investorPairing || {}).linkCount} -> ${(linked.investorPairing || {}).linkCount})`);
+    const nameOf = (row) => ((row.names || {}).loannex || [])[0] || {};
+    ok(nameOf(before).match === 'prefix' && nameOf(before).linked === false
+      && nameOf(after).match === 'link' && nameOf(after).linked === true,
+      `D19 …and a what-if LINK sent to the price door turns a GUESS into a DECISION (${nameOf(before).match} -> ${nameOf(after).match}) — before this the door dropped it and the board came back guessing`);
+
+    SAVED['pricing.combinedMarginHoldback'] = undefined;
+    srv.close();
+  }
+
+  /* ── D5. A SHORT BOARD SAYS SO, WITHOUT NAMING A VENDOR (audit F2) ─────────────────────────
+     The most expensive failure class here: when one program does not answer, the board comes back
+     with half the prices and NOTHING on it says so. The front end reads neither `sources` nor
+     `provenance`, `hidden[]` can only report an investor that reached the merge, and the
+     empty-board copy said "This rate sheet returned no priced rungs" — singular, about a board two
+     rate sheets quote.
+
+     The control is the whole point: the SAME board with both programs up must say nothing. */
+  {
+    LP.fail = false;
+    const whole = await priceBoth({ ...BROWSER }, { marginHoldback: 0.25, routes: ALL_NEX, links: {} });
+    ok(whole.completeness && whole.completeness.complete === true
+      && whole.completeness.programsAnswered === 2 && whole.completeness.message === null,
+      `D20 CONTROL: with both programs answering the board reports itself COMPLETE and says nothing (${(whole.completeness || {}).programsAnswered}/${(whole.completeness || {}).programsAsked})`);
+
+    LP.fail = true;
+    const short = await priceBoth({ ...BROWSER }, { marginHoldback: 0.25, routes: ALL_NEX, links: {} });
+    LP.fail = false;
+    ok(short.completeness && short.completeness.complete === false
+      && short.completeness.programsAnswered === 1 && typeof short.completeness.message === 'string',
+      `D21 THE ONE THAT MATTERS: with one program down the SAME board says it is short (${(short.completeness || {}).programsAnswered}/${(short.completeness || {}).programsAsked}) — before this it came back quietly with half the prices`);
+    ok(short.programs && short.programs.length > 0,
+      `D21a …and it is a board with prices ON it, not an empty one (${(short.programs || []).length} rows) — the expensive case is a SHORT board that reads as complete, not an empty one`);
+    ok(!/loannex|lender ?price/i.test(String((short.completeness || {}).message || '')),
+      `D22 …and the sentence names NO vendor, which is what lets this be said on the one-system board at all: "${(short.completeness || {}).message || ''}"`);
+    ok(!('sources' in short),
+      'D23 …while `sources` itself, which DOES name them, is still withheld — the neutral count replaced it rather than reopening it');
   }
 
   // ── E. WHAT MUST NOT MOVE ─────────────────────────────────────────────────

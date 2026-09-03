@@ -219,6 +219,15 @@ export const ltApi = {
   // own server — no vendor call — so a screen may fetch it from an effect.
   combinedInvestors: () => ltGet(lt('/dscr/combined/investors')),
   /**
+   * WHY EVERY INVESTOR SAID NO — both rate sheets, one list, one call.
+   *
+   * A POST because the handle is two search identities plus the portal this screen priced on, not
+   * one id in a path. Costs at most one live call per rate sheet and only from a deliberate press
+   * (or the bounded auto-retry while a half is still computing), the same rule the price door has.
+   */
+  combinedDisqualifications: (handle) => ltPost(lt('/dscr/combined/disqualify'), handle || {}),
+
+  /**
    * ASK ONE ROW TO EXPLAIN ITS PRICE.
    *
    * COSTS A LIVE VENDOR CALL — for the one rate sheet on this board that explains on demand — so
