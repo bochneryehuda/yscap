@@ -473,25 +473,60 @@ async function price(req, res) {
   // triple exists for was defeated (post-merge audit of #1220).
   const requestedScenario = requestedOf(sc);
   sc = chk.scenario; // price the ZIP-ENRICHED scenario, never the original
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+
+  // full:true → the COMPLETE capture (every option's price build, itemized LLPAs, margin/holdback,
+  // comp, fees, ratios, monthly payment). A price is ALSO the disqualify kickoff — hand back the
+  // stable searchKey so the caller polls GET /disqualifications/:searchKey instead of restarting.
+  if (body.full) {
+    /* ⛔ THE INITIAL BOARD IS BUILT FROM BOTH RATE SHEETS — the SAME `boardForScenario`
+       router the bracket door uses (owner-directed 2026-09-03: *"It should follow the same
+       exact path… right away, it searches the initial stuff and then it starts dividing it
+       into the bands."*). So LoanNEX appears on the immediate unbanded board exactly as
+       Lender Price does, and the bracket door then divides that same board into DSCR bands.
+
+       Nobody routed to LoanNEX → `boardForScenario` makes no second vendor call at all
+       (`wantLoanNex`), so a shop that has switched no investor over prices exactly as before,
+       at Lender Price speed. A LoanNEX that refuses never costs the board: the router asks the
+       sheets with `allSettled` and returns the Lender Price half on its own. The register of
+       sightings/misses is written ONCE per search by the bracket door, never here. The
+       initial board CARRIES `sources`/`missing` as truthful data, but the general-engine
+       screen does not yet render a no-login banner from them — wiring that banner is the
+       owner's call, not a silent side effect of this change. */
+    const cfg = await generalBoard.loadConfig({ routes: body.routes, links: body.links, marginHoldback: body.marginHoldback });
+    cfg.debug = !!body.debug; cfg.raw = !!body.raw; // dev diagnostics, parity with the summary door
+    const board = await generalBoard.boardForScenario(sc, { lp, nex, investorPrograms }, cfg);
+    if (!board.ok) return res.status((board.http && board.http >= 500) ? 502 : 400).json(priceErrorBody(board));
+    if (rejectInvalidValues(board.request, res)) return; // a supported field carried an unrecognized value
+    const effectiveFull = effectiveOf(board.request); // requested-vs-effective transparency
+    const out = {
+      ok: true,
+      // The FULL parse, its programme list already routed. Its programCount/lenderCount
+      // describe the ROUTED board (recomputed in boardForScenario); rungCount and
+      // disqualifiedCount stay the Lender Price half only (no board-level consumer reads
+      // them on this door — the desk reads per-programme p.rungCount).
+      ...board.parsed,
+      programs: board.programs,
+      investorRoster: board.roster,          // the lens roster, for the routed board
+      investorsUnmapped: board.unmapped,     // a lender quoting with no white-label name yet
+      missing: board.missing,                // investors LoanNEX was asked for and did not carry
+      sources: board.sources,                // which sheet answered (truthful data; the general-engine
+                                             // screen does not render a no-login banner from it yet)
+      requestedScenario, derivedScenario: derivedOf(sc),
+      countyEnrichment: chk.countyEnrichment, effectiveScenario: effectiveFull,
+      cashoutAmount: cashoutNote(sc), dscrClamped: chk.dscrClamped || null,
+      request: board.request, searchKey: board.searchKey,
+      disqualifyStatus: 'computing', provenance: board.provenance || null, recovered: !!board.recovered,
+    };
+    if (board.rawSummary) out.rawSummary = board.rawSummary; // only when body.debug asked for it
+    return res.json(out);
+  }
+
+  // The SUMMARY door (a saved scenario re-run) stays Lender Price only, unchanged.
   const r = await lp.price(sc);
   if (!r.ok) return res.status((r.http && r.http >= 500) ? 502 : 400).json(priceErrorBody(r));
   if (rejectInvalidValues(r.request, res)) return; // a supported field carried an unrecognized value
   const effective = effectiveOf(r.request); // requested-vs-effective transparency
-  // full:true → the COMPLETE capture (every option's price build, itemized LLPAs, margin/holdback,
-  // comp, fees, ratios, monthly payment). Add raw:true to also attach each option's untouched leaf.
-  // A price is ALSO the disqualify kickoff — hand back the stable searchKey so the caller polls the
-  // separate status route (GET /disqualifications/:searchKey) instead of ever restarting the search.
-  if (req.body && req.body.full) {
-    const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
-    // The white-label decoration (2026-08-27): the SAME programs, annotated with the
-    // canonical investor key + white-label / consumer labels, plus the roster of
-    // investors PRESENT in this answer and anything that resolved to no name — named,
-    // never dropped, so the owner can christen a new investor the day it appears.
-    const deco = investorPrograms.decorate(full.programs);
-    const out = { ok: true, ...full, programs: deco.programs, investorRoster: deco.roster, investorsUnmapped: deco.unmapped, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), dscrClamped: chk.dscrClamped || null, request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
-    if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
-    return res.json(out);
-  }
   const parsed = lp.parse(r.raw);
   const decoSummary = investorPrograms.decorate(parsed.programs);
   const out = { ok: true, ...trimPrograms({ ...parsed, programs: decoSummary.programs }), investorRoster: decoSummary.roster, investorsUnmapped: decoSummary.unmapped, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), dscrClamped: chk.dscrClamped || null, request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
@@ -692,32 +727,35 @@ async function compPlanHandler(req, res) {
   res.json({ ok: true, plan, source, degraded: !!(company.degraded || user.degraded) });
 }
 
-// GET /investors — the FULL white-label roster (owner-directed 2026-08-27): every
-// investor on the owner's sheet, live in Lender Price or not, so the pre-search
-// dropdown lists them all and an investor that comes online later "is already
-// there". A pure read of the committed sheet — no vendor call, no database — so
-// the screen may fetch it from an effect.
+// GET /investors — the SETTINGS-AWARE pre-search picker (owner-directed 2026-09-03,
+// the explicit owner call the note below always said this change would need). The
+// tick-boxes offered BEFORE a search now match what a search actually shows: every
+// investor that is ON and named — a LoanNEX-switched investor INCLUDED, a turned-off
+// one EXCLUDED — derived from the SAME settings the board routes on (`pickerRoster`),
+// so the picker and the board can never disagree.
 //
-// ⛔ IT STAYS THAT WAY. This door briefly read the settings store, so that an
-// investor somebody added by hand and a white label typed on the combined
-// engine's settings screen both showed up here. That was wrong twice over, and
-// it is the owner's most-repeated instruction — *"don't touch our current setup
-// that we currently have: our General Pricing Engine"*:
+// WHY THE OLD "IT STAYS LENDER-PRICE-ONLY" NOTE NO LONGER HOLDS. It rested on one
+// fact that is no longer true: *"This engine asks Lender Price and nobody else, so a
+// LoanNEX-only investor offered here produces an EMPTY BOARD."* Since 2026-09-03 the
+// general engine asks LoanNEX too (the immediate board is built from both sheets), so
+// a LoanNEX-switched investor offered here now genuinely populates — and a turned-off
+// investor offered here was the real defect: ticking it dropped the board to empty and
+// the strip blamed the VENDOR ("nothing populated for X") for a deliberate turn-off.
+// The board already white-labels investors from these same settings, so the second old
+// worry — "a second change to what this screen calls an investor" — is now the whole
+// point: the picker names investors exactly as the board does. The combined engine
+// keeps its own separate `/dscr/combined/investors` door, untouched.
 //
-//   · THIS LIST IS A FILTER, NOT A DISPLAY. An officer picks a name here and the
-//     search is narrowed to it. This engine asks Lender Price and nobody else, so
-//     a LoanNEX-only investor offered here produces an EMPTY BOARD with nothing
-//     on the screen to explain why.
-//   · AND IT IS A SECOND CHANGE TO WHAT THIS SCREEN CALLS AN INVESTOR, on a door
-//     that had only ever read the committed sheet.
-//
-// The combined engine reads the hand-added investors; this one does not. If that
-// should ever change it is the owner's call, not a side effect of a shared
-// module gaining an argument. `test-lt-dscr-routes.js` asserts that this handler
-// performs no settings read and answers identically whether or not somebody has
-// added an investor.
-function investorsRoster(req, res) {
-  res.json({ ok: true, investors: investorPrograms.fullRoster() });
+// Fails SAFE: an unreadable config falls back to the Lender Price sheet rather than an
+// empty picker. `test-lt-dscr-routes.js` asserts the on/named/switched/off contract.
+async function investorsRoster(req, res) {
+  try {
+    const cfg = await generalBoard.loadConfig({});
+    res.json({ ok: true, investors: generalBoard.pickerRoster(cfg) });
+  } catch (e) {
+    console.error('[lt-dscr] investors roster failed, falling back to Lender Price sheet:', (e && e.message) || e);
+    res.json({ ok: true, investors: investorPrograms.fullRoster() });
+  }
 }
 
 // A router with the endpoints wired. Auth is applied by the mount (staff at /api/lt, or the
@@ -726,7 +764,7 @@ function makeRouter() {
   const router = express.Router();
   router.use(express.json({ limit: '256kb' }));
   router.get('/zip/:zip', zipLookup);
-  router.get('/investors', investorsRoster);
+  router.get('/investors', (req, res) => investorsRoster(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_investors_error' })));
   router.get('/comp-plan', (req, res) => compPlanHandler(req, res).catch((e) => {
     console.error('[lt-dscr] comp-plan failed:', (e && e.message) || e);
     // ⛔ NO PLAN IS THE ANSWER, never a guessed one — the screen falls back to raw pricing
