@@ -1004,6 +1004,36 @@ const SETTINGS = [
       + 'margin hold back added... On LoanNEX, everybody, you need to add this manually." Then, '
       + 'the same day: "there should always be in the settings the possibility to move up the '
       + 'margin hold back, remove the margin hold back, or move it down."' },
+  // WHICH RATE SHEET HAS ACTUALLY PRODUCED EACH INVESTOR — the measured register
+  // behind the side-by-side list's "available on" column and its locked-out
+  // button (owner-directed 2026-09-03: *"which systems that investor is available
+  // on"*, *"the other option is locked out, but the investor can always be turned
+  // off"*, and *"If you see a new investor populating in any of the systems, just
+  // add that to the list"*).
+  //
+  // ⛔ NOTHING HERE IS TYPED BY A PERSON. It is written by the board, from what
+  // the two sheets actually returned, for exactly the reason the other maps in
+  // this group are empty by default: a hand-written table of who-is-on-what would
+  // be a THIRD roster beside the two real ones, and vendors move. ClearEdge
+  // appeared on LoanNEX between two measurements; Acra answers in Connecticut and
+  // not in New Jersey. See `pricing/investor-sightings.js` for the three states
+  // and why "never seen" and "not measured yet" are not the same answer.
+  //
+  // GROUPED WITH THE OTHER THREE deliberately: the four investor maps are read
+  // together by `pricing/investor-config.js` and now govern BOTH engines, so they
+  // belong beside each other however the screen is later renamed.
+  { key: 'pricing.investorSightings', group: 'Combined Pricing Engine', label: 'Investor sightings — which sheet produced whom',
+    type: 'map', default: {},
+    description: 'Written by the pricing engine, not by a person: { boards: { lenderprice, loannex }, '
+      + 'investors: { "<key>": { lenderprice: "<when>", loannex: "<when>" } } }. Drives the '
+      + '"available on" column and locks out a source that has answered boards without ever '
+      + 'carrying that investor. Clearing it makes every source read "not seen yet" again, which '
+      + 'unlocks every button rather than locking them.',
+    evidence: 'Owner-directed 2026-09-03: "which systems that investor is available on… the other '
+      + 'option is locked out, but the investor can always be turned off… If you see a new investor '
+      + 'populating in any of the systems, just add that to the list."',
+    // The same shape check the board writes through, so the door and the read cannot disagree.
+    validate: (v) => require('../pricing/investor-sightings').validate(v) },
   // -- Term sheets ----------------------------------------------------------
   // The officer-side term sheet (owner-directed 2026-08-30: *"we want to be able
   // also on the staff side to enable the term sheet option from today"*). The

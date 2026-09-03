@@ -42,6 +42,7 @@ import {
   Check, ModeTab, DscrCalc, useScenarioForm, ScenarioFields,
 } from './LtScenarioFields.jsx';
 import { useEngine, useExplain, EngineProvider, ExplainProvider, GENERAL_ENGINE } from './pricerEngine.js';
+import { NO_BREAKDOWN } from './sourceLabel.js';
 
 /**
  * THE PRICING ENGINE — every rate Lender Price is quoting, and every investor at each one.
@@ -854,19 +855,21 @@ export function ChargeList({ charges, sheet }) {
    disagree the screen says so on its face rather than quietly showing one of them.
    ────────────────────────────────────────────────────────────────────────── */
 /**
- * WHY THERE IS NO ITEMIZATION, in plain words â a FALLBACK, never a second copy of the rule.
+ * WHY THERE IS NO ITEMIZATION, in plain words — a FALLBACK, never a second copy of the rule.
  *
- * The vendor's own sentence (`evidence.message`) is preferred wherever the server has one; these
- * cover the two states that have a reason and no message, and the last resort. Keyed on the codes
- * `quote-shape.attachEvidence` and `loannex/parse.explainAbsence` actually emit.
+ * The vendor's own sentence (`evidence.message`) is preferred wherever the server has one; this
+ * is what to say when there is none.
+ *
+ * ⛔ IT CARRIES EVERY CODE THE SERVER CAN EMIT, and it did not use to. This map held FOUR of the
+ * server’s seven, missing exactly the two that describe a sheet which answered badly
+ * (`vendor_returned_no_evidence`, `unrecognised_answer_shape`) — so those fell through to the
+ * generic “no breakdown could be read”, losing the one fact the reader opened the panel for.
+ *
+ * It is the shared `sourceLabel.js` map now, mirrored from the server’s `pricing/sources.js` and
+ * held to it by `test-lt-source-vocabulary-pure`, which fails the moment the server grows a
+ * reason this cannot word.
  */
-const EXPLAIN_REASON = {
-  not_requested: 'This rate sheet has not been asked to itemise this price.',
-  no_answer: 'The rate sheet was asked and nothing came back, so there is no breakdown to show.',
-  evidence_is_for_a_different_rate_or_lock:
-    'The breakdown that came back is for a different rate or lock, so it is not shown against this one.',
-  unknown: 'No breakdown could be read from the rate sheet’s answer.',
-};
+const EXPLAIN_REASON = NO_BREAKDOWN;
 
 /**
  * WHAT THE RATE SHEET WAS ASKED, in one line — printed only where the table is empty.
@@ -1836,8 +1839,13 @@ export function IneligibleView({ dq, onAsk, loanAmount, initialOpen, comp, invSe
  * copy nobody can diff.
  *
  * `slots` are the panels only ONE board has, handed in by that board rather than flagged here:
- * a screen that lists its own exceptions is a copy with extra steps. Each is given what it needs
- * from this screen's state and nothing else.
+ * a screen that lists its own exceptions is a copy with extra steps. There are TWO of them and the
+ * difference is WHERE they draw, never what they may know — both are handed the same bag:
+ *
+ *   · `afterStrip` — between the search and the board. ONLY for something that decides whether the
+ *     answer below is safe to read at all, or that changes the search. Anything else here is a
+ *     panel between somebody pressing Price and the prices.
+ *   · `afterBoard`  — after the answer. Everything else, and the default for a new panel.
  */
 /**
  * WHAT THE PRODUCT ANSWERS TOOK OFF THE BOARD, in one plain sentence — or nothing at all.
@@ -2915,6 +2923,24 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
             ) : (
               <IneligibleView dq={dq} onAsk={askDisqualified} loanAmount={loanAmount} comp={comp} invSel={invSel} />
             )}
+            {/* ⛔ AND WHATEVER BELONGS *AFTER* THE ANSWER — owner-reported 2026-09-03: *"I don't
+                like the way you put it on the search page right after the search instead of
+                coming back right results."* A panel that is about reconciling names, not about
+                whether this board is safe to read, sits between somebody pressing Price and the
+                prices. It is the same finding the comparison area got on 2026-09-01, one panel
+                further up: the work happens in the order price → read → tidy up, so anything that
+                is not about THIS answer waits until after it.
+
+                It is INSIDE `{res && stack && …}` on purpose — unlike the cart below, which spans
+                searches and must survive an empty board. A slot here describes the answer that
+                just came back, so with no answer there is nothing for it to describe.
+
+                The bag is the SAME one `afterStrip` gets. Two slots on one screen handing out two
+                different sets of state is two contracts to keep in step, and the difference between
+                them is WHERE they draw, never WHAT they may know. */}
+            {typeof slots.afterBoard === 'function' && slots.afterBoard({
+              res, busy, reveal, setReveal, reprice: run, setForm: setF,
+            })}
           </>
         )}
 

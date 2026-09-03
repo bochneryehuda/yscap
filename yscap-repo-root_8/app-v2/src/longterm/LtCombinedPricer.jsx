@@ -181,33 +181,48 @@ export default function LtCombinedPricer() {
     <PricerScreen
       engine={COMBINED_ENGINE}
       slots={{
-        /* The three panels only this board has. They are drawn in the order a person reads them:
-           the thing to act on, then what is missing from the board, then the names to reconcile. */
+        /* ⛔ WHAT GOES ABOVE THE BOARD IS ONLY WHAT DECIDES WHETHER THE BOARD IS SAFE TO READ.
+           Owner-reported 2026-09-03: *"I don't like the way you put it on the search page right
+           after the search instead of coming back right results."* Four panels sat between the
+           press and the prices; three of them are about THIS answer and one was about tidying up
+           the names afterwards. That one moved below (see `afterBoard`). */
         afterStrip: ({ res, busy, reveal, setReveal, reprice, setForm }) => (
           <>
             {/* FIRST, because "some of your prices are missing" outranks every other thing on this
                 strip: a person who reads the board without knowing it is short may act on it. */}
             <ShortBoardNotice completeness={res.completeness} />
+            {/* An offer to CHANGE THE SEARCH — it belongs beside the search, not under the answer
+                it is proposing to replace. */}
             <NearTierFlag near={res.nearTier} onUse={(loan) => {
               setForm((p) => ({ ...p, loan: String(loan) }));
               try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { /* no window in a test render */ }
             }} />
+            {/* The accounting of what is NOT on the board, which is the other half of the short-board
+                warning above it — an officer reading a board of six where nine priced needs both
+                halves in front of them before they read it. */}
             <CombinedPanel
               hidden={res.hidden} settings={res.settings} revealed={reveal} busy={busy}
               onReveal={(v) => { setReveal(v); reprice(null, { reveal: v }); }}
             />
-            {/* LINK TWO SPELLINGS OF ONE INVESTOR, FROM THE BOARD THAT FOUND THEM. Mounted here as
-                well as on the settings screen, and it is the SAME component both times — never a
-                second arrangement, or the two screens would disagree about what is linked. What
-                only exists here is the live side-by-side: `investorPairing` is what the two
-                programs ACTUALLY called each investor on THIS board, so this is the one place a
-                person can see the two names together and the one moment an unrecognised spelling
-                is in front of them. A re-price is deliberately NOT fired on save: the links change
-                how the NEXT board is joined, and silently re-pricing under somebody would replace
-                the answer they are reading. The person presses Price again. */}
-            {res.investorPairing && <LtInvestorLinks pairing={res.investorPairing} />}
           </>
         ),
+        /* LINK TWO SPELLINGS OF ONE INVESTOR, FROM THE BOARD THAT FOUND THEM. Mounted here as
+           well as on the settings screen, and it is the SAME component both times — never a
+           second arrangement, or the two screens would disagree about what is linked. What
+           only exists here is the live side-by-side: `investorPairing` is what the two
+           programs ACTUALLY called each investor on THIS board, so this is the one place a
+           person can see the two names together and the one moment an unrecognised spelling
+           is in front of them.
+
+           ⛔ IT DRAWS AFTER THE ANSWER, and that IS the owner's report above. It changes how the
+           NEXT board is joined and nothing about the one on screen, so putting it before the
+           prices delayed the answer to make a point about the search after it. Same finding the
+           comparison area got on 2026-09-01, one panel further up.
+
+           A re-price is deliberately NOT fired on save, for the same reason it sits here: the
+           links change how the NEXT board is joined, and silently re-pricing under somebody would
+           replace the answer they are reading. The person presses Price again. */
+        afterBoard: ({ res }) => (res.investorPairing ? <LtInvestorLinks pairing={res.investorPairing} /> : null),
       }}
     />
   );

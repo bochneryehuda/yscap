@@ -713,3 +713,197 @@ A fifth recording — the investor portals, with pricing — settled several thi
   field; it is a product the answer returns.
 - **The scenario defaults and the button names are now shared** with Lender Price
   (`../pricing/scenario-defaults.js`) — before that the two programs were priced on different loans.
+
+## Update, 2026-09-03 — why some rows showed no LLPAs at all, and it was ours
+
+The owner reported rows on **NQM, Acra and E-Resi** that drew no itemised adjustments, no base price
+and no final price — the Details panel saying *"the rate sheet accepted the question and returned no
+breakdown for this quote"*. That sentence blamed the vendor. The vendor was answering our question
+correctly; the question was wrong.
+
+**The finding.** LoanNEX locates the quote to itemise by matching the **price** we send back against
+its own sheet **exactly**. Our parser rounds every price to three decimals for display. On one live
+board (Hartford County CT, 500k value / 375k loan, 760 FICO, DSCR 1.30, 60-month prepay — 263
+programmes, 14 investors, 4,396 priced rungs) **269 rungs carry a fourth decimal**: 104.1762,
+100.7605, 103.8855, 96.6756. Sent back rounded, the sheet found no quote and answered
+`{"status":"Success"}` with no body.
+
+Proven both ways on one quote with everything else held identical — productId 38068, investorId
+7233, hash `38068-1382-33114-5316`, rate 6.875, 30-day lock:
+
+| price sent | vendor's answer |
+| --- | --- |
+| `104.1762` (the sheet's own) | a full breakdown |
+| `104.176` (ours, rounded) | `{"status":"Success"}`, no body |
+
+Across the board, one quote per investor that needed a fourth decimal: **8 of 8 answer with the
+exact price, 0 of 8 answered with the rounded one.** The four investors carrying fourth-decimal
+prices were **Acra, E-Resi, NQM and Ellington** — three of them exactly the ones reported.
+
+**Why adding the holdback back did not rescue it.** The explain door already added our 0.25 back on
+before asking, so the vendor is asked about its own number. But that arithmetic runs on a figure
+that has already lost its fourth decimal: `104.1762 → 104.176 → 103.926 → 104.176`. The holdback was
+never the problem; the rounding is, and it happens two steps earlier.
+
+**The fix.** Every rung now carries `priceExact` — the vendor's own number, untouched — beside the
+rounded `price` a screen shows.
+
+- `parse.js` keeps it (`priceExact: price`, no rounding).
+- `../pricing/vendor-margin.js` spreads it through **unshifted**: our margin is not on their sheet,
+  so a held-back `priceExact` would be a price the sheet has never quoted.
+- `../pricing/quote-shape.js` puts it on the explain handle **sealed** (see below).
+- `client.js` `evidence()` sends it, falling back to `price` for a row shaped before this existed.
+
+Nothing on a screen reads `priceExact`. The board, the comparison, the holdback and the panel all
+keep working on the rounded `price`, and price + points on a row still sum to 100.
+
+**Guard:** `scripts/test-lt-explain-exact-price-pure.js` — 34 checks across the parser, the holdback,
+the handle and, in section D, the **outgoing request body itself**. That last part matters: the
+defect was invisible from outside `evidence()`, which returned a well-formed "the sheet had nothing"
+answer that every layer above it handled correctly. The only place the mistake existed was the
+number in the request, so the test replaces `global.fetch` and reads it.
+
+**What this does not change.** `vendor_returned_no_evidence` stays a real answer with a real message
+— a sheet genuinely can have nothing for a quote. It should now be rare rather than routine.
+
+### …and the same day, `priceExact` had to be SEALED — it was the holdback by subtraction
+
+The fix above put the vendor's own price on the explain handle, and the handle goes to the browser.
+Beside the held-back price on the same object, the pair **is** our margin. Measured on a live
+general-engine board:
+
+```
+price       100.786    ← held back, what the screen shows
+priceExact  101.0355   ← the vendor's own, on the same handle
+                0.2495 ← the 0.25 holdback, one subtraction off the wire
+```
+
+on **all 2,133 explain handles** of that board. Exactly the class audit F5 closed for `vendorPrice`,
+`vendorPriceFloor` and `vendorPriceCeiling` (`pricing/investor-routing.stripHoldbackTrail`); this
+field was added afterwards and walked through the same door.
+
+**It could not simply be dropped** — that re-opens the empty-breakdown bug above — and it cannot be
+rebuilt from the rounded price (`104.1762 → 104.176 → +0.25 → 104.176`). So it travels **sealed**:
+
+- `pricing/sealed-price.js` — AES-256-GCM, node `crypto` only, no database, no RTL import. The key
+  is `LT_PRICE_SEAL_KEY`, else derived one-way from `JWT_SECRET` under its own domain label, else
+  random per process. The middle source is an **availability** decision, not a security one: a
+  random key does not survive a restart, and an unopenable seal degrades to the add-back path,
+  which reproduces only the rounded price — i.e. the bug this field exists to fix, coming back on
+  its own after every deploy.
+- the handle carries **`priceSeal`** (a string blob), never `priceExact` — a different key on
+  purpose, so a reader expecting a number is never handed a blob that is truthy and not finite.
+- `routes/combined-pricer.js` `quoteFromBody(b)` is the **one** reader. Both explain doors go
+  through it; a third door that forgot would not error, it would quietly ask the sheet a rounded
+  price and get nothing back. The seal is stripped before the quote travels any further, a seal
+  **wins** over any `priceExact` a caller posts beside it, and one this process cannot open leaves
+  **no** exact price rather than a forged one.
+- `client.js` `exactPrice(quote)` decides what actually goes on the wire: a real number wins, a
+  blob or a blank falls back to `price` — `Number(null)` and `Number('')` are both `0`, which the
+  sheet cannot match.
+
+**Guards:** `scripts/test-lt-price-seal-pure.js` (110 checks, in `npm test`) plus the re-pointed
+sections C and D of `test-lt-explain-exact-price-pure`. **Ten mutations of the production code were
+each proven to fail them**, and one of those is worth recording: with the GCM authentication tag
+check removed from `open()`, a hand-flipped blob opened to **104.1763** — a different valid price
+the vendor would then have been asked to itemise. A random corruption cannot prove that (it merely
+decodes to text `Number()` reads as `NaN`), so the suite forges a bit-flip that would decode to a
+real price instead.
+
+`BOARD-8b` in `test-lt-loannex-parity-pure` now allows `priceSeal` and **no longer allows**
+`priceExact`, so the field cannot come back onto a handle in the clear. That allowlist proves what
+keys may be present; the seal suite sweeps every *readable number* on a handle against the holdback,
+because an allowlist can never say what a value MEANS.
+
+**Open, and stated rather than closed quietly:** the handle's existence still tells a reader which
+rows are LoanNEX (a Lender Price row has none), which is the item already recorded above BOARD-8b.
+
+---
+
+## Update, 2026-09-03 (second pass) — the one-definition drifts the audit left open
+
+Four rules were each written out in more than one place, and in three of the four the
+copies had already drifted. None was a live defect; all four were a live *hazard*, which
+is the thing this file exists to record rather than to leave in a task list.
+
+### `points = 100 − price` — TWELVE copies, four roundings
+
+`pricing/price-points.js` is the one definition now. The copies did not merely duplicate
+the rule, they answered differently:
+
+| where | `null` in | non-finite in |
+|---|---|---|
+| `loannex/parse.js` `round3` | `null` | `NaN` |
+| `pricing/breakdown.js` `round3` | `null` | `null` |
+| `pricing/quote-shape.js` `round3` | `null` | `null` |
+| `pricing/vendor-margin.js` `r3` | `NaN` | `NaN` |
+| `lenderprice/client.js` (inline) | — | no guard at all |
+
+`NaN` is the worse answer at every one of those sites: it survives `!= null`, prints as
+"NaN" on a rate board, and loses every numeric comparison in silence rather than reading
+as *the sheet did not state this*. A blank was worse still — `Number('')` is `0`, so an
+empty price read as a confident **100 points**.
+
+**Proven neutral on every real number** — the four old spellings and the new module over
+every thousandth from 90 to 110, 60,024 comparisons, nothing moved. A figure already at
+the published precision round-trips to itself; one carrying a fourth decimal cannot, by
+arithmetic, which is exactly why `priceExact` (above) must never go through it.
+
+**The sweep is the deliverable, not the module.** `test-lt-price-points-pure` section D
+walks the whole Long-Term server tree for a re-inlined identity — and found the two
+`lenderprice/client.js` sites, which the audit that raised this drift had never counted.
+
+**And a surviving mutation found a real gap.** `vendor-margin`'s header has always said a
+holdback SHIFTS the points rather than re-deriving them from the rounded price, and
+nothing enforced it: swapping the shift for a recompute passed every suite in the repo.
+Measured over 1,200,006 combinations, the two land a thousandth apart on **53,631 of them
+(4.47%)** — so the rule is load-bearing, not stylistic. Section F pins it on three vendor
+prices that genuinely diverge, and asserts each one diverges so it cannot pass for free.
+
+### What we call a rate sheet — SEVEN copies, one of them wrong
+
+`merge.js` answered `src === 'loannex' ? 'LoanNEX' : 'Lender Price'`, so any source that
+is not LoanNEX was called **Lender Price** — a vendor's name over a price that vendor
+never quoted. `pricing/sources.js` + `app-v2/src/longterm/sourceLabel.js` are the one
+definition and its browser mirror; an unknown source is **named, never guessed**.
+
+`both` deliberately stays out of the shared map: it is a SETTING a person picks, never a
+sheet that answered.
+
+### Why there is no breakdown — seven reasons on the server, four in the browser
+
+The browser's fallback was missing exactly the two that describe a sheet which answered
+badly — `vendor_returned_no_evidence` and `unrecognised_answer_shape` — so both fell
+through to the generic *"no breakdown could be read"*, losing the one fact the reader
+opened the panel for. That first one is the sentence the owner reported twice this week.
+
+Both vocabularies are mirrored and held together by `test-lt-source-vocabulary-pure`,
+which fails the moment they disagree, the server grows a reason the browser cannot word,
+or anybody re-inlines the label ternary.
+
+### The program name — a door with a lock on one leaf
+
+`termsheet/snapshot.resolveProgramName` refused a TYPED name that names an investor
+(rule 10) and accepted the **registry** name one line above with no check at all — but
+`sel` is the client's own post, and nothing at that door can tell a label the server
+resolved from a string a caller typed into that field. The registry's own labels are safe
+by construction (`investor-roster.whiteLabelProblem` runs the same scrub on both the write
+door and the read), which is exactly what makes the check safe to add: it is a no-op on
+every real white label and bites only on a forged one. All 129 recorded investor spellings
+are now refused through both leaves; 324 plausible white labels still pass.
+
+### The units rule — pinned as a literal, claimed as a mirror
+
+The browser SHAPES the units control and `search-model.validateInputs` REFUSES a
+contradiction. The guard pinned the browser's numbers as literals and only a comment
+claimed they matched, so the day the server's rule moved the control would have offered a
+number the server refuses — a dead end nobody can get out of. `test-lt-pricer-fields`
+now runs the **server's own validator** over what the control can produce, in both
+directions, plus a check that the server still refuses a conflict at all (without it both
+halves pass vacuously).
+
+**Still open, deliberately:** the FOUR `SOURCES` arrays — in `investor-links`,
+`investor-settings`, `investor-sightings` and `merge` — are NOT consolidated. They have
+different memberships on purpose — `investor-settings` carries `both`, which is a setting
+rather than a sheet — so folding them together would be a behaviour change dressed as a
+tidy-up. The LABEL was the drift; the lists are four different questions.

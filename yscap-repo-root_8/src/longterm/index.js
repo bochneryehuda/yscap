@@ -211,6 +211,18 @@ router.use('/dscr/investor-groups', require('./routes/pricer-groups'));
 // LT_COMBINED_PRICING switch is a kill switch, default ON.
 //   /api/lt/dscr/combined/{health,price,investors,loannex/price,loannex/login-check,loannex/disqualify/:id}
 router.use('/dscr/combined', require('./routes/combined-pricer').makeRouter());
+// THE GENERAL PRICING ENGINE'S INVESTOR SOURCES — the side-by-side list that lives in
+// the general engine's SETTINGS (owner-directed 2026-09-03: *"I want the side-by-side
+// list… in the settings of the regular pricing engine"*). Registered BEFORE the /dscr
+// mount so it wins the match, exactly like the two above.
+//
+// ⛔ ITS OWN MOUNT, NOT A SECOND MOUNT OF THE COMBINED ROUTER. The doors themselves are
+// ONE definition (`routes/investor-settings-routes.js`) that both engines attach, but
+// the combined router carries the `LT_COMBINED_PRICING` kill switch — mounting it here
+// would let switching that engine off take the GENERAL engine's settings down with it.
+// Super-admin only, answering 404, exactly as the combined copy always has.
+//   /api/lt/dscr/investor-sources/{investors,investor-links,custom-investors,margin-holdback}
+router.use('/dscr/investor-sources', require('./routes/pricer-sources').makeRouter());
 // The Pricing Engine's SAVED SCENARIOS (owner-directed 2026-08-31) — a person's
 // own saved sets of pricing INPUTS, re-runnable any time. Registered BEFORE the
 // /dscr mount for the same reason the investor groups are, and deliberately NOT

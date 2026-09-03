@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**965 objects**, and a database rebuilt from the Prisma
+**966 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 685 numbered migrations in `db/` (highest `db/688`) remain the only thing that builds this database.
+rebuild a database from them.** The 686 numbered migrations in `db/` (highest `db/689`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 410 |
-| Columns | 6589 |
+| Tables | 411 |
+| Columns | 6604 |
 | Triggers | 38 |
 | Functions | 142 |
 | CHECK constraints | 354 |
 | Generated columns | 12 |
-| Partial indexes | 419 |
-| Primary keys | 410 |
+| Partial indexes | 420 |
+| Primary keys | 411 |
 | Foreign keys | 832 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1426 |
+| Indexes (all kinds) | 1430 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -234,7 +234,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (419)
+## Partial indexes (420)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -562,6 +562,7 @@ the live database.
 - **lt_ppe_rule_lookup_idx** on `lt_ppe_rule`
 - **lt_ppe_rule_suggestion_open_idx** on `lt_ppe_rule_suggestion`
 - **lt_pricer_scenarios_mine_idx** on `lt_pricer_scenarios`
+- **lt_pricing_source_misses_open_idx** on `lt_pricing_source_misses`
 - **lt_reo_properties_enc_uk** on `lt_reo_properties`
 - **lt_report_definitions_shared_idx** on `lt_report_definitions`
 - **lt_residences_enc_uk** on `lt_residences`
@@ -1922,7 +1923,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 410 primary keys and 1426 indexes is
+Every one of the 411 primary keys and 1430 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person
