@@ -32,10 +32,45 @@
  *   1. WHAT A BRACKET IS — `./dscr-tiers`, the owner's own eleven-tier ladder,
  *      SHARED rather than rebuilt (their explicit instruction). The board and
  *      the re-price refusal read one table, so they cannot disagree.
- *   2. WHAT A RATIO IS — `encompass/formulas.computeDscr`, the tenant's own
- *      Round(rent / PITIA, 2).
+ *   2. WHAT A RATIO IS — rent / PITIA, taken to two decimals through
+ *      `./tier-rounding.sendAs('dscr', …)`: CUT DOWN, never rounded to nearest.
+ *      See the owner-authorised change below.
  *   3. WHAT A PAYMENT IS — `termsheet/overlay.monthlyPI`, already the server's
  *      one definition, and only used when the vendor did not quote its own.
+ *
+ * ── THE BANDS CUT THE DSCR DOWN — OWNER-AUTHORISED CHANGE (2026-09-03) ───────
+ * ⛔ THIS MOVES PRICES, and it is here on the owner's explicit written
+ * authorisation. Asked what to do about the bands still rounding to nearest,
+ * they answered: *"Round it down, same as everywhere else."* That is the
+ * standing rule of 2026-08-30 — *"The DSCR should always be rounded down, and
+ * the LTV should always be rounded up, so we should never see better"* — finally
+ * applied to the one surface that had been left out.
+ *
+ * ⛔ WHAT WAS ACTUALLY WRONG. This file used `encompass/formulas.computeDscr`,
+ * which is `Round(rent / PITIA, 2)` — the TENANT'S OWN formula, correct for
+ * mirroring what Encompass shows and wrong as the question to ask a rate sheet.
+ * Rounding to nearest lifts a 1.245 loan to 1.245 → 1.25 and searches the band
+ * ABOVE the one the property earns, which is exactly the too-good price the
+ * bracket board exists to stop. `computeDscr` is UNTOUCHED and stays frozen —
+ * only its CALLER moved, which is the same shape the term-sheet fix took.
+ *
+ * ⛔ MEASURED, on 323,136 real-shaped deal/rate combinations (11 rents × 8 loan
+ * amounts × 6 tax figures × 4 insurance figures × 3 HOA figures × 51 rates from
+ * 5.25% to 11.5%), with the BEFORE engine built by neutralising this file's own
+ * changed line rather than by reading git (a git baseline proves inertness only
+ * until the change is committed, after which it compares the engine to itself):
+ *   · the ratio moves a cent in 161,915 of them (50.107%)
+ *   · the BAND moves in 9,722 (3.009%)
+ *   · every one of those 9,722 moves to a WORSE band. ZERO move to a better one
+ *     — asserted, not hoped: the measurement exits non-zero on a single ratio
+ *     that went up.
+ *   · nothing becomes unworkable: 0 nulls before, 0 after.
+ * And over 6,336 deals × the whole 11-band ladder (69,696 pairs): 0 bands LOST,
+ * 0 newly reachable, and the searched ratio moves in 5,176 — always downward.
+ *
+ * So the only thing this can do is search a band the loan has genuinely earned
+ * instead of the one above it. A borrower quoted at the better band was being
+ * shown a price the investor would not honour at lock.
  *
  * ── THE INVARIANT THIS EXISTS TO HOLD ────────────────────────────────────────
  * ⛔ FOR EVERY QUOTE ON THE FINISHED BOARD, THE BRACKET IT WAS PRICED IN IS THE
@@ -55,7 +90,7 @@
 
 const { DSCR_TIERS, dscrTier, tierRow, tierLabel } = require('./dscr-tiers');
 const { monthlyPI } = require('../termsheet/overlay');
-const { computeDscr } = require('../encompass/formulas');
+const tierRounding = require('./tier-rounding');
 
 const nn = (v) => typeof v === 'number' && Number.isFinite(v);
 const num = (v) => {
@@ -144,7 +179,12 @@ function ratioAtRate(figures, ratePct, vendorMonthlyPi = null) {
   if (!nn(pi) || pi <= 0) return null;
   const pitia = Math.round((pi + f.taxMonthly + f.insuranceMonthly + f.hoaMonthly) * 100) / 100;
   if (!(pitia > 0)) return null;
-  return computeDscr(f.rentMonthly, pitia);
+  if (!nn(f.rentMonthly)) return null;
+  /* ⛔ CUT DOWN, NEVER ROUNDED TO NEAREST — the owner's own rule, applied here by their
+     explicit written authorisation (see the header). `sendAs` is the ONE door that rule
+     lives behind, and going through it by NAME rather than by direction is what makes it
+     impossible to get backwards at a call site. */
+  return tierRounding.sendAs('dscr', f.rentMonthly / pitia, 2);
 }
 
 /** The bracket one rate lands in, or null. */
@@ -190,7 +230,12 @@ function sendRatioFor(tier, figures, rates) {
      is ever clamped. The band test below is what keeps this honest rather than
      convenient: a clamp that moved the figure into a neighbouring band would
      search the wrong scenario, so it yields null and that band is not priced. */
-  const rounded = Math.min(Math.round(best * 100) / 100, VENDOR_MAX_DSCR);
+  /* THE SAME DOOR, so the two places this file settles a ratio cannot answer differently.
+     MEASURED: it moves nothing today — `best` is either a ratio `ratioAtRate` has already
+     cut to two decimals, or a band edge that is 2dp by construction — so this is a
+     one-definition fix rather than a second numeric change. It is what stops the two
+     drifting the day either side gains a third decimal. */
+  const rounded = Math.min(tierRounding.sendAs('dscr', best, 2), VENDOR_MAX_DSCR);
   return dscrTier(rounded) === tier ? rounded : null;
 }
 
