@@ -42,6 +42,7 @@ import {
   Check, ModeTab, DscrCalc, useScenarioForm, ScenarioFields,
 } from './LtScenarioFields.jsx';
 import { useEngine, useExplain, EngineProvider, ExplainProvider, GENERAL_ENGINE } from './pricerEngine.js';
+import { NO_BREAKDOWN } from './sourceLabel.js';
 
 /**
  * THE PRICING ENGINE — every rate Lender Price is quoting, and every investor at each one.
@@ -854,19 +855,21 @@ export function ChargeList({ charges, sheet }) {
    disagree the screen says so on its face rather than quietly showing one of them.
    ────────────────────────────────────────────────────────────────────────── */
 /**
- * WHY THERE IS NO ITEMIZATION, in plain words â a FALLBACK, never a second copy of the rule.
+ * WHY THERE IS NO ITEMIZATION, in plain words — a FALLBACK, never a second copy of the rule.
  *
- * The vendor's own sentence (`evidence.message`) is preferred wherever the server has one; these
- * cover the two states that have a reason and no message, and the last resort. Keyed on the codes
- * `quote-shape.attachEvidence` and `loannex/parse.explainAbsence` actually emit.
+ * The vendor's own sentence (`evidence.message`) is preferred wherever the server has one; this
+ * is what to say when there is none.
+ *
+ * ⛔ IT CARRIES EVERY CODE THE SERVER CAN EMIT, and it did not use to. This map held FOUR of the
+ * server’s seven, missing exactly the two that describe a sheet which answered badly
+ * (`vendor_returned_no_evidence`, `unrecognised_answer_shape`) — so those fell through to the
+ * generic “no breakdown could be read”, losing the one fact the reader opened the panel for.
+ *
+ * It is the shared `sourceLabel.js` map now, mirrored from the server’s `pricing/sources.js` and
+ * held to it by `test-lt-source-vocabulary-pure`, which fails the moment the server grows a
+ * reason this cannot word.
  */
-const EXPLAIN_REASON = {
-  not_requested: 'This rate sheet has not been asked to itemise this price.',
-  no_answer: 'The rate sheet was asked and nothing came back, so there is no breakdown to show.',
-  evidence_is_for_a_different_rate_or_lock:
-    'The breakdown that came back is for a different rate or lock, so it is not shown against this one.',
-  unknown: 'No breakdown could be read from the rate sheet’s answer.',
-};
+const EXPLAIN_REASON = NO_BREAKDOWN;
 
 /**
  * WHAT THE RATE SHEET WAS ASKED, in one line — printed only where the table is empty.

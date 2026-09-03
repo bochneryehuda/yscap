@@ -5,6 +5,7 @@ import { ltApi } from './api.js';
 import LtInvestorLinks from './LtInvestorLinks.jsx';
 import { keyFromLabel, parseAliases } from './customInvestors.js';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, card, eyebrow, sub, input, label, LINE } from './ppeStyles.js';
+import { SOURCE_LABELS } from './sourceLabel.js';
 
 /**
  * COMBINED PRICING ENGINE — SETTINGS. One row per investor.
@@ -35,11 +36,9 @@ import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, card, eyebrow, sub
  * reaches a borrower or a broker, which is a hard rule.
  */
 
-const SOURCE_LABEL = {
-  lenderprice: 'Lender Price',
-  loannex: 'LoanNEX',
-  both: 'Both (compare)',
-};
+/* ONE definition of what we call a rate sheet (`sourceLabel.js`), plus the one word
+   only this screen has: `both` is a SETTING a person picks, never a sheet that answered. */
+const SOURCE_LABEL = { ...SOURCE_LABELS, both: 'Both (compare)' };
 
 /** Where an answer came from, in words a person can act on. */
 const ORIGIN_NOTE = {

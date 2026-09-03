@@ -39,6 +39,7 @@
 
 const round3 = (n) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n) * 1000) / 1000);
 const pricePoints = require('./price-points');
+const sources = require('./sources');
 const numOrNull = (n) => (n == null || n === '' || !Number.isFinite(Number(n)) ? null : Number(n));
 const strOrNull = (s) => {
   const t = s == null ? '' : String(s).trim();
@@ -55,18 +56,7 @@ const LINE_KEYS = ['group', 'label', 'detail', 'kind', 'valueType', 'value', 'va
  * `not_requested` is the ONLY one that means we never asked. Everything else is
  * something that happened after we did.
  */
-const NO_BREAKDOWN = {
-  not_requested: 'Nobody has asked this rate sheet to explain this price yet.',
-  /* OURS, NOT THE SHEET'S. The quote reached the breakdown without the ids the vendor
-     addresses a quote by, so it was never asked. Worded so nobody reads it as the rate
-     sheet refusing — that mistake is what this reason exists to end. */
-  quote_incomplete: 'This price reached the breakdown without everything needed to identify it, so the rate sheet was not asked. This one is ours to fix, not the sheet\'s.',
-  vendor_returned_no_evidence: 'The rate sheet accepted the question and returned no breakdown for this quote.',
-  unrecognised_answer_shape: 'The rate sheet answered in a shape this system does not recognise, so nothing is shown rather than a guess.',
-  no_answer: 'The rate sheet was asked and nothing came back.',
-  evidence_is_for_a_different_rate_or_lock: 'The breakdown that came back is for a different rate or lock, so it is not shown against this one.',
-  unknown: 'No breakdown could be read for this price.',
-};
+const NO_BREAKDOWN = sources.NO_BREAKDOWN;
 
 const ELIGIBILITY_ABSENT = 'This rate sheet does not publish the checks behind its answer, so there is nothing to list here.';
 

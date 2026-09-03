@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ltApi } from './api.js';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, card, eyebrow, sub, input, label, LINE, WASH } from './ppeStyles.js';
+import { sourceLabel } from './sourceLabel.js';
 
 /**
  * "THIS INVESTOR AND THIS INVESTOR ARE THE SAME" — the side-by-side, and the link.
@@ -404,7 +405,7 @@ export default function LtInvestorLinks({ pairing = null, onChanged = null, onAd
                 <div style={{ flex: '1 1 240px' }}>
                   <div style={{ fontSize: 13, color: INK, fontWeight: 700 }}>{u.name}</div>
                   <div style={{ fontSize: 11, color: MUTED }}>
-                    from {u.source === 'loannex' ? 'LoanNEX' : 'Lender Price'}
+                    from {sourceLabel(u.source)}
                   </div>
                 </div>
                 <div style={{ flex: '1 1 320px' }}>

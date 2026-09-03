@@ -4,6 +4,7 @@ import LtInvestorLinks from './LtInvestorLinks.jsx';
 import LtSourceMisses from './LtSourceMisses.jsx';
 import { keyFromLabel, parseAliases } from './customInvestors.js';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, card, eyebrow, sub, input, label, LINE, WASH } from './ppeStyles.js';
+import { sourceLabel } from './sourceLabel.js';
 
 /**
  * THE SIDE-BY-SIDE INVESTOR LIST — the ONE new section in the General Pricing Engine's settings.
@@ -34,7 +35,7 @@ import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, card, eyebrow, sub
 /** The three choices, in the owner's own order. `off` is never locked out. */
 const CHOICES = [
   { id: 'lenderprice', short: 'Lender Price', help: 'Price this investor from Lender Price.' },
-  { id: 'loannex', short: 'LoanNEX', help: 'Price this investor from LoanNEX.' },
+  { id: 'loannex', short: sourceLabel('loannex'), help: 'Price this investor from LoanNEX.' },
   { id: 'off', short: 'Off', help: 'Do not show this investor at all.' },
 ];
 
@@ -73,7 +74,7 @@ function AvailabilityCell({ availability }) {
       </div>
     );
   };
-  return <div style={{ display: 'grid', gap: 3 }}>{one('lenderprice', 'Lender Price')}{one('loannex', 'LoanNEX')}</div>;
+  return <div style={{ display: 'grid', gap: 3 }}>{one('lenderprice', sourceLabel('lenderprice'))}{one('loannex', sourceLabel('loannex'))}</div>;
 }
 
 /**

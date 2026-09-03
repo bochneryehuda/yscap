@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ltApi } from './api.js';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, eyebrow, sub, input, LINE, WASH } from './ppeStyles.js';
+import { sourceLabel } from './sourceLabel.js';
 
 /**
  * INVESTORS THE SECOND SYSTEM DID NOT CARRY — the record behind the silence.
@@ -141,7 +142,7 @@ export default function LtSourceMisses() {
                   {r.investor_label || r.investor_key}
                 </div>
                 <div style={{ fontSize: 12, color: MUTED }}>
-                  {r.source === 'loannex' ? 'LoanNEX' : r.source} did not carry them
+                  {sourceLabel(r.source)} did not carry them
                 </div>
                 <div style={{
                   fontSize: 11, fontWeight: 700, borderRadius: 999, padding: '2px 8px',

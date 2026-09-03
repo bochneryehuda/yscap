@@ -39,6 +39,7 @@
 const db = require('../db');
 const cfg = require('../config');
 const email = require('../../lib/email');
+const sources = require('./sources');
 
 /** How many rows the review section hands back at once. */
 const PAGE = 100;
@@ -214,8 +215,9 @@ async function alert(rows, ctx) {
   }
 }
 
-const SHEETS = { loannex: 'LoanNEX', lenderprice: 'Lender Price' };
-const sheetName = (s) => SHEETS[s] || s;
+// ONE definition of what we call a rate sheet (`pricing/sources`), so this email
+// and the board it is about can never name the same sheet two ways.
+const sheetName = sources.sourceLabel;
 const nameOf = (r) => r.investor_label || r.investor_key;
 
 /** The scenario in words, so the email can be acted on without opening anything. */
