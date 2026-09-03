@@ -425,7 +425,16 @@ const { EXPLAIN_LENDER_ID } = require('./investor-routing');
 function explainHandle(r, p, price, opts = {}) {
   if (!r || !r.priceHashKey) return null;
   const h = {
-    vendor: 'loannex',
+    /**
+     * ⛔ THE HANDLE DOES NOT NAME THE VENDOR (audit F8, 2026-09-02). It used to carry
+     * `vendor: 'loannex'` in plain text on EVERY ordinary-board row — on the one board whose whole
+     * rule is that it must not be tellable apart. Nothing ever read it: `/explain` decides a row is
+     * explainable by the presence of `priceHashKey`, not by this field, and no browser code
+     * mentions it. It was a name sitting on the wire for no reader at all.
+     *
+     * A guard used to PIN it as correct (`test-lt-combined-details-pure` NEX-4). That guard has been
+     * turned around rather than deleted: it now asserts the absence, with the reason beside it.
+     */
     priceHashKey: r.priceHashKey,
     rate: round3(r.rate),
     price,
@@ -442,6 +451,29 @@ function explainHandle(r, p, price, opts = {}) {
   // Omitted rather than sent as null: a null would read as "asked and there was none",
   // and the route falls back to the request body only when the key is genuinely absent.
   if (opts.transactionId != null) h.transactionId = opts.transactionId;
+  /**
+   * ⛔ THE PORTAL STAYS ON THE HANDLE, AND THAT IS A DECISION WITH A REASON (audit F8, 2026-09-02).
+   *
+   * It IS a tell — the portal is spelled with the investor's own name in it for an investor-
+   * specific portal (`acracorrespondent`, `nqmfcorr`), and `askedOf` withholds it from the explain
+   * ANSWER for exactly that reason. It was gated behind `reveal` here and the change was WRONG;
+   * two guards caught it and they were right:
+   *
+   *   · C3/D2 in `test-lt-explain-search-identity-pure` — "the vendor is asked on the row's own
+   *     portal" went red with `got undefined, want "nqmfcorr"`.
+   *
+   * The mistaken reasoning was that the portal is one process-wide `NEX_PORTAL` and the browser
+   * never sends one, so an explain call with no portal would resolve to the same value the price
+   * call did. That is true ONLY for the aggregator. An investor-specific portal is a real, designed
+   * second source (`client.js`: the `web` portal answers nine investors, `nqmfcorr` answers exactly
+   * one), and the portal a row was priced on comes back on the VENDOR'S OWN answer — it is not the
+   * environment's default. Dropping it would have sent the explain call to the wrong portal for
+   * precisely those rows, re-opening the empty-LLPA defect the owner reported twice.
+   *
+   * So it stays, and the tell stays with it — recorded in the README rather than papered over. The
+   * honest fix is an opaque handle the browser cannot read, which changes the wire contract on the
+   * one path that cannot be verified without a live vendor from here.
+   */
   if (opts.portal != null) h.portal = opts.portal;
   return h;
 }

@@ -21,6 +21,10 @@
  * production code with an unmutated control green on either side:
  *   1.  the code registry wins over a person's link                 → WIN-3
  *   2.  store a link pointing at an investor nobody knows           → VALID-2/3/4
+ *       ("nobody knows" is the EFFECTIVE roster since 2026-09-02: not in the
+ *        registry AND not one somebody added by hand — a link to an investor
+ *        added this morning is a real link, and refusing it would make the
+ *        add-an-investor door useless)
  *   3.  repair a bad map instead of refusing it                     → VALID-4
  *   4.  apply the top suggestion automatically                      → WIN-1, SUGGEST-4
  *   5.  drop the guess mark so a heuristic reads as a recorded fact → GUESS-1/2, MERGE-5, PAIR-3
@@ -90,8 +94,9 @@ console.log('\n── A LINK MAY ONLY POINT AT AN INVESTOR THAT EXISTS ──');
   const bad = links.validateLinks({ 'Some Lender': { key: 'not_a_real_investor' } });
   is(() => bad.ok === false && bad.problems.length === 1 && bad.problems[0].problem === 'unknown_investor',
     'VALID-2 a link to an investor nobody knows is REFUSED — storing it would look like it had worked');
-  is(() => /does not know/i.test(String(bad.problems[0].message)) && bad.problems[0].message.includes('Some Lender'),
-    'VALID-3 …and the refusal names the row, so a person can see which one is wrong');
+  is(() => /not in the registry and not one added by hand/i.test(String(bad.problems[0].message))
+    && bad.problems[0].message.includes('Some Lender'),
+  'VALID-3 …and the refusal names the row AND both places an investor can come from, so a person can see which one is wrong and what to do about it');
   is(() => bad.links === null,
     'VALID-4 …and nothing is saved: a map is refused whole rather than half-repaired');
   const empty = links.validateLinks({ 'X': {} });

@@ -79,7 +79,6 @@ const investorLinks = require('../pricing/investor-links');
 // The canonical investor roster and the client-safe names, both read-only here —
 // the pick-list a person chooses from is DERIVED from the one registry, never a
 // second list this route keeps for itself.
-const investors = require('../encompass/investors');
 const { whiteLabelOf } = require('../lenderprice/investor-programs');
 const quoteShape = require('../pricing/quote-shape');
 const productFilter = require('../pricing/product-filter');
@@ -87,6 +86,8 @@ const breakdown = require('../pricing/breakdown');
 const nearTier = require('../pricing/near-tier');
 const vendorMargin = require('../pricing/vendor-margin');
 const settingsStore = require('../settings/store');
+const rosterContext = require('../pricing/roster-context');
+const roster = require('../pricing/investor-roster');
 
 /**
  * An investor with nothing shapeable — never a guess, always an honest empty.
@@ -217,7 +218,11 @@ async function holdbackOnRow(investorKey, b = {}) {
   const key = investorKey == null ? '' : String(investorKey).trim();
   if (key) {
     const saved = b.routes !== undefined ? { raw: b.routes } : await settingsRaw();
-    const row = routing.settingFor(key, routing.readSettings(saved.raw).settings);
+    // The investors added by hand, read the same way the board reads them — a
+    // panel that did not know about them would answer "no setting" for one and
+    // quietly shift its base by the board-wide figure instead.
+    const custom = b.custom !== undefined ? roster.asCustom(b.custom) : (await customRaw()).custom;
+    const row = routing.settingFor(key, routing.readSettings(saved.raw, custom).settings, custom);
     if (row && row.holdbackOrigin === 'setting') extra = row.holdback;
   }
   return vendorMargin.resolveHoldback('loannex', savedGlobal, extra);
@@ -273,6 +278,20 @@ async function linksRaw() {
   } catch (e) {
     return { raw: {}, problem: reasonOf(e) };
   }
+}
+
+/**
+ * THE INVESTORS SOMEBODY ADDED BY HAND, as a Map every roster reader takes.
+ *
+ * Same posture again, and it matters most here: an unreadable store yields the
+ * REGISTRY ALONE. A hand-added investor then prices exactly as it did before it
+ * was added — it drops off the board as an unmapped name rather than pricing
+ * under a white label nobody could verify — and `customInvestors.problem` on the
+ * answer says why, so the screen can tell somebody instead of showing a shorter
+ * list as though that were the truth.
+ */
+async function customRaw() {
+  return rosterContext.loadCustom();
 }
 
 /**
@@ -454,16 +473,19 @@ async function priceBoth(scenario, opts = {}) {
    * links. A second lookup here would eventually put one investor's extra on
    * another investor's rows, and the price on the board is what somebody quotes.
    */
+  // THE INVESTORS ADDED BY HAND, READ ONCE FOR THE WHOLE BOARD. Every reader
+  // below takes the map as an argument, so the holdback, the merge, the routing
+  // and the pairing all answer about the SAME roster — reading it per-reader is
+  // how one of them ends up not knowing about an investor the others priced.
+  const customCtx = opts.custom !== undefined
+    ? { custom: roster.asCustom(opts.custom), problems: [], problem: null }
+    : await customRaw();
+  const custom = customCtx.custom;
   const savedForHoldback = opts.routes !== undefined ? { raw: opts.routes } : await settingsRaw();
   const linksForHoldback = opts.links !== undefined ? { raw: opts.links } : await linksRaw();
-  const investorRows = routing.readSettings(savedForHoldback.raw).settings;
-  const linkMapForHoldback = investorLinks.readLinks(linksForHoldback.raw).links;
-  const extraFor = (prog) => {
-    const hit = mergeMod.resolveInvestor(prog, linkMapForHoldback);
-    if (!hit || !hit.key) return null;
-    const row = routing.settingFor(hit.key, investorRows);
-    return row && row.holdbackOrigin === 'setting' ? row.holdback : null;
-  };
+  const investorRows = routing.readSettings(savedForHoldback.raw, custom).settings;
+  const linkMapForHoldback = investorLinks.readLinks(linksForHoldback.raw, custom).links;
+  const extraFor = routing.extraResolver(investorRows, linkMapForHoldback, custom);
 
   const [lpRes, nxRes] = await Promise.allSettled([
     (async () => {
@@ -495,7 +517,7 @@ async function priceBoth(scenario, opts = {}) {
       // as the existing pricer does, so both halves reach the merge decorated the
       // same way. `decorate` takes the PROGRAMS ARRAY and answers
       // { programs, roster, unmapped }.
-      const deco = lpPrograms.decorate(parsed.programs) || {};
+      const deco = lpPrograms.decorate(parsed.programs, custom) || {};
       const withPrograms = { ...parsed, programs: deco.programs || parsed.programs };
       /**
        * ⛔ AN INVESTOR'S OWN EXTRA REACHES LENDER PRICE; THE GLOBAL FIGURE STILL
@@ -549,7 +571,12 @@ async function priceBoth(scenario, opts = {}) {
     ? lpRes.value.request : null;
   const lpCriteria = (wire && wire.criteria && typeof wire.criteria === 'object') ? wire.criteria
     : (chk.request && chk.request.criteria);
-  const want = productFilter.wantFrom(sc, lpModel._internals, { lpCriteria });
+  // ⛔ THE RATE LOCK COMES OFF THE BODY ROOT, not off `criteria` — `search-model` writes it to
+  // `dayLocksCriteria` (and `brokerCriteria.dayLocks`) beside `criteria`, never inside it. Same
+  // rule and same fallback as interest-only above: the WIRE body Lender Price actually received,
+  // and the static build only when Lender Price failed and there is no wire body to mirror.
+  const lpRequest = wire || (chk.request && typeof chk.request === 'object' ? chk.request : null);
+  const want = productFilter.wantFrom(sc, lpModel._internals, { lpCriteria, lpRequest });
   const narrowed = nxRes.status === 'fulfilled'
     ? productFilter.narrowBoard(nxRes.value.board, want)
     : null;
@@ -580,8 +607,8 @@ async function priceBoth(scenario, opts = {}) {
   // The human's investor links, resolved the same way the routing is, so the
   // board and the settings screen can never disagree about who is who.
   const linked = opts.links !== undefined ? { raw: opts.links } : await linksRaw();
-  const mergedRaw = merge(boards, { errors, links: linked.raw });
-  const merged = routing.applyRouting(mergedRaw, { routes: saved.raw, revealSource: opts.revealSource === true });
+  const mergedRaw = merge(boards, { errors, links: linked.raw, custom });
+  const merged = routing.applyRouting(mergedRaw, { routes: saved.raw, custom, revealSource: opts.revealSource === true });
 
   // The unified option list, on request. Built from the ROUTED board so a
   // suppressed or routed-away investor cannot reappear through a second door.
@@ -600,7 +627,7 @@ async function priceBoth(scenario, opts = {}) {
     // unless the caller asked for one.
     const shaping = new Map();
     if (opts.revealSource !== true) {
-      for (const e of routing.applyRouting(mergedRaw, { routes: saved.raw, revealSource: true }).investors) {
+      for (const e of routing.applyRouting(mergedRaw, { routes: saved.raw, custom, revealSource: true }).investors) {
         shaping.set(e.key, e.bySource || EMPTY_SPLIT);
       }
     }
@@ -675,8 +702,12 @@ async function priceBoth(scenario, opts = {}) {
     productFilter: {
       asked: want,
       applied: !!(narrowed && narrowed.narrowed),
-      dropped: narrowed ? narrowed.dropped : { amortization: 0, interestOnly: 0, term: 0 },
+      dropped: narrowed ? narrowed.dropped : { amortization: 0, interestOnly: 0, term: 0, lock: 0 },
+      // The lock removes RUNGS from programmes that stay, so it is reported as its own quantity
+      // rather than folded into a programme count that would then not add up.
+      droppedRungs: narrowed ? narrowed.droppedRungs : { lock: 0 },
       unclassified: narrowed ? narrowed.unclassified : 0,
+      unclassifiedRungs: narrowed ? narrowed.unclassifiedRungs : 0,
     },
     // The general engine's own top-level keys, so the copied screen needs no
     // reshaping of its own. `investorRoster` / `investorsUnmapped` keep the
@@ -692,7 +723,20 @@ async function priceBoth(scenario, opts = {}) {
     investorPairing: investorLinks.pairing({
       lenderprice: namesOf(boards.lenderprice),
       loannex: namesOf(boards.loannex),
-    }, linked.raw),
+    }, linked.raw, custom),
+    /**
+     * THE HAND-ADDED INVESTORS THIS BOARD WAS PRICED AGAINST — said out loud.
+     *
+     * `problem` is the settings store refusing to answer at all, `problems` what
+     * the tolerant read dropped. Either way the board is the registry's idea of
+     * the roster, and a screen showing a shorter list has to be able to say so
+     * rather than presenting it as the whole truth.
+     */
+    customInvestors: {
+      count: custom.size,
+      problems: customCtx.problems || [],
+      problem: customCtx.problem || null,
+    },
     // What is NOT on the board, and why — so a short board can always be
     // accounted for without asking anybody.
     hidden: merged.hidden || [],
@@ -717,14 +761,30 @@ async function priceBoth(scenario, opts = {}) {
       value: sc.value, loan: sc.loan, ltvPct: sc.ltv != null ? (sc.ltv > 1 ? sc.ltv : sc.ltv * 100) : null,
       dscr: sc.dscr, lines: cellsOnBoard(mergedRaw),
     }),
-    // How each half was ASKED — a merged number nobody can trace back to a
-    // request is not a number anybody should price a loan on.
-    provenance: {
-      lenderprice: lpRes.status === 'fulfilled' ? { searchKey: lpRes.value.searchKey, provenance: lpRes.value.provenance } : null,
-      loannex: nxRes.status === 'fulfilled'
-        ? { portal: nxRes.value.portal, portalId: nxRes.value.portalId, transactionId: nxRes.value.transactionId, county: nxRes.value.county, registry: nxRes.value.registry }
-        : null,
-    },
+    /**
+     * How each half was ASKED — a merged number nobody can trace back to a
+     * request is not a number anybody should price a loan on.
+     *
+     * ⛔ BUT ONLY FOR AN ADMIN WHO ASKED (audit F8, 2026-09-02). This block was returned
+     * UNCONDITIONALLY, and it is keyed by vendor name with `loannex.portal` inside it — so the one
+     * board whose rule is that it must not be tellable apart was handing over both the vendor's
+     * name and its portal on every answer. `askedOf` already withholds the portal from the EXPLAIN
+     * answer, and says why: *it names the investor's own portal*. The same fact cannot be a secret
+     * two functions away and public here.
+     *
+     * Nothing is discarded — the flag decides what is SHOWN, exactly as it does for `source`, the
+     * per-vendor split and the holdback trail. No browser code reads this block at all (checked:
+     * no reference to `provenance` anywhere in `app-v2/src/longterm`), so withholding it costs no
+     * screen anything today, and an admin who asks still gets the whole trail.
+     */
+    ...(opts.revealSource === true ? {
+      provenance: {
+        lenderprice: lpRes.status === 'fulfilled' ? { searchKey: lpRes.value.searchKey, provenance: lpRes.value.provenance } : null,
+        loannex: nxRes.status === 'fulfilled'
+          ? { portal: nxRes.value.portal, portalId: nxRes.value.portalId, transactionId: nxRes.value.transactionId, county: nxRes.value.county, registry: nxRes.value.registry }
+          : null,
+      },
+    } : {}),
   };
 }
 
@@ -927,9 +987,11 @@ function makeRouter(opts = {}) {
 
   router.get('/investors', async (req, res) => {
     const src = await settingsRaw();
-    const d = routing.describeSettings(src.raw, { origin: src.origin });
+    const c = await customRaw();
+    const d = routing.describeSettings(src.raw, { origin: src.origin, custom: c.custom });
     res.json({
       ok: true, ...d,
+      customInvestors: { count: c.custom.size, problems: c.problems, problem: c.problem },
       // The ones with no client-safe name yet, named out loud so somebody can
       // go and name them — an investor with no white label may never be put in
       // front of a borrower or a broker.
@@ -960,7 +1022,10 @@ function makeRouter(opts = {}) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       return res.status(400).json({ ok: false, error: 'not_an_object', message: 'Send an object of investorKey -> {source, enabled, whiteLabel, holdback}.' });
     }
-    const check = routing.readSettings(body);
+    // Validated against the EFFECTIVE roster, so a row for an investor somebody
+    // added by hand is a known investor here exactly as it is on the board.
+    const c0 = await customRaw();
+    const check = routing.readSettings(body, c0.custom);
     if (check.problems.length) {
       return res.status(422).json({ ok: false, error: 'invalid_settings', problems: check.problems });
     }
@@ -972,7 +1037,8 @@ function makeRouter(opts = {}) {
       return res.status(500).json({ ok: false, error: 'save_failed', message: reasonOf(e) });
     }
     const src = await settingsRaw();
-    const d = routing.describeSettings(src.raw, { origin: src.origin });
+    const c = await customRaw();
+    const d = routing.describeSettings(src.raw, { origin: src.origin, custom: c.custom });
     res.json({ ok: true, saved: Object.keys(check.settings).length, ...d,
       needsWhiteLabel: d.investors.filter((r) => r.whiteLabelMissing).map((r) => ({ key: r.key, investor: r.label })) });
   });
@@ -992,16 +1058,34 @@ function makeRouter(opts = {}) {
    */
   router.get('/investor-links', async (req, res) => {
     const cur = await linksRaw();
+    const c = await customRaw();
     res.json({
       ok: true,
       links: cur.raw,
       linkCount: Object.keys(cur.raw || {}).length,
       problem: cur.problem || null,
-      // The pick-list. Sorted by how often the registry has actually seen each
-      // investor, so the common ones are at the top of a list of 42.
-      investors: investors.list().map((i) => ({
-        key: i.key, label: i.label, whiteLabel: whiteLabelOf(i.key) || null,
-      })),
+      /**
+       * THE PICK-LIST, A TO Z (owner-directed 2026-09-02: *"the list should be
+       * alphabetical so I can find a name"*).
+       *
+       * It was ordered by how often the registry had SEEN each investor, which
+       * puts the common ones on top and leaves everything else in an order
+       * nobody can predict — on a list of forty-odd names, hunting. Sorted here
+       * as well as on the screen so the answer is already in order for anything
+       * that renders it without sorting.
+       *
+       * The list is the EFFECTIVE roster, so an investor somebody added by hand
+       * is linkable the moment it exists.
+       */
+      investors: roster.effectiveList(c.custom)
+        .map((i) => ({
+          key: i.key,
+          label: i.label,
+          whiteLabel: whiteLabelOf(i.key, c.custom) || null,
+          custom: i.custom === true,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+      customInvestors: { count: c.custom.size, problems: c.problems, problem: c.problem },
     });
   });
 
@@ -1015,7 +1099,8 @@ function makeRouter(opts = {}) {
    * storing it anyway would look to the person like it had worked.
    */
   router.put('/investor-links', async (req, res) => {
-    const check = investorLinks.validateLinks((req.body || {}).links);
+    const cLinks = await customRaw();
+    const check = investorLinks.validateLinks((req.body || {}).links, cLinks.custom);
     if (!check.ok) return res.status(422).json({ ok: false, error: 'bad_links', problems: check.problems });
     try {
       await settingsStore.save({ [investorLinks.SETTING_KEY]: check.links }, {
@@ -1028,6 +1113,149 @@ function makeRouter(opts = {}) {
     res.json({ ok: true, saved: Object.keys(check.links).length, links: cur.raw });
   });
 
+
+  /**
+   * THE INVESTORS SOMEBODY ADDED BY HAND (owner-directed 2026-09-02: *"I want to
+   * be able to add a new investor myself… And I need to give it our own name,
+   * the way the others have one."*).
+   *
+   * GET returns the stored map AND the list the screen draws, already in order,
+   * beside the whole effective roster — so the "is this key already taken?"
+   * question is answerable on the screen rather than only at the door.
+   */
+  router.get('/custom-investors', async (req, res) => {
+    const c = await customRaw();
+    res.json({
+      ok: true,
+      investors: c.raw,
+      count: c.custom.size,
+      list: [...c.custom.values()]
+        .map((e) => ({
+          key: e.key,
+          label: e.label,
+          whiteLabel: e.whiteLabel || null,
+          aliases: e.aliases.slice(),
+          addedBy: e.addedBy || null,
+          addedAt: e.addedAt || null,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+      problems: c.problems,
+      problem: c.problem || null,
+      // Every key already in use, registry and hand-added together, so the form
+      // can say "that key is taken" before anybody presses save.
+      keysInUse: roster.effectiveList(c.custom).map((i) => i.key),
+    });
+  });
+
+  /**
+   * ADD, EDIT AND REMOVE THEM. The WHOLE map is sent, exactly like the investor
+   * settings and the links beside it — a partial write cannot express a REMOVED
+   * investor, and an investor somebody meant to delete quietly surviving is the
+   * worst outcome here.
+   *
+   * REFUSES RATHER THAN REPAIRS. `validateCustom` is the same door the settings
+   * store runs on the way in (it is declared beside the key), so a save that
+   * gets past this one cannot fail there: a bad key, a label or alias that
+   * collides with a spelling already recorded, or a white label that would not
+   * survive the audience scrub is answered with every problem NAMED.
+   *
+   * ⛔ AND AN INVESTOR STILL BEING USED IS NEVER REMOVED SILENTLY. A link or a
+   * settings row pointing at a key nobody knows would be refused by its own
+   * door on the next save, leaving somebody with a screen they cannot save and
+   * no way to see why — so the removal is refused HERE, naming what still
+   * points at it.
+   */
+  router.put('/custom-investors', async (req, res) => {
+    const body = (req.body && typeof req.body === 'object' && req.body.investors) || req.body || {};
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return res.status(400).json({ ok: false, error: 'not_an_object', message: 'Send an object of investor key -> { label, whiteLabel, aliases }.' });
+    }
+
+    const check = roster.validateCustom(body);
+    if (!check.ok) {
+      return res.status(422).json({ ok: false, error: 'invalid_custom_investors', problems: check.problems });
+    }
+
+    const before = await customRaw();
+    const gone = [...before.custom.keys()].filter((k) => !Object.prototype.hasOwnProperty.call(check.custom, k));
+    if (gone.length) {
+      const [linksNow, settingsNow] = await Promise.all([linksRaw(), settingsRaw()]);
+      // `readLinks` answers a MAP, keyed on the normalized spelling and carrying
+      // the person's own spelling on the entry — that spelling is what the
+      // refusal has to quote, because it is the one they are looking at.
+      const links = investorLinks.readLinks(linksNow.raw, before.custom).links || new Map();
+      const rows = routing.readSettings(settingsNow.raw, before.custom).settings || {};
+      const stillUsed = [];
+      for (const key of gone) {
+        const spellings = [...links.values()].filter((v) => v && v.key === key).map((v) => v.name);
+        const hasRow = Object.prototype.hasOwnProperty.call(rows, key);
+        if (!spellings.length && !hasRow) continue;
+        const label = (before.custom.get(key) || {}).label || key;
+        const parts = [];
+        if (spellings.length) parts.push(`${spellings.length} linked spelling${spellings.length === 1 ? '' : 's'} (${spellings.join(', ')})`);
+        if (hasRow) parts.push('a saved setting of its own');
+        stillUsed.push({
+          key,
+          problem: 'still_in_use',
+          message: `"${label}" still has ${parts.join(' and ')}. Take those off first, then remove the investor.`,
+        });
+      }
+      if (stillUsed.length) {
+        return res.status(422).json({ ok: false, error: 'invalid_custom_investors', problems: stillUsed });
+      }
+    }
+
+    // WHO ADDED IT AND WHEN, stamped once and never rewritten: an edit to the
+    // label is not a new investor, and overwriting the stamp would lose the one
+    // record of where the name came from.
+    const now = new Date().toISOString();
+    const actor = (req.actor && req.actor.id) || null;
+    const clean = {};
+    for (const [key, entry] of Object.entries(check.custom)) {
+      const prior = before.custom.get(key);
+      clean[key] = {
+        ...entry,
+        addedBy: (prior && prior.addedBy) || entry.addedBy || actor,
+        addedAt: (prior && prior.addedAt) || entry.addedAt || now,
+      };
+    }
+
+    try {
+      await settingsStore.save({ [roster.SETTING_KEY]: clean }, {
+        scope: 'company', staffId: actor,
+      });
+    } catch (e) {
+      // The store runs the SAME door again on the way in, so a refusal here is
+      // reported as one rather than as a mystery 500.
+      if (e && e.status === 400 && Array.isArray(e.problems) && e.problems.length) {
+        return res.status(422).json({ ok: false, error: 'invalid_custom_investors', problems: e.problems });
+      }
+      return res.status(500).json({ ok: false, error: 'save_failed', message: reasonOf(e) });
+    }
+
+    const after = await customRaw();
+    res.json({
+      ok: true,
+      saved: Object.keys(clean).length,
+      removed: gone.length,
+      investors: after.raw,
+      count: after.custom.size,
+      list: [...after.custom.values()]
+        .map((e) => ({
+          key: e.key,
+          label: e.label,
+          whiteLabel: e.whiteLabel || null,
+          aliases: e.aliases.slice(),
+          addedBy: e.addedBy || null,
+          addedAt: e.addedAt || null,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+      problems: after.problems,
+      problem: after.problem || null,
+      keysInUse: roster.effectiveList(after.custom).map((i) => i.key),
+    });
+  });
+
   /**
    * WHAT MIGHT THIS NAME BE? A proposal, never applied.
    *
@@ -1036,10 +1264,11 @@ function makeRouter(opts = {}) {
    * under another investor's name, and that name is the one thing a client may
    * see.
    */
-  router.get('/investor-links/suggest', (req, res) => {
+  router.get('/investor-links/suggest', async (req, res) => {
+    const c = await customRaw();
     const name = String((req.query && req.query.name) || '').trim();
     if (!name) return res.status(400).json({ ok: false, error: 'missing_name', message: 'Send the spelling you want suggestions for.' });
-    res.json({ ok: true, name, suggestions: investorLinks.suggestFor(name) });
+    res.json({ ok: true, name, suggestions: investorLinks.suggestFor(name, { custom: c.custom }) });
   });
 
   /**
@@ -1178,4 +1407,4 @@ function makeRouter(opts = {}) {
   return router;
 }
 
-module.exports = { makeRouter, _internals: { enabled, isSuperAdmin, priceBoth, scenarioOf, explainScenario, scenarioRefused, askedOf, reasonOf, vendorQuote, searchIdentity, routing, quoteShape, breakdown } };
+module.exports = { makeRouter, _internals: { enabled, isSuperAdmin, priceBoth, scenarioOf, explainScenario, scenarioRefused, askedOf, reasonOf, vendorQuote, searchIdentity, routing, quoteShape, breakdown, customRaw } };

@@ -80,6 +80,12 @@ export const GENERAL_ENGINE = {
   cart: true,
   /** The counts line ends with a lender count; only a board whose door returns one may say it. */
   lenderCount: true,
+  /* FORK 10 — DOES A ROW PRINT ITS RATE LOCK? Not here. Every quote on this board came from one
+     vendor answering one `dayLocksCriteria`, so every row is at the same lock and printing it on
+     each would be the same number repeated down the page. The owner's rule for this engine is
+     *"don't touch our current setup"*, and a board of identical badges is a change that buys
+     nothing. The lock is where it has always been, in the expanded Details panel. */
+  showRowLock: false,
   /** What the SETTINGS screen for this engine is called. */
   settingsTitle: 'Long-term settings',
   /* WHICH GROUPS OF THE COMPANY ROSTER THIS ENGINE'S SETTINGS SCREEN LEAVES OUT.
@@ -144,6 +150,14 @@ export const COMBINED_ENGINE = {
   /* The combined door returns `programCount` and the investor roster; it does not return a lender
      count, and inventing a two-vendor meaning of "a lender" is the owner's call, not a screen's. */
   lenderCount: false,
+  /* FORK 10 — this board DOES print the lock, because it is the board where the question can be
+     asked. Two programs answer here, and until 2026-09-02 only one of them was narrowed by the
+     lock: Lender Price answers at the lock it was asked for and at no other, while LoanNEX accepts
+     no lock in its search and answered at 15, 30, 45 and 60 days at once. `product-filter` now
+     mirrors the asked lock onto the LoanNEX board so every row IS at one lock — and this prints
+     that lock, so the officer can see it is the one they asked for rather than trust that it is.
+     A row whose option carries no lock draws nothing, never a guessed 30. */
+  showRowLock: true,
   settingsTitle: 'Combined Pricing Engine settings',
   /* THE COMBINED SCREEN HIDES NOTHING. The owner's rule for it is *"separate settings with all the
      settings we currently have, adding the additional settings to link the investors and choose

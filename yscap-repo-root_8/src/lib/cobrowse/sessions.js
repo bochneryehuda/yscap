@@ -194,7 +194,6 @@ async function view(row, actor, dbc = db) {
       grants: Number(row.control_grants) || 0,
       events: Number(row.control_events) || 0,
     },
-    redactionDrops: Number(row.redaction_drops) || 0,
   };
 }
 
@@ -442,7 +441,7 @@ async function history(actor, { limit = 50 } = {}, dbc = db) {
     applicationId: s.application_id, requestedAt: s.requested_at, consentedAt: s.consented_at,
     startedAt: s.started_at, endedAt: s.ended_at, eventBatches: Number(s.event_batches) || 0,
     controlGrants: Number(s.control_grants) || 0, controlEvents: Number(s.control_events) || 0,
-    controlReleaseReason: s.control_release_reason || null, redactionDrops: Number(s.redaction_drops) || 0,
+    controlReleaseReason: s.control_release_reason || null,
   }));
 }
 
@@ -460,19 +459,20 @@ function bumpBatches(sessionId, n) {
 function bumpControl(sessionId, n) {
   db.query(`UPDATE cobrowse_sessions SET control_events = control_events + $2, last_seen_at = now() WHERE id = $1::uuid`, [sessionId, Number(n) || 0]).catch(() => {});
 }
-/** Phase C: batches the hub refused to relay because a secret-shaped value was in the clear. */
-function bumpRedactions(sessionId, n) {
-  db.query(`UPDATE cobrowse_sessions SET redaction_drops = redaction_drops + $2 WHERE id = $1::uuid`, [sessionId, Number(n) || 0]).catch(() => {});
-}
 
 /* ── Phase B: TAKE CONTROL — a second consent, on top of the first ─────────────
  * The viewer ASKS; the watched person's screen shows "X asks to control your
- * screen — they can click and type for you. Move your mouse or press Stop to take
- * it back." Only a 'granted' row lets the hub relay an input event, and the hub
- * re-reads this state on every attach, so control can never be inferred from a
- * stale socket. The guest takes it back by MOVING (their own real mouse or keys —
- * the driver only fires on trusted events), by pressing Stop, or by ending the
- * session; a request nobody answers cancels itself after CONTROL_REQUEST_TTL_SEC. */
+ * screen — they can click and type for you. Click anywhere, press a key, or press
+ * Take back to take it back." Only a 'granted' row lets the hub relay an input
+ * event, and the hub re-reads this state on every attach, so control can never be
+ * inferred from a stale socket. The guest takes it back with a DELIBERATE ACT of
+ * their own hand — a click, a key, a scroll, a touch (the driver only ever fires
+ * untrusted events, so a controller can never release themselves) — or by pressing
+ * Take back / Stop, or by ending the session; a request nobody answers cancels
+ * itself after CONTROL_REQUEST_TTL_SEC. A PASSIVE MOUSE MOVE IS NOT A TAKE-BACK:
+ * the 40px travel threshold that used to be one was reached by a hand resting on a
+ * trackpad, so control was granted and lost again at once (owner-reported
+ * 2026-09-02). See armDriving in app-v2/src/lib/cobrowse.js. */
 function tellHubControl(row, status) {
   try { require('./hub').setControl(row.id, status); } catch (_) { /* no hub in this process */ }
 }
@@ -607,6 +607,6 @@ module.exports = {
   REQUEST_TTL_SEC, MAX_SESSION_SEC, CONTROL_REQUEST_TTL_SEC, STALE_ACTIVE_SEC, NEVER_STARTED_SEC,
   END_REASONS, KINDS, CONTROL_STATUSES, CONTROL_RELEASE_REASONS,
   mayWatch, request, respond, end, endAllFor, pendingFor, activeFor, history, view, loadRaw,
-  isViewer, isWatched, markStarted, touch, bumpBatches, bumpControl, bumpRedactions, sweep,
+  isViewer, isWatched, markStarted, touch, bumpBatches, bumpControl, sweep,
   requestControl, respondControl, releaseControl,
 };
