@@ -220,5 +220,66 @@ console.log('\nG · THE TEAM\'S OWN DRAW EMAIL gets the same treatment');
   ok(m.text.includes('$52,000.00') && m.text.includes('Line 40'), 'all of it reaches text/plain too');
 }
 
+console.log('\nH · A DRAW JUST SUBMITTED FOR REVIEW leads with the REQUEST — never "$0 approved"');
+
+{
+  // Owner-reported 2026-09-03 (Draw #2, 69 Bassett St): the "submitted for review" notice led
+  // "Approved on this draw $0 — nothing approved this time — the $42,250 requested stays on the
+  // budget". Sitewire's draw payload carries approved_cents:0 — NOT null — on every line of a
+  // freshly submitted draw, so the mirror reads as an inspector's explicit $0 the moment it lands.
+  const SUBMITTED_REQ = 4225000;
+  const justSubmitted = A.drawMoney({
+    draw: { total_requested_cents: SUBMITTED_REQ, status: 'inspecting', total_approved_cents: 0 },
+    requests: [
+      { requested_cents: 2500000, approved_cents: 0 },
+      { requested_cents: 1725000, approved_cents: 0 },
+    ],
+    feeCents: FEE,
+  });
+  // The ladder now reads an all-zero mirror on an `inspecting` draw as "not answered yet"
+  // (approval.inspectorApproved), so even the staged band leads with the request here — the desk
+  // screen reads off the same money. The submission notice still asks for its own band below, so
+  // the email never depends on that gate alone.
+  ok(justSubmitted.has_inspector_amounts === false && justSubmitted.approval_stage === 'inspecting',
+    'the ladder does not read Sitewire\'s not-null zeros on an `inspecting` draw as an answer');
+  const staged = de.drawFigures(justSubmitted);
+  ok(staged.primary.label === 'Requested' && staged.primary.value === '$42,250',
+    'so the staged band (what the desk and every other email read) leads with the request: ' + staged.primary.label + ' ' + staged.primary.value);
+  // …and the SAME mirror on a `pending` draw — inspection done — is still the explicit $0 answer.
+  const inspectedZero = A.drawMoney({
+    draw: { total_requested_cents: SUBMITTED_REQ, status: 'pending', total_approved_cents: 0 },
+    requests: [{ requested_cents: 2500000, approved_cents: 0 }, { requested_cents: 1725000, approved_cents: 0 }],
+    feeCents: FEE,
+  });
+  const stagedZero = de.drawFigures(inspectedZero);
+  ok(stagedZero.primary.label === 'Approved on this draw' && stagedZero.primary.value === '$0',
+    'while an inspected draw at $0 still states $0 — the 2026-08-10 doctrine is untouched');
+
+  const sub = de.submittedFigures(justSubmitted);
+  ok(sub.primary.label === 'Requested' && sub.primary.value === '$42,250',
+    'the submission band leads with the REQUEST, big: ' + sub.primary.label + ' ' + sub.primary.value);
+  ok(/in review by the inspector/.test(sub.primary.sub) && !/\$/.test(sub.primary.sub),
+    'and says it is in review — with no second dollar amount: ' + JSON.stringify(sub.primary.sub));
+  ok(!JSON.stringify(sub).includes('$0') && !/Approved/.test(JSON.stringify(sub)),
+    'nowhere in the band is "$0" or an "Approved" figure');
+  ok(Array.isArray(sub.secondary) && sub.secondary.length === 0, 'no supporting rows — there is nothing to support yet');
+
+  const bsub = de.submittedFigures(justSubmitted, { borrower: true });
+  ok(bsub.primary.value === '$42,250' && /submitted for review/.test(bsub.primary.sub) && !/\$/.test(bsub.primary.sub),
+    'the borrower voice says the same thing in its own words: ' + JSON.stringify(bsub.primary.sub));
+
+  // Missing-vs-zero: a submission whose amount did not come through drops the band rather than
+  // leading with "Requested $0".
+  ok(de.submittedFigures({ requested_cents: 0, approved_cents: 0 }) === null, 'no request figure → no band, never "Requested $0"');
+  ok(de.submittedFigures(null) === null, 'no money at all → no band');
+
+  // End to end through the template: the rendered email the desk actually reads.
+  const out = tpl.render({ title: 'A draw was submitted for review', intro: 'Draw #2 for 69 Bassett St was submitted for review through Sitewire.', figures: sub });
+  ok(out.html.includes('$42,250') && out.text.includes('Requested: $42,250'), 'the request reaches the HTML and text/plain');
+  ok(!out.html.includes('$0') && !out.text.includes('$0'), 'and "$0" appears nowhere in either');
+  ok(!/nothing approved this time|Approved on this draw/.test(out.html + out.text), 'nor does the "nothing approved this time" sentence');
+  ok(/in review by the inspector/.test(out.text), 'the "in review" line reaches text/plain');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

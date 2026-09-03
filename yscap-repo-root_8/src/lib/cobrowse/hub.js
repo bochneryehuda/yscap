@@ -61,6 +61,7 @@ const http = require('http');
 const { URL } = require('url');
 const db = require('../../db');
 const C = require('../crypto');
+const perms = require('../permissions');
 
 const PATH = '/ws/cobrowse';
 const HEARTBEAT_MS = 25000;
@@ -152,12 +153,22 @@ function claimsFromToken(token) {
  */
 async function stillAllowed(claims) {
   if (!claims) return null;
+  let staffRole = null;
+  let staffPerms = null;
   try {
     if (claims.kind === 'staff') {
-      const r = await db.query(`SELECT token_version, is_active, is_external FROM staff_users WHERE id = $1::uuid`, [claims.sub]);
+      // `role` and `permissions` ride along on the query that was already being
+      // made. The beat re-asks `mayWatch` below, and `perms.can(actor,
+      // 'see_all_files')` reads `actor.role` / `actor.perms`: without them every
+      // admin would fall through to `defaultsFor(undefined)` — an empty set — and
+      // be booted off a screen they are entitled to watch, every 25 seconds.
+      const r = await db.query(`SELECT token_version, is_active, is_external, role, permissions FROM staff_users WHERE id = $1::uuid`, [claims.sub]);
       const row = r.rows[0];
       if (!row || !row.is_active || row.is_external) return null;
       if ((row.token_version || 0) !== (claims.tv || 0)) return null;
+      // The DB row wins over the JWT claim, exactly as `src/auth/index.js` does it.
+      staffRole = row.role || claims.role || null;
+      staffPerms = perms.effectivePermissions(staffRole, row.permissions);
     } else {
       const r = await db.query(`SELECT token_version FROM borrower_auth WHERE borrower_id = $1::uuid`, [claims.sub]);
       const row = r.rows[0];
@@ -189,7 +200,7 @@ async function stillAllowed(claims) {
       return AUTH_UNKNOWN;
     }
   }
-  return { kind: claims.kind, id: String(claims.sub) };
+  return { kind: claims.kind, id: String(claims.sub), role: staffRole, perms: staffPerms };
 }
 
 /**
@@ -398,8 +409,8 @@ function close(sessionId, reason) {
  * touching `token_version`, so this check still resolves them and the socket
  * stays open. That gap is closed at the source instead — `PATCH /api/admin/
  * staff/:id` ends the sessions outright when any of those three change (see
- * `src/routes/admin.js`) and wherever else the scope moves — because re-deriving a
- * permission scope here would mean teaching the hub the whole permission model.
+ * `src/routes/admin.js`). The hub still does not RE-DERIVE the permission model —
+ * it calls `sessions.mayWatch`, the one place that owns it (see the beat below).
  *
  * THE PATHS THAT END A SESSION OUTRIGHT, so this is a backstop and not the whole
  * answer, named rather than gestured at: signing out (`POST /auth/logout`);
@@ -415,13 +426,38 @@ function close(sessionId, reason) {
  *   · BOUNDED BY ONE BEAT: anything that bumps `token_version` — a person changing
  *     their own password, a reset-by-token, the TPO firm-wide bump. `stillAllowed`
  *     sees those.
- *   · BOUNDED BY NOTHING: a SCOPE change that leaves `token_version` alone and is not
- *     wired above. The beat's party check is `isViewer`/`isWatched`, a pure id
- *     comparison — `mayWatch` is never called from here — so a `borrower_officers`
- *     row written elsewhere, or an application's `loan_officer_id`/`processor_id`
- *     moving, revokes the right to watch and closes NOTHING. That is an open gap,
- *     written down as one. Closing it means calling `mayWatch` for borrower-targeted
- *     sessions on every beat, at one more query per such session.
+ *   · BOUNDED BY ONE BEAT TOO, NOW: a SCOPE change that leaves `token_version` alone.
+ *     The beat re-asks `sessions.mayWatch` for every VIEWER socket on a
+ *     borrower-targeted session, so the answer comes from the one definition
+ *     (`perms.visibleBorrowerSql` → `visibleOfficersSql`) instead of being
+ *     re-derived here. All five of its branches are covered by construction: the
+ *     primary officer, the primary processor, the delegation list, an ACTIVE
+ *     `application_assignees` row, and a `workflow_items` hand-off.
+ *
+ * ⛔ THIS PARAGRAPH USED TO SAY THE OPPOSITE — "the beat's party check is a pure id
+ * comparison, `mayWatch` is never called from here … that is an open gap, written
+ * down as one" — and named only `borrower_officers` and a moving
+ * `loan_officer_id`/`processor_id` as what escaped. The post-merge audit measured a
+ * bigger hole than the note admitted: `DELETE /api/staff/applications/:id/assignees/
+ * :staffId` (`src/routes/staff.js`) is an ORDINARY staff-facing endpoint that sets
+ * `removed_at` on the assignee row — and clears `processor_id` / `closer_id` for a
+ * primary — and it took a borrower out of a staffer's scope entirely while their
+ * viewer socket kept streaming that borrower's screen. Writing a gap down is not
+ * closing it, and the routes named above were never going to be a complete list:
+ * five branches of a permission scope cannot be kept in sync by remembering to add
+ * an `endAllFor` call to each new door. So the question is asked where the answer
+ * lives.
+ *
+ * WHAT IT COSTS: one query per (viewer, borrower) pair per beat, deduped within the
+ * beat, and only for borrower-targeted sessions. A STAFF target is deliberately not
+ * re-asked — `mayWatch` checks only that the target is active and internal, which
+ * `stillAllowed` already establishes on that person's OWN socket every beat.
+ * A missed deadline or a thrown query is UNKNOWN and leaves the socket alone, the
+ * same as everywhere else in this beat; `no_login` is likewise not a revocation,
+ * because a live session is proof the borrower had a password.
+ *
+ * THE ROUTES ABOVE STAY, and are still worth having: they close a session the
+ * INSTANT the scope moves, where the beat closes it within 25 seconds.
  * There is no borrower-deactivation endpoint in this product at all; an earlier draft
  * of this comment said there was.
  *
@@ -491,6 +527,7 @@ async function heartbeat() {
     }
     const answers = new Map();   // one identity -> one answer, for this beat only
     const rowsById = new Map();  // one session -> one row, for this beat only
+    const scopes = new Map();    // one (viewer, borrower) -> one scope answer, for this beat only
     for (const ws of wss.clients) {
       if (!ws.cbClaims) continue;
       const c = ws.cbClaims;
@@ -526,7 +563,29 @@ async function heartbeat() {
       if (row === AUTH_UNKNOWN || !row) continue;   // cannot tell, or the sweep will take it
       const S = sessions();
       const party = ws.cbRole === 'guest' ? S.isWatched(row, still) : S.isViewer(row, still);
-      if (!party) closeWs(ws, 4403, 'no longer a party to this session');
+      if (!party) { closeWs(ws, 4403, 'no longer a party to this session'); continue; }
+      // MAY THIS VIEWER STILL WATCH THIS BORROWER? The scope, re-asked from the ONE
+      // definition rather than re-derived here — see the gap this closes, above.
+      // Only a viewer, and only a borrower target: a staff target carries no scope
+      // (`mayWatch` checks active + internal, which `stillAllowed` already did on
+      // the watched person's OWN socket), so asking would be a query for an answer
+      // already held.
+      if (ws.cbRole === 'guest' || row.watched_kind !== 'borrower' || !row.watched_borrower_id) continue;
+      const scopeKey = `${still.id}|${row.watched_borrower_id}`;
+      if (!scopes.has(scopeKey)) {
+        scopes.set(scopeKey, await withDeadline(S.mayWatch(still, { kind: 'borrower', id: row.watched_borrower_id }))
+          .catch(() => AUTH_UNKNOWN));
+      }
+      const may = scopes.get(scopeKey);
+      if (may === AUTH_UNKNOWN) continue;             // a degraded pool is not a revocation
+      if (may && may.ok) continue;
+      // `no_login` is not a scope answer — it means the borrower has no PILOT
+      // password, and a live session is proof they had one. Anything ELSE is the
+      // scope closing: the file moved, the assignee row was removed, the hand-off
+      // was cancelled, the delegation list changed. The right to watch is gone.
+      if (may && may.code === 'no_login') continue;
+      closeWs(ws, 4403, 'no longer allowed to watch this person');
+      if (ws.cbSession) endFromHub(ws.cbSession, 'revoked');
     }
   } finally {
     beating = false;

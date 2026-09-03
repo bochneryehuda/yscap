@@ -55,6 +55,10 @@ async function main() {
   // A run that died mid-way (a crash, a mutation proof) leaves its rows; clear them
   // so an old 'cb-…' staffer can never make a busy check answer for a fresh one.
   await db.query(`DELETE FROM staff_users WHERE email LIKE 'cb-%@example.test'`).catch(() => {});
+  // Their files go first, or the delete below dies on the foreign key and the whole
+  // run stops before a single fixture exists.
+  await db.query(`DELETE FROM application_assignees WHERE application_id IN (SELECT id FROM applications WHERE borrower_id IN (SELECT id FROM borrowers WHERE email LIKE 'cb-%@b.test'))`).catch(() => {});
+  await db.query(`DELETE FROM applications WHERE borrower_id IN (SELECT id FROM borrowers WHERE email LIKE 'cb-%@b.test')`).catch(() => {});
   await db.query(`DELETE FROM borrowers WHERE email LIKE 'cb-%@b.test'`).catch(() => {});
   // ONLY this suite's own fixtures. `LIKE 'Firm %'` would match a real brokerage in
   // whatever database DATABASE_URL happens to point at — a test may never delete a row
@@ -592,6 +596,95 @@ async function main() {
       'and the watched person is told, so their banner comes down rather than lying');
   }
 
+  // ── C7. A SCOPE CHANGE THAT NEVER TOUCHES `token_version` ──────────────────
+  // Post-merge audit, 2026-09-03. C6 bounds anything that bumps `token_version`.
+  // A PERMISSION SCOPE moving does not bump it, and the beat's party check was a
+  // pure id comparison — `mayWatch` was never called from the hub — so a staffer
+  // who lost their route to a borrower kept receiving that borrower's live screen.
+  // The comment in hub.js named this an open gap; writing a gap down is not
+  // closing it.
+  //
+  // The door is an ORDINARY one: `DELETE /api/staff/applications/:id/assignees/
+  // :staffId` sets `removed_at` on the assignee row. That is branch 4 of
+  // `perms.visibleOfficersSql`, and for a staffer with no other route to the
+  // borrower it is the whole of their access.
+  console.log('C7. a scope change with no token bump still ends the watching');
+  {
+    const helper = await mk('loan_officer', 'Assignee');
+    const helperTok = tok(helper);
+    // `stranger` belongs to lo2 and to nobody else — proven at A above, where the
+    // plain loan officer is refused with `no_such_target`.
+    const strangerApp = (await db.query(
+      `INSERT INTO applications (borrower_id, loan_officer_id, status, property_address, program, loan_type)
+       VALUES ($1,$2,'file_intake','{"line1":"11 Scope St","city":"Town","state":"NJ","zip":"07001"}','Fix & Flip','Purchase') RETURNING id`,
+      [stranger.id, lo2.id])).rows[0];
+    let mm = await S.mayWatch({ kind: 'staff', id: helper.id, role: 'loan_officer' }, { kind: 'borrower', id: stranger.id });
+    assert(!mm.ok && mm.code === 'no_such_target', 'before the assignment the helper cannot reach this borrower at all');
+    await db.query(
+      `INSERT INTO application_assignees (application_id, staff_id, role, is_primary) VALUES ($1,$2,'loan_officer_assistant',false)`,
+      [strangerApp.id, helper.id]);
+    mm = await S.mayWatch({ kind: 'staff', id: helper.id, role: 'loan_officer' }, { kind: 'borrower', id: stranger.id });
+    assert(mm.ok, 'the assignee row is the ONLY thing that lets them watch this borrower');
+
+    r = await call('POST', '/api/cobrowse/request', { kind: 'borrower', id: stranger.id }, helperTok);
+    assert(r.status === 200, `the assignee may ask (got ${r.status} ${r.data && r.data.error})`);
+    const sC7 = r.data.session.id;
+    const strangerTok = tok(stranger, 'borrower');
+    r = await call('POST', `/api/cobrowse/${sC7}/respond`, { accept: true }, strangerTok);
+    assert(r.status === 200, 'the borrower accepts');
+    const gC7 = await open(wsUrl(strangerTok, sC7, 'guest'));
+    const vC7 = await open(wsUrl(helperTok, sC7, 'viewer'));
+    assert(await waitFor(vC7.msgs, (m) => m.includes('"t":"hello"')), 'the assignee is attached and watching');
+    gC7.ws.send(JSON.stringify({ t: 'rrweb', events: [{ type: 3, data: { source: 0, texts: [{ id: 1, value: 'in-scope' }] }, timestamp: Date.now() }] }));
+    assert(await waitFor(vC7.msgs, (m) => m.includes('in-scope')), 'and the borrower’s screen is genuinely streaming to them');
+
+    // A BEAT ON A SESSION THAT IS STILL IN SCOPE CLOSES NOTHING. Without this the
+    // assertion below would pass just as well for a beat that hung up on every
+    // borrower-targeted viewer — which is exactly what the fix would do if the
+    // actor it hands `mayWatch` were missing its role and capabilities.
+    await hub._internals.heartbeat();
+    await new Promise((rr) => setTimeout(rr, 120));
+    assert(vC7.ws.readyState === 1 && gC7.ws.readyState === 1, 'a beat leaves an in-scope viewer exactly where they were');
+
+    // AND A see_all_files WATCHER IS NOT COLLATERAL. `perms.can` reads `actor.role`
+    // and `actor.perms`; an answer carrying neither resolves to an EMPTY capability
+    // set, the scope clause is applied to an admin it should have been dropped for,
+    // and every admin watching a borrower is thrown off every 25 seconds. This is
+    // the control for the fix itself, not for the defect.
+    r = await call('POST', '/api/cobrowse/request', { kind: 'borrower', id: bo.id }, saTok);
+    assert(r.status === 200, `the super admin asks to watch a borrower on nobody’s file of theirs (got ${r.status})`);
+    const sAdm = r.data.session.id;
+    const boTok2 = tok(bo, 'borrower');
+    await call('POST', `/api/cobrowse/${sAdm}/respond`, { accept: true }, boTok2);
+    const gAdm = await open(wsUrl(boTok2, sAdm, 'guest'));
+    const vAdm = await open(wsUrl(saTok, sAdm, 'viewer'));
+    assert(await waitFor(vAdm.msgs, (m) => m.includes('"t":"hello"')), 'the admin is attached');
+    await hub._internals.heartbeat();
+    await new Promise((rr) => setTimeout(rr, 150));
+    assert(vAdm.ws.readyState === 1, 'a beat leaves a see_all_files admin watching — the scope clause is dropped for them, as it is on every other door');
+    await call('POST', `/api/cobrowse/${sAdm}/end`, null, saTok).catch(() => {});
+
+    // NOW REMOVE THE ASSIGNEE, exactly as the route does: `removed_at`, no token
+    // bump, nothing the old re-check could see.
+    await db.query(`UPDATE application_assignees SET removed_at=now() WHERE application_id=$1 AND staff_id=$2`, [strangerApp.id, helper.id]);
+    mm = await S.mayWatch({ kind: 'staff', id: helper.id, role: 'loan_officer' }, { kind: 'borrower', id: stranger.id });
+    assert(!mm.ok && mm.code === 'no_such_target', 'the right to watch is gone — and no token_version moved');
+    const tvNow = (await db.query(`SELECT token_version FROM staff_users WHERE id=$1`, [helper.id])).rows[0];
+    assert(Number(tvNow.token_version) === Number(helper.token_version),
+      `token_version really is untouched (${tvNow.token_version}) — this case would be C6 over again if it moved`);
+
+    const closedC7 = new Promise((resolve) => { if (vC7.ws.readyState === 3) return resolve(vC7.ws._closeCode || null); vC7.ws.once('close', (c) => resolve(c)); setTimeout(() => resolve(null), 4000); });
+    await hub._internals.heartbeat();
+    const codeC7 = await closedC7;
+    assert(codeC7 === 4403, `the viewer's LIVE socket is closed on the next beat (got ${codeC7})`);
+    await new Promise((rr) => setTimeout(rr, 400));
+    const rowC7 = (await db.query(`SELECT status, end_reason FROM cobrowse_sessions WHERE id=$1`, [sC7])).rows[0];
+    assert(rowC7.status === 'ended' && rowC7.end_reason === 'revoked',
+      `and the register files it as REVOKED (status=${rowC7.status} reason=${rowC7.end_reason})`);
+    assert(gC7.ws.readyState !== 1 || await waitFor(gC7.msgs, (m) => m.includes('"t":"ended"')),
+      'the borrower is told, rather than left showing their screen to somebody who may no longer see it');
+  }
+
   // A borrower's HELPER (a real assistant row + the real envelope) is not the borrower:
   // it may not see, answer, or end a co-browse aimed at the borrower (audit blocker).
   const asstRow = (await db.query(`INSERT INTO borrower_assistants (borrower_id, email, name, token_version) VALUES ($1, $2, 'Helper', 0) RETURNING id`, [bo.id, `cb-${tag}-helper@b.test`])).rows[0];
@@ -639,9 +732,16 @@ async function main() {
   const hs = hub.stats();
   assert('controlled' in hs, 'stats report how many rooms are under control');
 
-  // cleanup
-  await db.query(`DELETE FROM cobrowse_sessions WHERE viewer_staff_id IN ($1,$2,$3,$4)`, [superAdmin.id, lo.id, lo2.id, proc.id]);
-  await db.query(`DELETE FROM applications WHERE id=$1`, [appRow.id]);
+  // cleanup — BY THE FIXTURE, never by a list of ids somebody has to remember to
+  // extend. C7 adds a second application and an assignee row, and the first version
+  // of this block named `appRow` alone: the borrower delete then died on the
+  // `applications_borrower_id_fkey` it left behind, AFTER every assertion had run.
+  await db.query(`DELETE FROM cobrowse_sessions WHERE viewer_staff_id IN (SELECT id FROM staff_users WHERE email LIKE $1)
+                     OR watched_staff_id IN (SELECT id FROM staff_users WHERE email LIKE $1)
+                     OR watched_borrower_id IN (SELECT id FROM borrowers WHERE email LIKE $2)`,
+    [`cb-${tag}-%`, `cb-${tag}-%@b.test`]);
+  await db.query(`DELETE FROM application_assignees WHERE application_id IN (SELECT id FROM applications WHERE borrower_id IN ($1,$2,$3))`, [bo.id, stranger.id, nologin.id]);
+  await db.query(`DELETE FROM applications WHERE borrower_id IN ($1,$2,$3)`, [bo.id, stranger.id, nologin.id]);
   await db.query(`DELETE FROM borrower_auth WHERE borrower_id IN ($1,$2)`, [bo.id, stranger.id]);
   await db.query(`DELETE FROM borrowers WHERE id IN ($1,$2,$3)`, [bo.id, stranger.id, nologin.id]);
   await db.query(`DELETE FROM staff_users WHERE email LIKE $1`, [`cb-${tag}-%`]);
