@@ -4,6 +4,7 @@ import { Replayer } from '@rrweb/replay';
 import '@rrweb/replay/dist/style.css';
 import { api, getToken } from '../lib/api.js';
 import { fitScaleFor, appliedScale, stageOverflow, stageHeight, nextZoom, canZoom } from '../lib/cobrowseZoom.js';
+import { liveBaseline } from '../lib/cobrowseLive.js';
 
 /* THE VIEWER (owner-directed 2026-09-02).
    Replays the watched person's masked page LIVE inside a sandboxed frame. This is
@@ -102,19 +103,21 @@ export default function StaffCobrowse() {
     // blank stage with a moving cursor) or far in the past. Started lazily below,
     // 200ms behind the first event we actually receive, so the picture plays at once.
     let started = false;
+    // ⛔ THE EVENT IS PASSED THROUGH UNTOUCHED. Nothing here may write to it — least
+    // of all its `timestamp`. The post-merge audit restored the whole blank-mirror
+    // defect with one line, `ev.timestamp = Date.now()`, placed just before this
+    // call: the arithmetic below was still correct and still ran, and it was
+    // correct arithmetic on the WRONG CLOCK. `test-cobrowse-pure` now asserts that
+    // no property of a received event is ever assigned in this file, and the
+    // arithmetic itself lives in `lib/cobrowseLive.js` where it is checked with
+    // real numbers — including a check that the answer does not move when the
+    // local clock does.
     const startFrom = (ev) => {
       if (started) return;
-      // A BAD TIMESTAMP MUST FALL BACK, NOT POISON THE BASELINE. The obvious
-      // `Number(ev && ev.timestamp) - 200 || Date.now() - 600` is wrong for a NULL or
-      // zero-timestamp event: Number(null) is 0, 0 - 200 is -200, and -200 is TRUTHY,
-      // so the fallback never runs and rrweb schedules every event ~55 years out —
-      // a permanently blank mirror, the very defect this exists to fix, and one the
-      // hub can no longer filter now that it relays the guest's bytes untouched.
-      // Judge the timestamp FIRST, then subtract. (Pre-merge audit, 2026-09-02.)
-      const ts = Number(ev && ev.timestamp);
-      if (!Number.isFinite(ts) || ts <= 0) return;   // wait for an event we can trust
+      const base = liveBaseline(ev, LIVE_BUFFER_MS);
+      if (base === null) return;   // unusable timestamp — wait for an event we can trust
       started = true;
-      rp.startLive(ts - LIVE_BUFFER_MS);
+      rp.startLive(base);
     };
     rp.on('resize', fit);
     window.addEventListener('resize', fit);

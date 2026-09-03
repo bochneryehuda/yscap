@@ -245,6 +245,11 @@ async function onConnection(ws, req) {
   // must not remember a grant the row no longer holds, nor forget one it does.
   r.control = String(row.control_status || 'none');
   ws.isAlive = true;
+  // Kept so the heartbeat can ask again whether this person is still allowed to be
+  // here. A socket authenticated only at connect outlives every revocation — see
+  // the note on `heartbeat` above.
+  ws.cbToken = String(token || '');
+  ws.cbActor = { kind: actor.kind, id: actor.id };
   ws.on('pong', () => { ws.isAlive = true; });
 
   if (role === 'guest') {
@@ -296,12 +301,45 @@ function close(sessionId, reason) {
   return true;
 }
 
-function heartbeat() {
+/**
+ * The keep-alive ping AND the re-check of who is still allowed to be here.
+ *
+ * ⛔ A SOCKET IS NOT AUTHENTICATED ONCE. It used to be: `actorFromToken` ran at
+ * connect and never again, so every HTTP request from a deactivated staffer died
+ * at the next call while their ALREADY-OPEN viewer socket kept receiving the
+ * borrower's live screen — until the socket happened to drop, the guest pressed
+ * Stop, or the four-hour cap fired. Same for a borrower who resets their password
+ * expecting the watching to stop (post-merge audit, 2026-09-02).
+ *
+ * Every revocation this product has flows through `actorFromToken` — a cleared
+ * `is_active`, a bumped `token_version`, a revoked `sid`, a staffer turned
+ * external — so re-running it here closes all of them at once, including the ones
+ * nobody remembers to wire up at the call site. The two paths that matter most
+ * (deactivation, disabling a borrower) ALSO end the session outright, so this is
+ * the backstop rather than the whole answer: it bounds the exposure at one
+ * heartbeat instead of leaving it open indefinitely.
+ *
+ * IT FAILS CLOSED, AND IT DISTINGUISHES "NOT ALLOWED" FROM "CANNOT TELL".
+ * `actorFromToken` answers null for a database error exactly as it does for a
+ * revoked token, so re-checking blindly would drop every live session on a
+ * momentary blip. One cheap probe first: if the database is unreachable this tick
+ * is skipped entirely and the next one asks again.
+ */
+async function heartbeat() {
   if (!wss) return;
   for (const ws of wss.clients) {
     if (ws.isAlive === false) { try { ws.terminate(); } catch (_) { /* gone */ } continue; }
     ws.isAlive = false;
     try { ws.ping(); } catch (_) { /* closes on its own */ }
+  }
+  // "Cannot tell" is not "not allowed" — see above.
+  try { await db.query('SELECT 1'); } catch (_) { return; }
+  for (const ws of wss.clients) {
+    if (!ws.cbToken || !ws.cbActor) continue;
+    const still = await actorFromToken(ws.cbToken);
+    if (!still || still.kind !== ws.cbActor.kind || still.id !== ws.cbActor.id) {
+      closeWs(ws, 4401, 'no longer authorised');
+    }
   }
 }
 
@@ -319,7 +357,8 @@ function attach(server) {
     if (pathname !== PATH) { socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, (ws) => { onConnection(ws, req).catch(() => closeWs(ws, 1011, 'server error')); });
   });
-  const hb = setInterval(heartbeat, HEARTBEAT_MS); if (hb.unref) hb.unref();
+  const hb = setInterval(() => { heartbeat().catch(() => { /* never take the process down */ }); }, HEARTBEAT_MS);
+  if (hb.unref) hb.unref();
   // RESTART RECOVERY (Phase C): a fresh process has no rooms, so every 'active'
   // row whose guest has gone quiet is an orphan of the previous process. Close
   // them now rather than in 30 s; a guest still there reconnects and re-creates
@@ -339,5 +378,8 @@ function stats() {
 module.exports = {
   PATH, MAX_MESSAGE_BYTES, GUEST_GRACE_MS, VIEWER_GRACE_MS, MAX_INPUT_BYTES, INPUT_RATE_PER_SEC, INPUT_KINDS,
   attach, close, stats, setControl,
-  _internals: { rooms, actorFromToken, onConnection, http },
+  // `heartbeat` is exported so a test can run one on demand rather than waiting
+  // out HEARTBEAT_MS — the re-authorisation it performs is a security property and
+  // has to be proven by a socket actually closing, not by reading the source.
+  _internals: { rooms, actorFromToken, onConnection, http, heartbeat },
 };

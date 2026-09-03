@@ -138,8 +138,38 @@ ok(/releaseFromGuest\(state, 'guest_moved'\)/.test(libNow), 'a real click / key 
 // ("I ask for control and I'm not getting it" — owner, 2026-09-02). The test is the ACT.
 ok(/TAKEBACK_EVENTS = \['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart'\]/.test(libNow),
   'take-back listens for a deliberate act — pointerdown / mousedown / keydown / wheel / touchstart');
-ok(!/'mousemove', takeBack/.test(libNow) && !/MOVE_TAKEBACK_PX/.test(libNow),
-  'a passive mousemove is NOT a take-back — no listener, no travel threshold (the bug that made control unusable)');
+// ⛔ THE RULE IS THE CLASS OF SIGNAL, NOT ONE EVENT NAME — learned from the post-merge
+// audit, 2026-09-02. The guard here used to be `!/'mousemove', takeBack/` plus
+// `!/MOVE_TAKEBACK_PX/`, and the audit rebuilt the owner's exact defect straight through
+// it: a `pointermove` listener with a 40px cumulative-travel release, with this suite
+// still reporting 217 passed / 0 failed. `pointermove` is the SAME SIGNAL from the same
+// trackpad and it is the API somebody reaches for today, so a guard spelled `mousemove`
+// guards a spelling.
+//
+// Three assertions now carry it, and the last two are the ones that bite whatever a
+// motion listener is CALLED.
+ok(!/(?:mouse|pointer|touch)move|movementX|movementY/.test(libNow),
+  'no pointer-motion signal appears anywhere in the recorder — not mousemove, pointermove, touchmove, or movementX/Y');
+// EXACTLY ONE PLACE GIVES CONTROL BACK BY ITSELF. A drift release is necessarily a second
+// one (the audit's mutation added exactly that), so this catches it under any event name
+// and any reason string. `releaseFromGuest` is also exported for the buttons, which call
+// it from their own modules — this counts the call sites INSIDE the recorder.
+// TWO occurrences and no more: the `export function releaseFromGuest(` definition, and the
+// ONE call inside `takeBack`. A third is a second way to give control back by itself,
+// which is what a drift release is — whatever event it listens to and whatever reason
+// string it passes.
+ok((libNow.match(/releaseFromGuest\(/g) || []).length === 2,
+  `control is given back from exactly ONE place in the recorder — a drift release would be a second (found ${(libNow.match(/releaseFromGuest\(/g) || []).length} occurrences, expected 2: the definition and the one call)`);
+// THE COMPLETE INVENTORY OF LISTENERS THIS FILE REGISTERS. A new listener of any kind
+// fails here and has to be justified by whoever adds it, which is the point: a motion
+// listener is how the owner's "I ask for control and I'm not getting it" comes back, and
+// no must-not-appear regex can name an event that has not been invented yet. `t` is the
+// loop over TAKEBACK_EVENTS asserted above.
+const listenerArgs = [...libNow.matchAll(/addEventListener\(\s*([^,]+),/g)].map((m) => m[1].trim()).sort();
+ok(JSON.stringify(listenerArgs) === JSON.stringify(["'change'", "'click'", "'hashchange'", "'popstate'", 't']),
+  `the recorder registers ONLY the known listeners — no motion listener under any name (found ${JSON.stringify(listenerArgs)})`);
+ok((libNow.match(/removeEventListener\(/g) || []).length === (libNow.match(/addEventListener\(/g) || []).length,
+  'every listener it adds, it removes');
 ok(/TAKEBACK_GRACE_MS = 600/.test(libNow) && /TAKEBACK_WHEEL_GRACE_MS = 1800/.test(libNow)
   && /const grace = e\.type === 'wheel' \? TAKEBACK_WHEEL_GRACE_MS : TAKEBACK_GRACE_MS;/.test(libNow)
   && /Date\.now\(\) - armedAt < grace/.test(libNow),
@@ -226,7 +256,8 @@ ok(/stopRecorder\(state\);\n    state\.queue = \[\];/.test(libNow), 'a disconnec
 // by an ordinary resting hand (it accumulated and never reset), so the rule is now that a
 // passive move is not a take-back at all — strictly stronger, asserted with the take-back
 // listener list above.
-ok(!/mousemove/.test(libNow), 'taking control back is never an incidental trackpad brush — a passive move is not a take-back');
+ok(!/mousemove/.test(libNow) && !/pointermove/.test(libNow),
+  'taking control back is never an incidental trackpad brush — no motion event, under either name');
 // ── a drive that dies must SAY it died ──────────────────────────────────────────────────
 const driveSrc = read('scripts/render-cobrowse-e2e.js');
 // RE-POINTED, NOT LOOSENED: the subject is that the drive lands on the element it means,
@@ -358,15 +389,66 @@ const viewSrc2 = strip(viewNow);
 // The BUFFER's size moved to a named constant (see the latency block below); this
 // assertion is about WHOSE CLOCK the baseline comes from, which is the property that
 // blanks the mirror when it is wrong — so it is re-pointed, never loosened.
-ok(/const ts = Number\(ev && ev\.timestamp\);/.test(viewSrc2) && /rp\.startLive\(ts - LIVE_BUFFER_MS\);/.test(viewSrc2)
+// ⛔ THE GUARD USED TO PIN THE LITERAL CALL, AND THE POST-MERGE AUDIT WALKED PAST IT.
+// It asserted `const ts = Number(ev && ev.timestamp);` and `rp.startLive(ts - LIVE_BUFFER_MS)`
+// were present and `rp.startLive(Date.now(` was absent. The audit added ONE line just before
+// the call — `if (ev) ev.timestamp = Date.now();` — restoring the whole blank-mirror defect
+// with this suite reporting 217 passed / 0 failed. Every pinned string was still there. The
+// arithmetic was still right. It was right arithmetic on the WRONG CLOCK.
+//
+// So the property is now held in two places that a restamp cannot slip between:
+//   1. the arithmetic moved to `lib/cobrowseLive.js` and is CALLED below with real numbers,
+//      including a check that its answer does not move when the local clock does;
+//   2. this file may not write to a received event at all — which is what the audit's
+//      mutation did, and what any relative of it would have to do.
+ok(/liveBaseline\(ev, LIVE_BUFFER_MS\)/.test(viewSrc2) && /rp\.startLive\(base\);/.test(viewSrc2)
   && !/rp\.startLive\(Date\.now\(\)/.test(viewSrc2),
   'the viewer starts live from the FIRST EVENT\'s own timestamp, never from the viewer\'s clock');
+// NOTHING IN THIS SCREEN MAY REWRITE A RECEIVED EVENT. `ev` is the name every loop over the
+// socket's payload binds, so an assignment to any property of it is the audit's mutation or
+// a sibling of it. There is no legitimate reason for the viewer to edit the guest's bytes.
+{
+  const writes = [...viewSrc2.matchAll(/\bev\s*(?:&&\s*ev\s*)?\.\s*(\w+)\s*=(?!=)/g)].map((m) => m[1]);
+  ok(writes.length === 0,
+    `the viewer never rewrites a received event — a restamp is how the blank mirror comes back (found writes to: ${JSON.stringify(writes)})`);
+}
 // A BAD TIMESTAMP MUST DEFER, NOT POISON THE BASELINE. `Number(null) - 200` is -200, which
 // is TRUTHY, so the obvious `|| Date.now() - 600` fallback never runs and rrweb schedules
 // every event ~55 years out — a permanently blank mirror, from one null event, on a hub that
-// now relays the guest's bytes untouched (pre-merge audit, 2026-09-02).
-ok(/if \(!Number\.isFinite\(ts\) \|\| ts <= 0\) return;/.test(viewSrc2) && !/\|\| Date\.now\(\) - 600\)/.test(viewSrc2),
+// now relays the guest's bytes untouched (pre-merge audit, 2026-09-02). Asserted by CALLING
+// the function below; this pins only that the caller honours its "wait for the next one".
+ok(/if \(base === null\) return;/.test(viewSrc2) && !/\|\| Date\.now\(\) - 600\)/.test(viewSrc2),
   'an unusable first timestamp defers to the next event instead of poisoning the live baseline');
+
+// ---- the baseline arithmetic, called with real numbers -------------------------------------
+{
+  const liveSrc = read('app-v2/src/lib/cobrowseLive.js').replace(/^export \{[^}]*\};?\s*$/m, '');
+  const L = new Function(`${liveSrc}\nreturn { liveBaseline };`)();
+  const GUEST_TS = 1767225600000;   // a real epoch millisecond stamped on the guest's machine
+  const eqv = (got, want, m) => ok(got === want, `${m} (got ${JSON.stringify(got)}, want ${JSON.stringify(want)})`);
+  eqv(L.liveBaseline({ timestamp: GUEST_TS }, 40), GUEST_TS - 40,
+    'the baseline is the guest event\'s own timestamp, set back by the buffer');
+  // THE PROPERTY, STATED DIRECTLY: the answer is a function of the EVENT, not of now.
+  // A baseline seeded from the viewer's clock would be a number near Date.now(); this one
+  // is nowhere near it, and does not move when the local clock does.
+  ok(Math.abs(L.liveBaseline({ timestamp: GUEST_TS }, 40) - Date.now()) > 60000,
+    'the baseline is nowhere near the VIEWER\'s clock — it is the guest\'s number, not ours');
+  const first = L.liveBaseline({ timestamp: GUEST_TS }, 40);
+  const spin = Date.now(); while (Date.now() - spin < 15) { /* let the local clock move on */ }
+  eqv(L.liveBaseline({ timestamp: GUEST_TS }, 40), first,
+    'the same event gives the same baseline however much the local clock has moved');
+  // THE TRUTHINESS TRAP, as values rather than as a regex.
+  eqv(L.liveBaseline({ timestamp: null }, 40), null, 'a null timestamp defers instead of yielding -40');
+  eqv(L.liveBaseline({ timestamp: 0 }, 40), null, 'a zero timestamp defers');
+  eqv(L.liveBaseline({ timestamp: 'nonsense' }, 40), null, 'an unparseable timestamp defers');
+  eqv(L.liveBaseline(null, 40), null, 'a missing event defers');
+  eqv(L.liveBaseline(undefined, 40), null, 'an undefined event defers');
+  eqv(L.liveBaseline({ timestamp: -1 }, 40), null, 'a negative timestamp defers');
+  // A BROKEN BUFFER MUST NEVER PRODUCE NaN — NaN as a baseline blanks the mirror as
+  // thoroughly as the wrong clock does, and silently.
+  eqv(L.liveBaseline({ timestamp: GUEST_TS }, undefined), GUEST_TS, 'a missing buffer shifts nothing, and never yields NaN');
+  eqv(L.liveBaseline({ timestamp: GUEST_TS }, -5), GUEST_TS, 'a negative buffer shifts nothing');
+}
 // A REFUSED EVENT IS NEVER SILENT. An rrweb mutation against ids no snapshot established
 // throws, and swallowing it leaves an empty stage for ever with nothing said.
 // TWO INDEPENDENT CALL SITES, asserted independently — the first cut's second conjunct was
@@ -441,7 +523,7 @@ ok(/ONLY PLACE A SECRET IS KEPT OUT OF THE STREAM/.test(mask), 'the mask module 
   // justified the last cut cannot both happen quietly in one commit.
   ok(/533 ms floor/.test(guestLib) && /533 ms floor/.test(viewerSrc),
     'both constants still record the measured latency they were cut from (documentation)');
-  ok(/rp\.startLive\(ts - LIVE_BUFFER_MS\)/.test(viewerSrc), 'the live baseline uses that named buffer, not a literal');
+  ok(/liveBaseline\(ev, LIVE_BUFFER_MS\)/.test(viewerSrc), 'the live baseline uses that named buffer, not a literal');
   // The faster flush DOUBLES the batch rate, so the hub's bookkeeping write must not
   // double with it — the two are kept in inverse step.
   {

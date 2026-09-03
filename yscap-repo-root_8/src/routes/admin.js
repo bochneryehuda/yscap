@@ -271,6 +271,12 @@ router.patch('/staff/:id', async (req, res) => {
     // (the token bump only stops the NEXT connect; this ends the current one).
     if (b.isActive === false) {
       try { require('../lib/events').disconnectUser('staff', req.params.id); } catch (_) {}
+      // AND ANY LIVE CO-BROWSE (2026-09-02, post-merge audit). The token bump above
+      // stops the next connect and the hub's heartbeat re-check closes the socket
+      // within one beat, but a screen being watched right now should stop being
+      // watched the moment the person is deactivated — whether they are the one
+      // watching or the one being watched. Best-effort, never blocks the response.
+      try { require('../lib/cobrowse/sessions').endAllFor('staff', req.params.id, 'revoked').catch(() => {}); } catch (_) {}
     }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'could not update staff member' }); }
@@ -292,6 +298,12 @@ router.post('/staff/:id/password', async (req, res) => {
         failed_attempts=0, locked_until=NULL, updated_at=now()
       WHERE id=$1 RETURNING email`, [req.params.id, await C.hashPassword(pw)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'staff not found' });
+  // Taking an account back ends any live co-browse it is party to. An admin resets
+  // a password because the account is compromised or the person has gone; either
+  // way a screen must not still be streaming to or from it. The token bump above
+  // stops the next connect, and the hub's heartbeat would close the socket within
+  // one beat anyway — this makes it immediate. Best-effort.
+  try { require('../lib/cobrowse/sessions').endAllFor('staff', req.params.id, 'revoked').catch(() => {}); } catch (_) {}
   res.json({ ok: true, email: r.rows[0].email });
 });
 

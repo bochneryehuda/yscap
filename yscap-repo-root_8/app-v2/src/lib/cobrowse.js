@@ -294,13 +294,25 @@ function armDriving(state) {
   // here at all. Every event the driver dispatches below is synthetic (isTrusted
   // false), so the controller can never release themselves through this path.
   //
-  // A PASSIVE MOUSE MOVE IS NOT AN ACT, AND MUST NEVER RELEASE CONTROL. The first
-  // cut released after 40px of CUMULATIVE pointer travel that was never reset, so
-  // an ordinary hand resting on a trackpad reached it within a second or two of
-  // Allow being pressed: control was granted and lost again immediately, on every
-  // session, which reads as "I asked for control and never got it". A threshold on
-  // a signal a person produces without meaning to has no safe value — so the test
-  // is the ACT, not the distance. Never re-add a mousemove release here.
+  // ⛔ NO POINTER MOTION OF ANY KIND MAY RELEASE CONTROL — and the rule is the
+  // CLASS, not one event name. The first cut released after 40px of CUMULATIVE
+  // pointer travel that was never reset, so an ordinary hand resting on a
+  // trackpad reached it within a second or two of Allow being pressed: control
+  // was granted and lost again immediately, on every session, which reads as "I
+  // asked for control and never got it". A threshold on a signal a person
+  // produces without meaning to has no safe value — so the test is the ACT, not
+  // the distance.
+  //
+  // THE RULE WAS FIRST WRITTEN AS "never re-add a mousemove release here", and
+  // the post-merge audit showed why that wording was not enough: it rebuilt the
+  // identical defect with a `pointermove` listener and every guard stayed green.
+  // `pointermove` is the SAME SIGNAL from the same trackpad, and it is the
+  // modern API somebody would reach for. So: no `mousemove`, no `pointermove`,
+  // no `touchmove`, no `movementX`/`movementY` accumulation, no distance or
+  // travel threshold, under any name. `test-cobrowse-pure` holds this by
+  // asserting the COMPLETE inventory of listeners this file registers and that
+  // `releaseFromGuest` has exactly one call site — so a new motion listener
+  // fails whatever it is called.
   const armedAt = Date.now();
   const takeBack = (e) => {
     if (!e.isTrusted || live !== state || state.control !== 'granted') return;

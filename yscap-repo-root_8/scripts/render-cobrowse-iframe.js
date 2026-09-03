@@ -52,9 +52,29 @@ const ok = (c, m) => { if (c) { pass++; console.log('PASS', m); } else { fail++;
 
 // The real tool page, plus a marker and a later mutation so both the FIRST PICTURE and a
 // CHANGE INSIDE the child can be told apart in the mirror.
+// ⛔ THE PRODUCTION MASK, NOT A HAND-ROLLED IMITATION OF IT. The first cut of this
+// harness spelled its own record options (`maskAllInputs`, `recordCanvas`, …) and so
+// carried NO `blockSelector` and NO `maskTextSelector` — it proved the tool iframe is
+// MIRRORED and proved nothing whatever about masking inside it (post-merge audit,
+// 2026-09-02). That is the wrong half to leave unproven: this harness is precisely
+// what established that a same-origin tool iframe mirrors in FULL, and the tool pages
+// live outside `app-v2`, so they carry none of the block markers the app's own screens
+// do. The mask module is ESM with no imports; read it in as plain script.
+const maskSrc = fs.readFileSync(path.join(root, 'app-v2/src/lib/cobrowseMask.js'), 'utf8')
+  .replace(/^export const /gm, 'const ').replace(/^export function /gm, 'function ')
+  + '\nwindow.__mask = { BLOCK_SELECTOR, MASK, recordOptions };';
+
+// A secret marked the way a tool page would have to mark one, and an ordinary string
+// beside it. The mask must swallow the first and leave the second alone — otherwise
+// "masking works" is a claim about the top document only.
+const CHILD_SECRET = '111-22-3333';
+const CHILD_PLAIN = 'CHILD_PLAIN_TEXT';
+
 const REAL = fs.readFileSync(path.join(root, 'web/v2/tools/term-sheet.html'), 'utf8');
 const CHILD = REAL.replace('</body>',
-  '<h1 id="cb-marker">STUDIO_MARKER</h1><p id="cb-later">Loan structure</p>'
+  `<div data-cobrowse-block="ssn"><span id="cb-secret">${CHILD_SECRET}</span></div>`
+  + `<p id="cb-plain">${CHILD_PLAIN}</p>`
+  + '<h1 id="cb-marker">STUDIO_MARKER</h1><p id="cb-later">Loan structure</p>'
   + '<script>window.addEventListener("message",function(e){if(e.data==="mut"){document.getElementById("cb-later").textContent="LATER_CHANGE";}});<\/script></body>');
 const HOST = '<!doctype html><html><head><meta charset="utf-8"><title>host</title></head><body>'
   + '<h1>Products &amp; Pricing</h1>'
@@ -86,15 +106,12 @@ async function main() {
     const guest = await ctx.newPage();
     await guest.goto(`${base}/host.html`, { waitUntil: 'commit' });
     await guest.addScriptTag({ content: recordUmd });
-    // Recording starts BEFORE the tool document exists — the case under test.
+    await guest.addScriptTag({ content: maskSrc });
+    // Recording starts BEFORE the tool document exists — the case under test — and it
+    // records through the SAME options the product uses, never a copy of them.
     await guest.evaluate(() => {
       window.__ev = [];
-      window.rrwebRecord.record({
-        emit: (e) => window.__ev.push(e),
-        maskAllInputs: true, recordCanvas: false, collectFonts: false, inlineImages: false,
-        sampling: { input: 'last', mousemove: 50, scroll: 100, media: 800 },
-        slimDOMOptions: { script: true, comment: true },
-      });
+      window.rrwebRecord.record(window.__mask.recordOptions((e) => window.__ev.push(e)));
     });
 
     await guest.waitForTimeout(DELAY_MS + 2500);
@@ -112,8 +129,21 @@ async function main() {
     await guest.evaluate(() => document.getElementById('tool').contentWindow.postMessage('mut', '*'));
     await guest.waitForTimeout(1500);
     const raw = await guest.evaluate(() => JSON.stringify(window.__ev));
+    const window_MASK_MARK = await guest.evaluate(() => window.__mask.MASK);
     ok(raw.includes('STUDIO_MARKER'), `the tool's own content is in the recorded stream (${(raw.length / 1024).toFixed(0)} KB)`);
     ok(raw.includes('LATER_CHANGE'), 'and so is a change made inside it afterwards');
+    // ⛔ AND THE MASK REACHES INSIDE THE CHILD. This is the half the first version of
+    // this harness left unproven: it recorded with hand-rolled options that carried no
+    // `blockSelector` at all, so it could have reported a full mirror of a document
+    // leaking a Social Security number and called that a pass.
+    ok(!raw.includes(CHILD_SECRET),
+      `a data-cobrowse-block secret INSIDE the tool iframe never reaches the stream (${CHILD_SECRET})`);
+    // THE CONTROL. Without it the assertion above would pass just as well for a mask
+    // that swallowed the whole child document, or for a child that never loaded.
+    ok(raw.includes(CHILD_PLAIN),
+      'while ordinary text beside it in the same child document does — the mask is selective, not a blanket');
+    ok(raw.includes(window_MASK_MARK),
+      'and the blocked text is replaced by the mask marker rather than simply dropped');
 
     const viewer = await ctx.newPage();
     await viewer.setContent(`<!doctype html><html><head><meta charset="utf-8"><style>${replayCss}</style></head><body><div id="stage"></div></body></html>`);
