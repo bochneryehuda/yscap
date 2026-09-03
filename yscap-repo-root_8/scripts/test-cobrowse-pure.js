@@ -249,43 +249,94 @@ ok(/TAKEBACK_EVENTS = \['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchst
 // No motion EVENT, under any of its names, and no READ of a motion coordinate off an
 // event. `clientX: cx` as an object key is the driver BUILDING a synthetic click and is
 // fine; `e.clientX` is somebody measuring how far a hand moved, which is the defect.
-ok(!/(?:mouse|pointer|touch)move/.test(libNow), 'no motion event name appears in the recorder');
-ok(!/\.\s*(?:movement|client|page|screen|offset|layer)[XY]\b/.test(libNow),
-  'and no motion coordinate is ever READ off an event, in any of its six families — a travel threshold has to accumulate one');
-// NO HANDLER-PROPERTY REGISTRATION ON window OR document, and no computed assignment on
-// either. `window.onpointermove = f` and `window['on' + x] = f` are listeners that an
-// `addEventListener` inventory cannot see — the audit used exactly the second one. The
-// socket's own `ws.onopen`/`onmessage`/`onclose`/`onerror` are not DOM listeners and are
-// deliberately untouched by this.
-ok(!/(?:window|document)\s*\.\s*on[a-z]+\s*=(?!=)/.test(libNow)
-  && !/(?:window|document)\s*\[[^\]]+\]\s*=(?!=)/.test(libNow),
-  'the recorder registers no handler PROPERTY on window or document — every DOM listener goes through addEventListener, where it can be counted');
-// THE RELEASE FUNCTION APPEARS ONLY AS A CALL — never assigned, never passed, never
-// stored on an object. `const giveBack = releaseFromGuest` was one exit the audit used;
-// `{ rel: releaseFromGuest }` is the same trick with a colon, and enumerating spellings
-// is how the last three versions of this guard were beaten. So: every occurrence of the
-// identifier must be followed by `(`, and the count must be two — the definition and
-// the one call inside `takeBack`.
+// ⛔ AND THEY RUN OVER EVERY FILE THAT CAN CALL THE RELEASE, NOT JUST THIS ONE. The
+// post-merge audit rebuilt the exact defect this guard exists to prevent — a 40px
+// cumulative-travel `pointermove` listener calling `releaseFromGuest` — inside
+// `CobrowseHost.jsx`, and the suite reported 273 passed, 0 failed. Every assertion
+// below read `libNow` alone, while `releaseFromGuest` is EXPORTED and already
+// imported and called from that component. A guard scoped to one file is a guard
+// against editing that file.
+//
+// The scope is DISCOVERED, never listed: every app-v2 source file that mentions the
+// identifier is in it, so a new importer is covered the day it is written rather
+// than the day somebody remembers to add it here. `cobrowse.js` itself is included
+// by the same rule (it defines and calls it), and the file-specific inventories
+// below still single it out by name.
+const RELEASE_SCOPE = (() => {
+  const out = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+      const rel = dir + '/' + e.name;
+      if (e.isDirectory()) { walk(rel); continue; }
+      if (!/\.(js|jsx)$/.test(e.name)) continue;
+      const text = read(rel);
+      if (/\breleaseFromGuest\b/.test(text)) out.push({ rel, src: strip(text) });
+    }
+  };
+  walk('app-v2/src');
+  return out.sort((a, b) => a.rel.localeCompare(b.rel));
+})();
+ok(RELEASE_SCOPE.length >= 2 && RELEASE_SCOPE.some((f) => f.rel === 'app-v2/src/lib/cobrowse.js'),
+  `the take-back rules run over every file that can release control (${RELEASE_SCOPE.map((f) => f.rel).join(', ')})`);
+// No motion EVENT, under any of its names, and no READ of a motion coordinate off an
+// event. `clientX: cx` as an object key is the driver BUILDING a synthetic click and is
+// fine; `e.clientX` is somebody measuring how far a hand moved, which is the defect.
+for (const f of RELEASE_SCOPE) {
+  ok(!/(?:mouse|pointer|touch)move/.test(f.src), `no motion event name appears in ${f.rel}`);
+  ok(!/\.\s*(?:movement|client|page|screen|offset|layer)[XY]\b/.test(f.src),
+    `and no motion coordinate is ever READ off an event in ${f.rel}, in any of its six families — a travel threshold has to accumulate one`);
+  // NO HANDLER-PROPERTY REGISTRATION ON window OR document, and no computed assignment on
+  // either. `window.onpointermove = f` and `window['on' + x] = f` are listeners that an
+  // `addEventListener` inventory cannot see — the audit used exactly the second one. The
+  // socket's own `ws.onopen`/`onmessage`/`onclose`/`onerror` are not DOM listeners and are
+  // deliberately untouched by this.
+  ok(!/(?:window|document)\s*\.\s*on[a-z]+\s*=(?!=)/.test(f.src)
+    && !/(?:window|document)\s*\[[^\]]+\]\s*=(?!=)/.test(f.src),
+    `${f.rel} registers no handler PROPERTY on window or document — every DOM listener goes through addEventListener, where it can be counted`);
+  // AND `addEventListener` IS ONLY EVER CALLED DIRECTLY. `window.addEventListener.bind(window)`
+  // registers a listener that no count of `addEventListener(` can see — the audit's full
+  // rebuild used exactly that, together with the two aliases below.
+  ok(!/addEventListener\s*(?!\()/.test(f.src),
+    `addEventListener is never bound, aliased or passed as a value in ${f.rel} — only called, where it can be counted`);
+  // THE RELEASE FUNCTION APPEARS ONLY AS A CALL — never assigned, never passed, never
+  // stored on an object. `const giveBack = releaseFromGuest` was one exit the audit used;
+  // `{ rel: releaseFromGuest }` is the same trick with a colon, and enumerating spellings
+  // is how the last three versions of this guard were beaten. The COUNT is pinned per file
+  // below; here the rule is that no mention is ever anything but a call — except the
+  // `import { ... }` line, which names it without calling it and is how the other files
+  // legitimately reach it.
+  const mentions = (f.src.replace(/^import[\s\S]*?from\s*'[^']*';$/gm, '').match(/\breleaseFromGuest\b/g) || []).length;
+  const calls = (f.src.match(/\breleaseFromGuest\(/g) || []).length;
+  ok(mentions === calls, `releaseFromGuest is only ever CALLED in ${f.rel} (${mentions} non-import mentions, ${calls} calls)`);
+}
+// EVERY LISTENER IN THE SCOPE IS NAMED. The inventory is what makes "no motion event"
+// hold under a rename: a literal the list does not know about fails here even when its
+// name is innocent, and a COMPUTED registration outside the one take-back loop has
+// nowhere to hide. Both are per-file, because each file has its own honest list.
+const KNOWN_LISTENERS = {
+  'app-v2/src/lib/cobrowse.js': ['change', 'click', 'hashchange', 'popstate'],
+  'app-v2/src/components/CobrowseHost.jsx': ['keydown', 'load', 'resize'],
+};
+for (const f of RELEASE_SCOPE) {
+  const literals = [...f.src.matchAll(/addEventListener\(\s*'([^']+)'/g)].map((m) => m[1]).sort();
+  const known = KNOWN_LISTENERS[f.rel];
+  ok(Array.isArray(known) && JSON.stringify(literals) === JSON.stringify(known),
+    `${f.rel} registers only the known named listeners (found ${JSON.stringify(literals)}${known ? '' : ' — and the file is not in the inventory at all'})`);
+  const computed = (f.src.match(/addEventListener\(\s*(?!')/g) || []).length;
+  if (f.rel === 'app-v2/src/lib/cobrowse.js') {
+    ok(computed === 1 && /for \(const \w+ of TAKEBACK_EVENTS\) window\.addEventListener\(\w+, takeBack, true\);/.test(f.src),
+      `the one non-literal registration is the take-back loop and nothing else (found ${computed})`);
+  } else {
+    ok(computed === 0, `${f.rel} registers no listener under a computed name (found ${computed})`);
+  }
+}
+// The lib's own count stays pinned to a NUMBER — the definition plus the one call inside
+// `takeBack`. Two is a fact about this file, not about the scope.
 {
   const all = (libNow.match(/\breleaseFromGuest\b/g) || []).length;
   const called = (libNow.match(/\breleaseFromGuest\(/g) || []).length;
   ok(all === called && called === 2,
-    `releaseFromGuest is only ever CALLED, from exactly one place (${all} mentions, ${called} calls — expected 2 and 2)`);
-}
-// AND `addEventListener` IS ONLY EVER CALLED DIRECTLY. `window.addEventListener.bind(window)`
-// registers a listener that no count of `addEventListener(` can see — the audit's full
-// rebuild used exactly that, together with the two aliases above.
-ok(!/addEventListener\s*(?!\()/.test(libNow),
-  'addEventListener is never bound, aliased or passed as a value — only called, where it can be counted');
-// THE LITERAL EVENT NAMES THIS FILE REGISTERS, plus the single loop over the take-back
-// list. The loop variable may be renamed freely; a NEW listener may not appear.
-{
-  const literals = [...libNow.matchAll(/addEventListener\(\s*'([^']+)'/g)].map((m) => m[1]).sort();
-  ok(JSON.stringify(literals) === JSON.stringify(['change', 'click', 'hashchange', 'popstate']),
-    `the recorder registers only the known named listeners (found ${JSON.stringify(literals)})`);
-  const computed = (libNow.match(/addEventListener\(\s*(?!')/g) || []).length;
-  ok(computed === 1 && /for \(const \w+ of TAKEBACK_EVENTS\) window\.addEventListener\(\w+, takeBack, true\);/.test(libNow),
-    `the one non-literal registration is the take-back loop and nothing else (found ${computed})`);
+    `releaseFromGuest is only ever CALLED in the recorder, from exactly one place (${all} mentions, ${called} calls — expected 2 and 2)`);
 }
 ok(/TAKEBACK_GRACE_MS = 600/.test(libNow) && /TAKEBACK_WHEEL_GRACE_MS = 1800/.test(libNow)
   && /const grace = e\.type === 'wheel' \? TAKEBACK_WHEEL_GRACE_MS : TAKEBACK_GRACE_MS;/.test(libNow)

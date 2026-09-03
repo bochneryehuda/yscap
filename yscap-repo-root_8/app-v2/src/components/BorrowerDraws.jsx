@@ -164,14 +164,21 @@ export default function BorrowerDraws({ appId }) {
             <tbody>
               {rollup.draws.map((d) => {
                 const s = DRAW_STATUS[d.status] || { label: d.status, cls: 'sw-insp' };
+                // NOT YET REVIEWED (owner-reported 2026-09-03, 69 Bassett St Draw #2): a draw that was
+                // only just submitted printed "Approved $0.00 · You receive $0.00" — read as "nothing
+                // was approved" when nobody had looked at it yet. The rollup says whether the
+                // inspector has answered (`has_inspector_amounts`, the ONE money source); until then
+                // there is no approved figure to print, so the two cells say "In review" instead of a
+                // zero. An inspected draw — an explicit $0 included — still prints its figures.
+                const inReview = !d.is_final_approved && !d.is_released && !d.has_inspector_amounts;
                 return (
                   <tr key={d.sitewire_draw_id}>
                     <td style={{ fontWeight: 600 }}>#{d.number ?? '—'}</td>
                     <td><span className={'pill ' + (d.is_funded ? 'sw-approved' : s.cls)}>{s.label}</span></td>
                     <td><NextUp d={dates[d.sitewire_draw_id]} /></td>
                     <td className="num">{usd2(d.requested_cents)}</td>
-                    <td className="num">{usd2(d.approved_cents)}</td>
-                    <td className="num" style={{ fontWeight: 700 }}>{d.net_release_cents == null ? '—' : usd2(d.net_release_cents)}</td>
+                    <td className="num">{inReview ? <span className="muted">In review</span> : usd2(d.approved_cents)}</td>
+                    <td className="num" style={{ fontWeight: 700 }}>{inReview || d.net_release_cents == null ? '—' : usd2(d.net_release_cents)}</td>
                   </tr>
                 );
               })}

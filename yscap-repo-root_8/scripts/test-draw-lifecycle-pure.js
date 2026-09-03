@@ -180,7 +180,13 @@ console.log('\nE. the reconcile is wired to all of it');
   const draftArm = rec.slice(rec.indexOf('const announceDraftStarted'), rec.indexOf('// A draw with no prior mirror row'));
   ok(!/moneyOpts\(/.test(draftArm), 'the draft notice carries NO dollar figure — a draft\'s numbers still move');
   const subArm = rec.slice(rec.indexOf('const announceSubmitted'), rec.indexOf('const announceDraftStarted'));
-  ok(/moneyOpts\(b\)/.test(subArm), 'the submitted notice still carries the money block');
+  ok(/moneyOpts\(b, \{ submitted: true \}\)/.test(subArm), 'the submitted notice still carries the money block — in its SUBMISSION shape');
+  // Owner-reported 2026-09-03: the staged band led "Approved on this draw $0 — nothing approved
+  // this time" on a draw nobody had looked at yet (Sitewire sends approved_cents:0, not null, on
+  // every freshly submitted line). The submission notice must never take the staged band.
+  ok(!/moneyOpts\(b\)/.test(subArm), 'and never the staged band that can read a fresh submission as "$0 approved"');
+  ok(/submitted \? drawEmail\.submittedFigures\(b\.money\) : b\.figures/.test(rec),
+    'the submission shape is draw-email.submittedFigures — the request as the headline, from the ONE composer');
 }
 {
   // The type has to exist everywhere a notification type must, or it silently
