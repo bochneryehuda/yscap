@@ -193,10 +193,16 @@ function attach(router) {
     const connections = sheetConnection.connectionsFor(
       sheetConfigured(), sheetConnection.routedCounts(shown),
     );
+    /* WHEN EACH SHEET LAST ACTUALLY ANSWERED. `configured()` reads the
+       ENVIRONMENT, so a login that is set but WRONG reports connected and still
+       produces nothing; this is the fact that tells those two apart. Read from
+       the register the board already writes — nothing new is recorded. */
+    const lastAnswered = sheetConnection.lastAnsweredAll(sight && sight.boards);
     res.json({
       ok: true, ...d,
       investors: shown,
       connections,
+      lastAnswered,
       /* THE COUNTS DESCRIBE WHAT IS ON SCREEN. `describeSettings` totals the whole roster,
          so spreading it unchanged beside a narrowed list would print "43" above 26 rows and
          make the screen contradict itself. */

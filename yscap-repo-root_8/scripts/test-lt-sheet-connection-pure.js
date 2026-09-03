@@ -142,12 +142,63 @@ console.log('\n── H. A BACK END NOBODY RENDERS IS THE SAME SILENCE ──');
 
   const screen = stripComments(read('../app-v2/src/longterm/LtInvestorSources.jsx'));
   ok(/data\.connections/.test(screen), 'H4 the screen reads it');
-  ok(/sheetTrouble\.map\(/.test(screen), 'H5 …and renders it');
+  /* ⛔ PIN THE WHOLE RENDER EXPRESSION, not the call. `{false && sheetTrouble.map(`
+     leaves the call in the file and draws nothing — MEASURED: that mutation left
+     this suite fully green until this assertion was tightened. The empty array is
+     the only thing allowed to silence it. */
+  ok(/\{\s*sheetTrouble\.map\(/.test(screen), 'H5 …and renders it, behind no other condition');
   ok(/\.filter\(\s*\([a-z]\)\s*=>\s*[a-z]\s*&&\s*[a-z]\.speak\s*&&\s*[a-z]\.message\s*\)/.test(screen),
     'H6 …keyed on the SERVER\'s decision to speak, not a second rule here');
   ok(/\{c\.message\}/.test(screen), 'H7 …with the server\'s own wording, not a second copy of it');
   ok(!/NEX_USERNAME/.test(screen),
     'H8 the screen never restates the credential names — one definition, on the server');
+}
+
+console.log('\n── J. WHEN DID THIS SHEET LAST ACTUALLY ANSWER ──');
+{
+  const NOW = Date.parse('2026-09-03T14:00:00.000Z');
+  const r = conn.lastAnsweredAll({ lenderprice: '2026-09-03T13:02:00.000Z' }, NOW);
+  ok(r.lenderprice.everAnswered === true, 'J1 a sheet that has answered says so');
+  ok(r.lenderprice.at === '2026-09-03T13:02:00.000Z', 'J2 …and carries the stamp the board wrote');
+  ok(Math.abs(r.lenderprice.ageHours - (58 / 60)) < 0.01, 'J3 …with how long ago, measured');
+  ok(r.loannex.everAnswered === false, 'J4 a sheet that never has says THAT');
+  ok(/never answered a search/.test(String(r.loannex.neverNote)),
+    'J5 …in words, so it can never be mistaken for one that answered a minute ago');
+
+  /* NEVER GUESSES A TIME. Each of these is a way a register can be unreadable. */
+  for (const [b, what] of [[null, 'no register at all'], [{}, 'an empty register'],
+    [{ loannex: '' }, 'a blank stamp'], [{ loannex: 'yesterday' }, 'an unparseable stamp'],
+    [{ loannex: 12345 }, 'a number instead of a stamp'], ['nope', 'a register that is not an object']]) {
+    ok(conn.lastAnsweredAll(b, NOW).loannex.everAnswered === false,
+      `J  ${what} reads as never answered, never as a time`);
+  }
+  ok(conn.lastAnsweredAll({ loannex: '2099-01-01T00:00:00.000Z' }, NOW).loannex.ageHours === null,
+    'J6 a stamp in the FUTURE is a clock disagreement — reported with no age, never a negative one');
+  let threw = false;
+  try { conn.lastAnsweredAll({ get loannex() { throw new Error('boom'); } }, NOW); } catch (_) { threw = true; }
+  ok(!threw, 'J7 …and an unreadable register never takes the screen down');
+
+  /* ⛔ THE SENTENCE WITH A DATE IN IT IS NOT WRITTEN ON THE SERVER — only the
+     reader's browser knows the reader's timezone. */
+  ok(r.lenderprice.neverNote === null, 'J8 an answered sheet carries no server-written sentence');
+  const mod = stripComments(read('../src/longterm/pricing/sheet-connection.js'));
+  ok(!/last answered a search on \$\{/.test(mod),
+    'J9 …the server never composes a dated line, which would be right in one timezone only');
+
+  const route = stripComments(read('../src/longterm/routes/investor-settings-routes.js'));
+  ok(/lastAnsweredAll\(sight/.test(route), 'J10 the door reads it from the register the board already writes');
+  ok(/\blastAnswered,/.test(route), 'J11 …and answers with it');
+
+  const screen = stripComments(read('../app-v2/src/longterm/LtInvestorSources.jsx'));
+  ok(/data\.lastAnswered/.test(screen), 'J12 the screen reads it');
+  /* ⛔ PIN THE GUARD CLAUSE, NOT THE CALL. Wrapping the render in `{false && (`
+     leaves `sheetActivity.map(` sitting in the file, so an assertion on the call
+     alone stays green while nothing is drawn — this exact mutation walked past
+     the first version of this check. */
+  ok(/\{sheetActivity\.length > 0 && \(/.test(screen) && /sheetActivity\.map\(/.test(screen),
+    'J13 …and renders it whenever there is anything to say, always, not only on trouble');
+  ok(/toLocaleString\(\)/.test(screen), 'J14 …formatting the date in the READER\'s own timezone');
+  ok(/x\.neverNote/.test(screen), 'J15 …and printing the server\'s wording for the never case');
 }
 
 console.log('\n── I. A GREYED-OUT BUTTON EXPLAINS ITSELF WITHOUT A HOVER ──');

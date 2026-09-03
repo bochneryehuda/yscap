@@ -302,6 +302,32 @@ export default function LtInvestorSources() {
    * the server's one definition — re-deriving either here would be a second copy
    * of the rule, free to disagree with the board about the same fact.
    */
+  /**
+   * WHEN EACH SHEET LAST ACTUALLY ANSWERED — the one fact that settles "is it
+   * working?" (owner, 2026-09-03: *"I see already in the search the new
+   * investor's name… where exactly are we off?"*).
+   *
+   * ⛔ SEEING THE NAMES ON THE PRICING PAGE IS NOT EVIDENCE. "Narrow to certain
+   * investors" is drawn from `engine.investors()` — our OWN settings roster,
+   * "no vendor call, no billing" in that code's own words — so it lists the five
+   * whether or not LoanNEX has ever answered. This line reads the register the
+   * board itself writes.
+   *
+   * The DATE is composed here rather than on the server because only the reader's
+   * browser knows the reader's timezone; the never-answered sentence has no date
+   * in it and stays server-side. One home each.
+   */
+  const sheetActivity = useMemo(() => {
+    const la = (data && data.lastAnswered) || null;
+    if (!la) return [];
+    return ['lenderprice', 'loannex'].map((k) => la[k]).filter(Boolean).map((x) => {
+      if (!x.everAnswered) return { key: x.source, label: x.label, ok: false, text: x.neverNote };
+      let when = x.at;
+      try { when = new Date(x.at).toLocaleString(); } catch (_) { when = x.at; }
+      return { key: x.source, label: x.label, ok: true, text: `${x.label} last answered a search on ${when}.` };
+    });
+  }, [data]);
+
   const sheetTrouble = useMemo(() => {
     const c = (data && data.connections) || null;
     if (!c) return [];
@@ -330,6 +356,23 @@ export default function LtInvestorSources() {
         <div style={{ fontSize: 12, color: CAUTION, marginBottom: 10 }}>
           Nothing has been priced yet, so no system has reported which investors it carries. Every
           button stays available until a search tells us otherwise.
+        </div>
+      )}
+
+      {/* THE TWO SHEETS' OWN STANDING, always shown. While this is being
+          commissioned it is the single most useful fact on the screen, and it is
+          two short lines. A sheet that has never answered says so plainly rather
+          than looking identical to one that answered a minute ago. */}
+      {sheetActivity.length > 0 && (
+        <div style={{
+          border: `1px solid ${LINE}`, borderRadius: 10, padding: '8px 12px',
+          marginBottom: 10, background: WASH,
+        }}>
+          {sheetActivity.map((a) => (
+            <div key={a.key} style={{ fontSize: 12, color: a.ok ? SLATE : CAUTION, lineHeight: 1.7 }}>
+              <span style={dot(a.ok ? '#2F7F86' : '#B4483C')} />{a.text}
+            </div>
+          ))}
         </div>
       )}
 

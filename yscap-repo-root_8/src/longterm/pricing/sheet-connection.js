@@ -150,8 +150,62 @@ function routedCounts(rows) {
   return out;
 }
 
+/**
+ * WHEN THIS SHEET LAST ACTUALLY ANSWERED A SEARCH.
+ *
+ * ── WHY THIS EXISTS ON TOP OF THE CONNECTION CHECK ─────────────────────────
+ * Owner, 2026-09-03, reasonably: *"I see already in the search the new
+ * investor's name. When I click Narrow Down, where exactly are we off?"*
+ *
+ * ⛔ SEEING THE NEW NAMES THERE IS NOT EVIDENCE THE SHEET IS WORKING, and that
+ * is the trap this line closes. "Narrow to certain investors" is drawn from
+ * `engine.investors()` — a free read of OUR OWN settings roster, with the code's
+ * own comment saying "no vendor call, no billing" — so it lists the five
+ * whether or not LoanNEX has ever answered anything.
+ *
+ * And `configured()` is not enough either: it reads the ENVIRONMENT, so a login
+ * that is SET BUT WRONG (a rotated password, a changed portal, a vendor
+ * timeout) reports "connected" and still produces nothing. The register already
+ * holds the fact that settles it — the moment a sheet produces a board, its
+ * timestamp is written — and nothing read it out loud.
+ *
+ * NEVER GUESSES: an absent or unreadable stamp is reported as "never answered",
+ * which is what an absent stamp means, and never as a time.
+ *
+ * ⛔ IT RETURNS THE FACT, NOT THE SENTENCE. A date has to be rendered in the
+ * READER'S OWN timezone, which only their browser knows — a server-composed
+ * "last answered at 13:02" is 13:02 somewhere else. So the screen writes that
+ * one line and this writes none; the never-answered wording has no date in it
+ * and stays here. One home each, neither duplicated.
+ */
+function lastAnsweredFor(source, boards, now) {
+  const name = LABEL[source] || String(source || 'this rate sheet');
+  const raw = boards && typeof boards === 'object' ? boards[source] : null;
+  const at = typeof raw === 'string' ? raw : null;
+  const t = at ? Date.parse(at) : NaN;
+  if (!at || !Number.isFinite(t)) {
+    return { source, label: name, at: null, everAnswered: false, ageHours: null,
+      neverNote: `${name} has never answered a search on this system.` };
+  }
+  const nowMs = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  /* A stamp in the FUTURE is a clock disagreement, not an age — reported as
+     answered, with no age, rather than as a negative number of hours. */
+  const ageHours = nowMs > t ? (nowMs - t) / 3600000 : null;
+  return { source, label: name, at, everAnswered: true, ageHours, neverNote: null };
+}
+
+/** Both sheets' last answer, for the settings screen. NEVER THROWS. */
+function lastAnsweredAll(boards, now) {
+  const out = {};
+  for (const src of ['lenderprice', 'loannex']) {
+    try { out[src] = lastAnsweredFor(src, boards, now); } catch (_) { out[src] = lastAnsweredFor(src, null, now); }
+  }
+  return out;
+}
+
 module.exports = {
   connectionsFor, routedCounts, standingFor, readConfigured,
+  lastAnsweredFor, lastAnsweredAll,
   STATES: { YES, NO, UNKNOWN },
   _internals: { LABEL, HOW },
 };
