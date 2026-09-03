@@ -306,7 +306,7 @@ const stateOptions = US_STATES.map((v) => ({ v, label: v }));
 const FIELDS = [
   // ---- Loan & program ----
   { key: 'registered_program', label: 'Program (registered product)', group: 'Loan & program', type: 'enum',
-    options: [{ v: 'standard', label: 'Standard Program' }, { v: 'gold', label: 'Gold Standard Program' }, { v: 'silver', label: 'Silver Program' }, { v: 'manual', label: 'Manual Program' }, { v: 'none', label: 'Not registered yet' }],
+    options: [{ v: 'standard', label: 'Standard Program' }, { v: 'gold', label: 'Gold Standard Program' }, { v: 'silver', label: 'Silver Program' }, { v: 'speed', label: 'Speed Program' }, { v: 'manual', label: 'Manual Program' }, { v: 'none', label: 'Not registered yet' }],
     description: 'The product program registered in the Term Sheet Studio. "Manual Program" = a manual override of the deal structure (LTV/LTC/ARV).' },
   { key: 'program_strategy', label: 'Loan strategy (program)', group: 'Loan & program', type: 'enum',
     options: [

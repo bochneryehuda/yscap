@@ -37,6 +37,14 @@ assert(mp.resolveProgram('gold', { ovrLTCPct: 70 }) === 'manual', 'gold card + s
 assert(mp.resolveProgram('standard', { ovrAcqLTVPct: 90 }) === 'manual', 'standard card + structural override => manual');
 assert(mp.resolveProgram('gold', { markupGoldPct: 1 }) === 'gold', 'gold + markup-only stays gold');
 assert(mp.resolveProgram('standard', {}) === 'standard', 'standard plain stays standard');
+// The Speed Program (2026-09-03) passes through the SAME one normalizer as the parents.
+assert(mp.resolveProgram('speed', {}) === 'speed', 'speed plain stays speed');
+assert(mp.resolveProgram('speed', { ovrLTCPct: 70 }) === 'manual', 'speed card + structural override => manual');
+assert(mp.requestedProgramKey('Speed Program') === 'speed', 'requestedProgramKey normalizes the engine label to the key');
+assert(mp.requestedProgramKey('manual') === 'standard' && mp.requestedProgramKey('') === 'standard' && mp.requestedProgramKey('junk') === 'standard',
+  'requestedProgramKey: manual / blank / junk fall back to standard, exactly as the old door ternaries did');
+assert(require('../src/lib/program-availability').PROGRAM_KEYS.every((k) => mp.requestedProgramKey(k) === k),
+  'every marketed program key (program-availability.PROGRAM_KEYS) passes through unchanged');
 
 assert(pricing.PROGRAM_LABEL.manual === 'Manual Program', 'PROGRAM_LABEL.manual = "Manual Program"');
 if (pricing.enginesReady()) {

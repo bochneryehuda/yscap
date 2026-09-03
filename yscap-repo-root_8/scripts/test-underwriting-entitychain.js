@@ -203,4 +203,28 @@ const ext = (arr) => arr.map(([doc_type, fields]) => ({ doc_type, fields }));
   assert.ok(!flagged(none, 'Twenty Pct'), 'No program: 20% is below the 25% FinCEN baseline');
 }
 
+// ---- THE SPEED PROGRAM (2026-09-03): its owner rule is DERIVED as the stricter of its two parents
+//      (Standard 15% / Silver 25% → 15%, with that parent's treatment) — never a fifth typed number,
+//      and the chain enforces it exactly as it enforces Standard's. ----
+{
+  const { ownerRuleFor, PROGRAM_OWNER_RULES } = require('../src/lib/underwriting/entity-chain');
+  const donor = PROGRAM_OWNER_RULES.standard.pct <= PROGRAM_OWNER_RULES.silver.pct ? PROGRAM_OWNER_RULES.standard : PROGRAM_OWNER_RULES.silver;
+  const sp = ownerRuleFor('speed');
+  assert.strictEqual(sp.pct, donor.pct, 'Speed pct = the LOWER of Standard / Silver');
+  assert.strictEqual(sp.treatment, donor.treatment, '…with that parent\'s treatment');
+  assert.strictEqual(sp.label, 'Speed', 'labelled Speed');
+  assert.ok(sp.pct <= PROGRAM_OWNER_RULES.standard.pct && sp.pct <= PROGRAM_OWNER_RULES.silver.pct, 'never looser than either parent');
+  const oa = (members) => ext([['operating_agreement', { entityLegalName: 'Prog LLC', members }]]);
+  const flagged = (chain, name) => chain.findings.some((f) => f.code === 'beneficial_owner_unidentified' && new RegExp(name).test(f.docValue));
+  const speed = buildChain({ vestingName: 'Prog LLC', program: 'speed', borrowerName: 'Maj Owner' },
+    oa([{ name: 'Maj Owner', ownershipPct: 85, isManager: true }, { name: 'Fifteen Pct', ownershipPct: 15 }]));
+  assert.ok(flagged(speed, 'Fifteen Pct'), 'Speed: a 15% owner IS flagged (the stricter parent\'s threshold, not Silver\'s 25%)');
+  const speedTitle = speed.findings.find((f) => f.code === 'beneficial_owner_unidentified' && /Fifteen Pct/.test(f.docValue));
+  assert.ok(new RegExp(`${sp.pct}%\\+ owner`).test(speedTitle.title), 'Speed: the finding title prints the derived threshold');
+  assert.ok(/the Speed program/.test(speedTitle.explanation || speedTitle.howTo || speedTitle.title || ''), 'Speed: the finding names the Speed program');
+  const under = buildChain({ vestingName: 'Prog LLC', program: 'speed', borrowerName: 'Maj Owner' },
+    oa([{ name: 'Maj Owner', ownershipPct: 86, isManager: true }, { name: 'Fourteen Pct', ownershipPct: 14 }]));
+  assert.ok(!flagged(under, 'Fourteen Pct'), 'Speed: a 14% owner is below the threshold');
+}
+
 console.log('test-underwriting-entitychain: chain composition + program-aware beneficial-owner KYC gap pass');

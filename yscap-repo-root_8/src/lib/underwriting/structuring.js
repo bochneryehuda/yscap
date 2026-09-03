@@ -6,7 +6,7 @@
  * doesn't just say "no." It walks a set of ALTERNATIVE STRUCTURES through the
  * frozen pricing engine and reports which levers would make the deal work:
  *   * reduce the loan amount (by 1%, 2%, 5%, 10%)
- *   * switch program (Standard ⇄ Gold Standard ⇄ Silver)
+ *   * switch program (Standard ⇄ Gold Standard ⇄ Silver ⇄ Speed)
  *   * swap product / term
  *   * lower the requested LTV / LTC / ARV (admin-only, so scoped)
  *
@@ -41,6 +41,15 @@ const LEVERS = Object.freeze({
     inputs: baseline,
     swap: currentProgram === 'silver' ? 'standard' : 'silver',
   }),
+  // The Speed Program (2026-09-03): the lesser of Standard and Silver on every cap, so
+  // for an over-leveraged file it is rarely the way OUT — but a file that needs the
+  // Speed ceiling (or is on Speed and needs room) is walked through the same frozen
+  // composition the register flow uses, never a re-implementation.
+  swap_program_speed: (baseline, currentProgram) => ({
+    label: currentProgram === 'speed' ? 'Switch to Standard program' : 'Switch to Speed program',
+    inputs: baseline,
+    swap: currentProgram === 'speed' ? 'standard' : 'speed',
+  }),
   longer_term:      (baseline) => ({ label: 'Longer term (24 months)', inputs: { ...baseline, term: 24 } }),
   interest_only:    (baseline) => ({ label: 'Interest-only', inputs: { ...baseline, interestOnly: true } }),
 });
@@ -48,7 +57,7 @@ const LEVERS = Object.freeze({
 /**
  * Explore counterfactuals for a file.
  * @param {object} baselineInputs — pricing inputs (built by pricing.buildInputs)
- * @param {string} currentProgram — 'standard' | 'gold' | 'manual'
+ * @param {string} currentProgram — 'standard' | 'gold' | 'silver' | 'speed' | 'manual'
  * @param {object} baselineQuote  — the current registered quote (for delta math)
  * @param {object} opts           — { levers: [name...] to run — defaults to a safe subset }
  * @returns {Array<{key, label, ok, program, status, quote, delta, blocking}>}

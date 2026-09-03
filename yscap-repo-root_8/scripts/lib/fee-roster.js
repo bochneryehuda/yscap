@@ -33,8 +33,8 @@
  * signature, which this repo's own rules say to earn rather than assume. So the surfaces stay
  * hand-written and the audit proves they agree.
  *
- * EVERY TOKEN IS KEYED ON THE SURFACE'S OWN DATA VARIABLE. The three spreadsheet columns are
- * built from `d` / `gd` / `sd` — that is the only thing that tells them apart in source — and it
+ * EVERY TOKEN IS KEYED ON THE SURFACE'S OWN DATA VARIABLE. The four spreadsheet columns are
+ * built from `d` / `gd` / `sd` / `pd` — that is the only thing that tells them apart in source — and it
  * is load-bearing: the feasibility fee was "present" in the spreadsheet for five days while being
  * absent from Gold and Silver, because a search for the word found the Standard column and
  * stopped. Never loosen a token to something a neighbouring column could satisfy.
@@ -96,13 +96,14 @@ function serverClosingAddends() {
   return addendsOf(m[1]);
 }
 
-/** The studio's BROWSER MIRROR of that sum. There are three copies (calc / calcGold / calcSilver)
- *  and they must all agree: a fee in one program's mirror and not another's means the printed
- *  sheet disagrees with the registered quote on that program alone. */
+/** The studio's BROWSER MIRROR of that sum. There are four copies (calc / calcGold / calcSilver /
+ *  calcSpeed — Speed joined 2026-09-03) and they must all agree: a fee in one program's mirror and
+ *  not another's means the printed sheet disagrees with the registered quote on that program alone. */
+const STUDIO_MIRRORS = 4;
 function studioClosingAddends() {
   const src = stripComments(read('studio'));
   const all = [...src.matchAll(/var\s+closing\s*=\s*([^;]*);/g)].map((m) => addendsOf(m[1]));
-  if (all.length < 3) throw new Error(`fee-roster: expected three studio closing sums (calc/calcGold/calcSilver), found ${all.length}`);
+  if (all.length < STUDIO_MIRRORS) throw new Error(`fee-roster: expected ${STUDIO_MIRRORS} studio closing sums (calc/calcGold/calcSilver/calcSpeed), found ${all.length}`);
   return all;
 }
 
@@ -127,6 +128,7 @@ const CLOSING_FEES = {
       xlsxStd: /\["Origination \(" \+ origPctStr\(\(d\.origPct/,
       xlsxGold: /\["Origination \(" \+ origPctStr\(\(gd\.origPct/,
       xlsxSilver: /\["Origination \(" \+ origPctStr\(\(sd\.origPct/,
+      xlsxSpeed: /\["Origination \(" \+ origPctStr\(\(pd\.origPct/,
       studioPanel: /YS\.put\("rOrig"/,
       staffPanel: /k=\{`Origination \(/,
       borrowerEmail: /feeRow\(`Origination fee/,
@@ -141,6 +143,7 @@ const CLOSING_FEES = {
       xlsxStd: /rows\.splice\(i, 0, \["Broker origination fee/,
       xlsxGold: /rows\.splice\(i, 0, \["Broker origination fee/,
       xlsxSilver: /rows\.splice\(i, 0, \["Broker origination fee/,
+      xlsxSpeed: /rows\.splice\(i, 0, \["Broker origination fee/,
       studioPanel: /YS\.put\("rBrokerLbl", "Broker origination fee/,
       staffPanel: /Broker origination fee\$\{cc\.brokerFeePct/,
       borrowerEmail: /feeRow\(`Broker origination fee/,
@@ -155,6 +158,7 @@ const CLOSING_FEES = {
       xlsxStd: /d\.feeSplit\) \? \["Underwriting & processing", money2\(d\.uwFee\)[\s\S]{0,200}d\.feeSplit\) \? \["Legal fee", money2\(d\.legalFee\)/,
       xlsxGold: /gd\.feeSplit\) \? \["Underwriting & processing", money2\(gd\.uwFee\)[\s\S]{0,200}gd\.feeSplit\) \? \["Legal fee", money2\(gd\.legalFee\)/,
       xlsxSilver: /sd\.feeSplit\) \? \["Underwriting & processing", money2\(sd\.uwFee\)[\s\S]{0,200}sd\.feeSplit\) \? \["Legal fee", money2\(sd\.legalFee\)/,
+      xlsxSpeed: /pd\.feeSplit\) \? \["Underwriting & processing", money2\(pd\.uwFee\)[\s\S]{0,200}pd\.feeSplit\) \? \["Legal fee", money2\(pd\.legalFee\)/,
       /* RE-POINTED, NOT LOOSENED (owner-directed 2026-08-26: "I want this broken down, not a
          full total"). The panel used to carry ONE combined row plus a sub-line spelling both
          figures out; it now carries a row EACH. The property this token exists to hold is
@@ -173,6 +177,7 @@ const CLOSING_FEES = {
       xlsxStd: /\["Credit report", stdOk \? money2\(d\.creditFee\)/,
       xlsxGold: /\["Credit report", gOk \? money2\(gd\.creditFee\)/,
       xlsxSilver: /\["Credit report", sOk \? money2\(sd\.creditFee\)/,
+      xlsxSpeed: /\["Credit report", pOk \? money2\(pd\.creditFee\)/,
       studioPanel: /YS\.put\("rCredit", sized \? YS\.fmtUSD2\(d\.creditFee\)/,
       staffPanel: /k="Credit report" v=\{money2\(cc\.creditFee\)\}/,
       borrowerEmail: /feeRow\('Credit report', cc\.creditFee\)/,
@@ -186,6 +191,7 @@ const CLOSING_FEES = {
       xlsxStd: /\["Title \/ escrow \(est\.\)", \(stdOk && d\.titleCost > 0\)/,
       xlsxGold: /\["Title \/ escrow \(est\.\)", \(gOk && gd\.titleCost > 0\)/,
       xlsxSilver: /\["Title \/ escrow \(est\.\)", \(sOk && sd\.titleCost > 0\)/,
+      xlsxSpeed: /\["Title \/ escrow \(est\.\)", \(pOk && pd\.titleCost > 0\)/,
       studioPanel: /YS\.put\("rTitle", \(sized && d\.titleCost > 0\)/,
       staffPanel: /k="Title \/ escrow \(est\.\)" v=\{money2\(cc\.titleAndSettlement\)\}/,
       borrowerEmail: /feeRow\('Title & settlement \(estimated\)', cc\.titleAndSettlement\)/,
@@ -200,6 +206,7 @@ const CLOSING_FEES = {
       xlsxStd: /d\.extraFees\.map\(function \(f\) \{ return \[f\.name, money2\(f\.amount\)\]/,
       xlsxGold: /gd\.extraFees\.map\(function \(f\) \{ return \[f\.name, money2\(f\.amount\)\]/,
       xlsxSilver: /sd\.extraFees\.map\(function \(f\) \{ return \[f\.name, money2\(f\.amount\)\]/,
+      xlsxSpeed: /pd\.extraFees\.map\(function \(f\) \{ return \[f\.name, money2\(f\.amount\)\]/,
       studioPanel: /YS\.put\("rExtraLbl"/,
       staffPanel: /cc\.extraFees\) && cc\.extraFees\.map/,
       borrowerEmail: /Array\.isArray\(cc\.extraFees\)[\s\S]{0,160}feeRow\(f\.name, f\.amount\)/,
@@ -214,6 +221,7 @@ const CLOSING_FEES = {
       xlsxStd: /\(stdOk && d\.feasFee > 0\) \? \[d\.feasLabel, money2\(d\.feasFee\)\]/,
       xlsxGold: /\(gOk && gd\.feasFee > 0\) \? \[gd\.feasLabel, money2\(gd\.feasFee\)\]/,
       xlsxSilver: /\(sOk && sd\.feasFee > 0\) \? \[sd\.feasLabel, money2\(sd\.feasFee\)\]/,
+      xlsxSpeed: /\(pOk && pd\.feasFee > 0\) \? \[pd\.feasLabel, money2\(pd\.feasFee\)\]/,
       studioPanel: /YS\.put\("rFeas", YS\.fmtUSD2\(d\.feasFee\)\)/,
       staffPanel: /cc\.feasibility && Number\(cc\.feasibility\.amount\) > 0/,
       borrowerEmail: /cc\.feasibility && num\(cc\.feasibility\.amount\) > 0\) feeRow\(cc\.feasibility\.label/,
@@ -228,6 +236,7 @@ const CLOSING_FEES = {
       xlsxStd: /\(stdOk && d\.settleFee > 0\) \? \[d\.settleLabel, money2\(d\.settleFee\)\]/,
       xlsxGold: /\(gOk && gd\.settleFee > 0\) \? \[gd\.settleLabel, money2\(gd\.settleFee\)\]/,
       xlsxSilver: /\(sOk && sd\.settleFee > 0\) \? \[sd\.settleLabel, money2\(sd\.settleFee\)\]/,
+      xlsxSpeed: /\(pOk && pd\.settleFee > 0\) \? \[pd\.settleLabel, money2\(pd\.settleFee\)\]/,
       studioPanel: /YS\.put\("rSettle", \(sized && d\.settleFee > 0\)/,
       staffPanel: /cc\.settlement && Number\(cc\.settlement\.amount\) > 0/,
       borrowerEmail: /cc\.settlement && num\(cc\.settlement\.amount\) > 0\) feeRow\(cc\.settlement\.label/,
@@ -241,6 +250,7 @@ const CLOSING_FEES = {
       xlsxStd: /\(stdOk && d\.cemaFee > 0\) \? \[d\.cemaLabel, money2\(d\.cemaFee\)\]/,
       xlsxGold: /\(gOk && gd\.cemaFee > 0\) \? \[gd\.cemaLabel, money2\(gd\.cemaFee\)\]/,
       xlsxSilver: /\(sOk && sd\.cemaFee > 0\) \? \[sd\.cemaLabel, money2\(sd\.cemaFee\)\]/,
+      xlsxSpeed: /\(pOk && pd\.cemaFee > 0\) \? \[pd\.cemaLabel, money2\(pd\.cemaFee\)\]/,
       studioPanel: /YS\.put\("rCema", \(sized && d\.cemaFee > 0\)/,
       staffPanel: /cc\.cema && Number\(cc\.cema\.amount\) > 0/,
       borrowerEmail: /cc\.cema && num\(cc\.cema\.amount\) > 0\) feeRow\(cc\.cema\.label/,
@@ -255,6 +265,7 @@ const CLOSING_FEES = {
       xlsxStd: /\.\.\.govXlsxRows\(stdOk \? d : null\)/,
       xlsxGold: /\.\.\.govXlsxRows\(gOk \? gd : null\)/,
       xlsxSilver: /\.\.\.govXlsxRows\(sOk \? sd : null\)/,
+      xlsxSpeed: /\.\.\.govXlsxRows\(pOk \? pd : null\)/,
       studioPanel: /el\("rGovWrap"\)/,
       staffPanel: /cc\.governmentChargeLines\) && cc\.governmentChargeLines\.map/,
       borrowerEmail: /Array\.isArray\(cc\.governmentChargeLines\)[\s\S]{0,160}feeRow\(g\.label, g\.amount\)/,
@@ -327,7 +338,10 @@ const SURFACES = {
     src: () => region(read('studio'), /\n    var gold;/, /\n    var silver;/, 'the xlsx Gold column')
       + region(read('studio'), /brokerFee is 0 on every retail sheet/, /\n  function /, 'the xlsx broker-fee splice') },
   xlsxSilver: { what: 'the spreadsheet — Silver column',
-    src: () => region(read('studio'), /\n    var silver;/, /\n  function /, 'the xlsx Silver column') },
+    src: () => region(read('studio'), /\n    var silver;/, /\n    var speed;/, 'the xlsx Silver column')
+      + region(read('studio'), /brokerFee is 0 on every retail sheet/, /\n  function /, 'the xlsx broker-fee splice') },
+  xlsxSpeed: { what: 'the spreadsheet — Speed column',
+    src: () => region(read('studio'), /\n    var speed;/, /\n  function /, 'the xlsx Speed column') },
   studioPanel: { what: 'the Term Sheet Studio structure screen',
     src: () => region(read('studio'), /\n  function recompute\(\) \{/, /\n  function validateAssign\(/, 'the studio panel') },
   staffPanel: { what: 'the staff Products & Pricing panel',
@@ -386,5 +400,5 @@ const EXPERIENCE = { flips: 5, holds: 2, ground: 3 };
 module.exports = {
   REPO, P, read, stripComments, region,
   serverClosingAddends, studioClosingAddends,
-  CLOSING_FEES, OUTSIDE_CLOSING, SURFACES, FIXTURES, EXPERIENCE,
+  CLOSING_FEES, OUTSIDE_CLOSING, SURFACES, FIXTURES, EXPERIENCE, STUDIO_MIRRORS,
 };

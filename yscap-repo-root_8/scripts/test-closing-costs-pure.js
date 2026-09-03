@@ -255,7 +255,7 @@ ok(/<script src="gov-charges\.js/.test(src('web/v2/tools/term-sheet.html')),
      this read as a broken feature every time a fee was ADDED, which is how a guard gets loosened
      for the wrong reason. `gov.borrowerTotal;` as the closing term is the property. */
   const folded = (ts.match(/var closing = origFee \+ brokerFee \+ lenderFee \+[^;\n]*\+ gov\.borrowerTotal;/g) || []).length;
-  ok(folded === 3, `all three programs add the government charges to closing costs (found ${folded}, want 3 — Standard, Gold, Silver)`);
+  ok(folded === 4, `all four programs add the government charges to closing costs (found ${folded}, want 4 — Standard, Gold, Silver, Speed)`);
   ok(/var gov = govCharges\(totalLoan, inp\);/.test(ts), 'and each computes them from the sized loan');
   ok(/YSGov\.resolveUnits\(/.test(ts) && !/propType"\) === "2-4" \? 4 : 1/.test(ts),
     'the studio asks the ENGINE how many units to tax on — it does not keep its own ladder');

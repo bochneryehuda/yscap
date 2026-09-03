@@ -54,8 +54,10 @@ const TTL_DAYS = 30;
 
 /* ────────────────────────────────── PURE ────────────────────────────────────── */
 
-/** Programs an offer may carry. `manual` IS allowed here — see the header. */
-const PROGRAMS = new Set(['standard', 'gold', 'silver', 'manual']);
+/** Programs an offer may carry: the marketed programs from their one definition
+ *  (program-availability.PROGRAM_KEYS — standard / gold / silver / speed) plus `manual`,
+ *  which IS allowed here — see the header. */
+const PROGRAMS = new Set([...require('./program-availability').PROGRAM_KEYS, 'manual']);
 function offerProgram(raw) {
   const p = String(raw || '').trim().toLowerCase();
   return PROGRAMS.has(p) ? p : null;

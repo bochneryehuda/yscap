@@ -518,6 +518,7 @@ function programLabel(regProgram, regLabel, appProgram) {
   const pr = String(regProgram || '').toLowerCase();
   if (pr === 'gold') return 'Gold Standard Program';
   if (pr === 'silver') return 'Silver Program';
+  if (pr === 'speed') return 'Speed Program';
   if (pr === 'standard') return 'Standard Program';
   return appProgram || '';
 }

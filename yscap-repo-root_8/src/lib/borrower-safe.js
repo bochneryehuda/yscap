@@ -150,9 +150,23 @@ function hasPartnerName(value) {
 // (moved out of routes/borrower.js unchanged; the `fico` drop is deliberate — the
 // pricing FICO is the higher-of-two internal figure, not the borrower's to re-read
 // from a quote result.)
+/* THE SPEED PROGRAM'S REASON TAGS ARE STAFF-FACING (owner decision D9, 2026-09-03:
+   "staff surfaces prefixed; borrower surfaces plain"). The composition carries each
+   parent's own sentence prefixed "[Standard] " / "[Silver] " / "[Both] " so staff can see
+   which book raised it; a borrower gets the sentence alone. The prefix names OUR
+   programs, never a buyer — this is presentation, not a leak guard. The `program`
+   field on the reason is kept (it is a key, not prose). */
+const SPEED_TAG_RE = /^\[(?:Standard|Silver|Both)\] /;
+function plainReasons(reasons) {
+  if (!Array.isArray(reasons)) return reasons;
+  return reasons.map((r) => (r && typeof r.msg === 'string' && SPEED_TAG_RE.test(r.msg))
+    ? { ...r, msg: r.msg.replace(SPEED_TAG_RE, '') }
+    : r);
+}
 function stripQuoteInternal(q) {
   if (!q || typeof q !== 'object') return q;
   const { adminPricing, ...rest } = q;
+  if (Array.isArray(rest.reasons)) rest.reasons = plainReasons(rest.reasons);
   return rest;
 }
 function stripInputsInternal(inp) {
@@ -183,7 +197,8 @@ function borrowerSafeQuoteBundle(out) {
   if (!out || typeof out !== 'object') return out;
   return { ...out, inputs: stripInputsInternal(out.inputs),
     standard: stripQuoteInternal(out.standard), gold: stripQuoteInternal(out.gold),
-    silver: stripQuoteInternal(out.silver) };
+    silver: stripQuoteInternal(out.silver),
+    speed: stripQuoteInternal(out.speed) };
 }
 
 module.exports = { scrubText, scrubTextExcept, scrubFields, hasPartnerName, PROGRAM, PARTNER_PATTERNS,

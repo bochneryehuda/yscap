@@ -23,7 +23,8 @@
  * declines everything else — leaving exactly today's outcome, an unregistered
  * file for the team to price:
  *
- *   · only the three self-registerable programs (standard / gold / silver).
+ *   · only the self-registerable (marketed) programs — program-availability's
+ *     PROGRAM_KEYS: standard / gold / silver / speed (Speed since 2026-09-03).
  *     MANUAL is approval-bearing and is never carried here in the first place;
  *     it is refused again anyway, because a public body is not to be trusted.
  *   · only an ELIGIBLE quote. A MANUAL / INELIGIBLE / ERROR status means the
@@ -39,7 +40,11 @@
  * application exactly as intake created it. The caller ignores the result.
  */
 
-const PROGRAMS = new Set(['standard', 'gold', 'silver']);
+// THE MARKETED PROGRAMS, read from their one definition (program-availability.PROGRAM_KEYS —
+// the same list the company ON/OFF switches govern) rather than a second hand-kept copy that
+// would lag the next program. `manual` is not in that list, which is exactly the refusal
+// this door wants.
+const PROGRAMS = new Set(require('./program-availability').PROGRAM_KEYS);
 
 /**
  * Is this a program a public form may register on its own?

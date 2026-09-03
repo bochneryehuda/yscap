@@ -26,9 +26,11 @@
  * dependency-free) conditions field registry — so it can be unit-tested exactly
  * and can never throw into a registration.
  *
- * SCOPE, deliberately narrow: GOLD only. Standard, Silver and a Manual product
- * are unaffected — the owner named Gold, and refusing more than was asked for
- * would block deals that are perfectly fine today.
+ * SCOPE, deliberately narrow: GOLD only. Standard, Silver, Speed and a Manual
+ * product are unaffected — the owner named Gold, and refusing more than was asked
+ * for would block deals that are perfectly fine today. (The Speed Program,
+ * 2026-09-03, composes Standard and Silver — neither parent carries this rule, so
+ * neither does the composition.)
  */
 
 /* Is the file vesting in an individual's name? A LINKED ENTITY ALWAYS WINS —
@@ -43,12 +45,18 @@ function vestsInIndividual(app) {
 }
 
 /* Which program is being registered. Reads the same shapes the register doors
-   already carry — the requested program, an override, or the engine's own label. */
+   already carry — the requested program, an override, or the engine's own label.
+   THE ONE NORMALIZER: every register door, program-availability and
+   manual-program.resolveProgram key off this, so a new program is added HERE and
+   nowhere else. `speed` (the Speed Program, 2026-09-03) is tested before the
+   `standard` fallback like the others, and its label never contains another
+   program's word, so order among the named programs does not matter. */
 function programKey(program) {
   const s = String(program || '').trim().toLowerCase();
   if (!s) return null;
   if (/gold/.test(s)) return 'gold';
   if (/silver/.test(s)) return 'silver';
+  if (/speed/.test(s)) return 'speed';
   if (/manual|custom/.test(s)) return 'manual';
   if (/standard/.test(s)) return 'standard';
   return s;

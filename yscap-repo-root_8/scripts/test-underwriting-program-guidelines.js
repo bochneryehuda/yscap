@@ -103,4 +103,22 @@ for (const p of ['gold', 'standard', 'manual', null]) {
     `bank-statement months for ${p} must equal liquidity.bankStatementMonths (single source of truth)`);
 }
 
+// ---- the Speed Program (2026-09-03): recognized, and every number READ from its canonical home ----
+{
+  const { ownerRuleFor, PROGRAM_OWNER_RULES } = require('../src/lib/underwriting/entity-chain');
+  assert.strictEqual(canonProgram('speed'), 'speed');
+  assert.strictEqual(canonProgram('Speed Program'), 'speed');
+  const sp = programGuidelineSnapshot('speed');
+  assert.strictEqual(sp.program, 'speed');
+  assert.strictEqual(sp.label, 'Speed');
+  assert.strictEqual(sp.registered, true);
+  assert.strictEqual(sp.ownerThresholdPct, Math.min(PROGRAM_OWNER_RULES.standard.pct, PROGRAM_OWNER_RULES.silver.pct),
+    'Speed owner threshold = the stricter (lower) of Standard and Silver');
+  assert.strictEqual(sp.ownerThresholdPct, ownerRuleFor('speed').pct, 'and it is READ from entity-chain, never typed here');
+  assert.strictEqual(sp.bankStatementMonths, 2, 'Speed = 2 months of bank statements (both parents are 2)');
+  assert.strictEqual(sp.sowContingencyRequired, false, 'no SOW contingency by program (that arm is Gold)');
+  assert.ok(sp.notes.some((n) => /2 months of bank statements/.test(n)), 'two-month wording');
+  assert.ok(sp.notes.some((n) => new RegExp(`${sp.ownerThresholdPct}% or more`).test(n)), 'the owner note prints the derived threshold');
+}
+
 console.log('✓ test-underwriting-program-guidelines: AUS program snapshot reads canonical guideline sources');

@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import { fmtRatePct } from '../lib/rateFormat.js';
+import { programLabel } from '../lib/programLabel.js';
 
 /* Manual Program admin + the super-admin ESCALATION box (owner-directed
  * 2026-07-20; page redesign 2026-07-26).
@@ -408,9 +409,9 @@ export default function StaffEscalations() {
             const isOpen = r.status === 'pending' || r.status === 'countered';
             const badgeCls = r.status === 'approved' ? 'ok' : (r.status === 'declined' ? 'err' : 'warn');
             const kindLabel = s.kind === 'manual_review'
-              ? `${s.program === 'gold' ? 'Gold Standard' : s.program === 'silver' ? 'Silver' : 'Standard'} — manual-review exception`
+              ? `${programLabel(s.program, { short: true })} — manual-review exception`
               : s.kind === 'pricing_override'
-                ? `${s.program === 'gold' ? 'Gold Standard' : s.program === 'silver' ? 'Silver' : 'Standard'} — pricing changed from the defaults`
+                ? `${programLabel(s.program, { short: true })} — pricing changed from the defaults`
                 : 'Manual Program';
             const acqLabel = (s.kind === 'manual_review' || s.kind === 'pricing_override') ? 'As-is LTV' : 'Acq LTV';
             // Per-row decide right (server-computed): an admin may decide any
