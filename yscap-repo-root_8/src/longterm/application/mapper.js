@@ -210,7 +210,9 @@ function ssnLast4(v) {
  *
  * `dependentCount` has NO id: field 54 is `dependentsAgesDescription`, which is a
  * different question with a different answer, and wiring it here would put a list
- * of ages in a count column.
+ * of ages in a count column. The AGES have their own row (`dependentsAges`, field
+ * 54) — a free-text line like "10/8" that the ClickUp "Age of Dependents" box
+ * carries verbatim (owner-reported 2026-09-03; db/690).
  */
 const PARTY_FIELDS = {
   firstName: { id: '4000', path: 'firstName' },
@@ -224,6 +226,7 @@ const PARTY_FIELDS = {
   mobilePhone: { id: '1490', path: 'mobilePhone' },
   maritalStatus: { id: '52', path: 'maritalStatusType' },
   dependentCount: { id: null, path: 'dependentCount' },
+  dependentsAges: { id: '54', path: 'dependentsAgesDescription' },
   citizenship: { id: null, path: 'urla2020CitizenshipResidencyType', alt: ['citizenshipResidencyType'] },
   ficoExperian: { id: null, path: 'experianCreditScore' },
   ficoTransunion: { id: null, path: 'transUnionScore' },
@@ -270,6 +273,7 @@ function readParty(raw, role) {
     citizenship: text(f('citizenship')),
     maritalStatus: text(f('maritalStatus')),
     dependentCount: int(f('dependentCount')),
+    dependentsAges: text(f('dependentsAges')),
     email: text(f('email')),
     homePhone: text(f('homePhone')),
     mobilePhone: text(f('mobilePhone')),

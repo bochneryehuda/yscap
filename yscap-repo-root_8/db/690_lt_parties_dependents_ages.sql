@@ -1,0 +1,25 @@
+-- ============================================================================
+-- db/690 — the Long-Term borrower mirror remembers the dependants' AGES
+--
+-- WHAT THIS CHANGES, AND WHY. Owner-reported 2026-09-03, on a live Long-Term
+-- card: the ClickUp "Number of Dependents" and "Age of Dependents" boxes stayed
+-- blank although Encompass carries both — field 53 (the count) and field 54
+-- (the ages, one free-text line like "10/8"). The mirror (`lt_parties`) kept
+-- the COUNT since db/549 and never the ages, so when Encompass is off the push
+-- had nothing to answer the ages box from, and when it is on the live read was
+-- never asked for 54. This adds the one column the mirror was missing; the
+-- application sync (`src/longterm/application/mapper.js` PARTY_FIELDS →
+-- `sync.js`) fills it by PATH from `dependentsAgesDescription`, the same way
+-- every other party field is read, and the ClickUp mapper reads the live 54
+-- first and this column when Encompass is unreachable.
+--
+-- IDEMPOTENT. One ADD COLUMN IF NOT EXISTS.
+--
+-- BACKFILL: none by SQL — there is no source inside the database for it. The
+-- next application sync of each loan fills it from Encompass (COALESCE-guarded,
+-- so a value already held is never blanked by a later read that carries none).
+--
+-- PRODUCT SEPARATION. Touches `lt_parties` only — a Long-Term table.
+-- ============================================================================
+
+ALTER TABLE lt_parties ADD COLUMN IF NOT EXISTS dependents_ages text;

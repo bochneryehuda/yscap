@@ -1,0 +1,29 @@
+-- ============================================================================
+-- db/693 — a long-term order remembers WHEN it finished
+--
+-- WHAT THIS CHANGES, AND WHY. Owner-directed 2026-09-03, on both products:
+-- *"if the documents are being uploaded to the condition and the condition is
+-- being signed off, then update the status of the order that it's done. Don't
+-- say 'hey, orders past due'."* A vendor who answers in a NEW email chain
+-- never matches the order's thread, so the documents land on the condition by
+-- hand and the order row stays 'ordered' for the life of the file. From this
+-- change the condition drives the order (`src/longterm/orders/condition-sync.js`):
+-- a document filed on the order's condition → 'documents_in'; the condition
+-- signed off or waived → 'completed'. The short-term desk has stamped
+-- `file_orders.completed_at` since db/211; the long-term row had no column for
+-- the moment it finished, so a finished order showed no finish date. This adds
+-- it. `meta.completed_via` says WHO finished it — 'condition' when the
+-- condition did — which is what lets a reopened condition put exactly the
+-- orders the condition closed back on the desk, and nothing a person closed.
+--
+-- IDEMPOTENT. One ADD COLUMN IF NOT EXISTS.
+--
+-- BACKFILL: none by SQL. The sweep in `condition-sync.js` (run every long-term
+-- sync tick) completes every order whose condition is already signed off, so
+-- the existing book catches up within one tick of deploy — and it is the same
+-- code path a live sign-off takes, not a second copy of the rule.
+--
+-- PRODUCT SEPARATION. Touches `lt_file_orders` only — a Long-Term table.
+-- ============================================================================
+
+ALTER TABLE lt_file_orders ADD COLUMN IF NOT EXISTS completed_at timestamptz;

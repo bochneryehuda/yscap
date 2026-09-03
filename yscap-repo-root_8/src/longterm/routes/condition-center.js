@@ -493,7 +493,10 @@ const uploadConditionDoc = async (req, res) => {
          (src/longterm/sharepoint-scope.js), and asks `lt_loan_id` BEFORE the
          bare borrower fallback. */
       borrowerId: null,
-      hooks: {},
+      /* A DOCUMENT ON AN ORDER'S CONDITION MOVES THE ORDER (owner-directed
+         2026-09-03): the same seam the short-term side uses for its ClickUp
+         push, pointed at the long-term orders desk. Best-effort inside. */
+      hooks: { conditionTouched: (itemId) => require('../orders/condition-sync').onDocumentFiled(scoped.loan.id, itemId, db) },
       q: db,
     });
     /* THE PHOTO ID BELONGS TO THE PERSON (owner-directed 2026-08-31: *"if he

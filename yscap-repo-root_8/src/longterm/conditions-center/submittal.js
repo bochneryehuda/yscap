@@ -72,28 +72,34 @@ const CLICK_DONE = 'Click Done on it.';
  * @param {object} c       a shaped condition from `read.forLoan` (internal audience)
  * @param {object|null} found  `write.loadCondition`'s answer, or null when the
  *                             condition is already done and need not be loaded
- * @returns {{done:boolean, blockers:string[], how:string|null}}
+ * @returns {{done:boolean, blockers:string[], how:string|null, marked:boolean, missing:string[]}}
+ *   `marked` is the officer's own Done click; `missing` is what the sign-off
+ *   gate still finds absent, WITHOUT the "click Done" step — so a screen can
+ *   put a clicked item down the list (the owner's "everything that he clicks
+ *   Done goes down this list", re-stated 2026-09-03) and still say, in the
+ *   server's words, what is left on it. `blockers` stays the whole answer.
  */
 function judge(c, found) {
+  const marked = !!c.reviewedAt;
   if (read.DONE.has(c.status)) {
     const how = c.status === 'satisfied' ? 'signed off'
       : c.status === 'waived' ? 'waived'
         : 'did not apply';
-    return { done: true, blockers: [], how };
+    return { done: true, blockers: [], how, marked, missing: [] };
   }
   if (!found) {
     // The condition could not be read at all — never "done", and said so.
-    return { done: false, blockers: ['PILOT could not read this condition just now.'], how: null };
+    const why = 'PILOT could not read this condition just now.';
+    return { done: false, blockers: [why], how: null, marked, missing: [why] };
   }
   const gate = write.signOffProblem(found.condition, found.files, {
     readFailed: found.readFailed, entity: found.entity, contacts: found.contacts,
     liabilities: found.liabilities, card: found.card, photoId: found.photoId, stage: 'officer',
   });
-  const blockers = [];
-  if (!gate.ok) blockers.push(gate.why);
-  const marked = !!c.reviewedAt;
+  const missing = gate.ok ? [] : [gate.why];
+  const blockers = [...missing];
   if (!marked) blockers.push(CLICK_DONE);
-  return { done: gate.ok && marked, blockers, how: gate.ok && marked ? 'marked done' : null };
+  return { done: gate.ok && marked, blockers, how: gate.ok && marked ? 'marked done' : null, marked, missing };
 }
 
 /** The completion stamp and the ClickUp state, off the loan row. */

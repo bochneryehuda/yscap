@@ -102,6 +102,16 @@ const CU = Object.freeze({
   freeAndClear: "dbc94cf7-8551-491d-9311-14f5eb2b7e8a", // checkbox "Free and Clear"
   titleContact: "252cd875-adfa-4344-89e0-bdd1f0347d91", // email "Title Company Contact"
   insuranceContact: "0627751b-c206-4bbf-bd3e-943a99481fa8", // short_text "Insurance Company Contact Info"
+  // Re-read off the live Loan Pipeline space catalog on 2026-09-03 (161 fields)
+  // for the owner's "these stay blank on a Long-Term card" report. There is
+  // also a short_text "1031 Agent Information" (2d566b9c-…) — deliberately NOT
+  // mapped: Encompass carries no field for it on this tenant (the 2026-08 field
+  // export has no 1031 / exchange field), so there is nothing to fill it from.
+  citizenship: "045f993c-4c7a-4a03-b71d-44e3ed15aa07", // short_text "Citizenship"
+  dependents: "19ce13e0-bdcd-43c3-b365-7b07f1f3824e", // short_text "Number of Dependents"
+  dependentsAges: "2618c971-841e-40db-b4c9-46b20bb8ce1d", // text "Age of Dependents"
+  titleCompany: "2c734172-ea63-40b4-b151-aca9cab05969", // short_text "Desired Title Company"
+  insuranceCompany: "dc0b20e7-6b7b-462c-acaf-e9fecb8e84c9", // short_text "Insurance Company Name"
   dateSubmitted: "51ef2193-6f42-4b6a-ab8e-d4bc13f0bd0c", // date "Date File Submitted"
   actualClosing: "0846edc7-8619-4ee6-827e-a673570d3057", // date "Actual Closing Date"
   appSubmitted: "e1c2b5d7-14f4-47fe-98a5-13d733029f23", // drop_down "Application submitted?"
@@ -150,17 +160,143 @@ function channelLabel(raw) {
 }
 
 /** FR0115 (+ FR0116 payment) -> 'Primary Housing'. Own with a payment is a
- * mortgage; own with none is free and clear. */
+ * mortgage; own with none is free and clear.
+ *
+ * LIVE-VERIFIED 2026-09-03 against the list's own field definition (GET
+ * /list/{id}/field, read-only): the dropdown's options are exactly
+ * 'Rent' / 'Mortgage' / 'Free' / 'Own Free & Clear' / 'Rent Free'. Two
+ * corrections came out of that read:
+ *   - the label for an owner with no payment was 'own free and clear', which
+ *     matches NO live option (the resolver compares whole lowercased names, so
+ *     "and" vs "&" is a miss) — the dropdown silently stayed blank for every
+ *     free-and-clear owner. It is now the live spelling.
+ *   - FR0115's live vocabulary on this tenant is Rent / Own /
+ *     NoPrimaryHousingExpense (3 of the 12 most recent loans carry the third;
+ *     the URLA-2020 word for "lives rent free"), which reached no branch here
+ *     and left the dropdown blank. It is 'Rent Free', the same answer the
+ *     payment twin below gives it. */
 function housingLabel(fr0115, paymentRaw) {
   const v = norm(fr0115);
   if (!v) return null;
-  if (v.includes('rentfree') || v.includes('rent free') || v.includes('liverentfree') || v.includes('live rent free')) return 'Rent Free';
+  if (v.includes('rentfree') || v.includes('rent free') || v.includes('liverentfree') || v.includes('live rent free')
+      || v.includes('noprimaryhousingexpense') || v.includes('no primary housing expense')) return 'Rent Free';
   if (v.includes('rent')) return 'Rent';
   if (v.includes('own')) {
     const pay = T.parseMoney(paymentRaw);
-    return pay != null && pay > 0 ? 'Mortgage' : 'own free and clear';
+    return pay != null && pay > 0 ? 'Mortgage' : 'Own Free & Clear';
   }
   return null;
+}
+
+/**
+ * THE PRIMARY HOUSING PAYMENT — the currency twin of the dropdown above
+ * (owner-directed 2026-09-03: *"if he is renting, it should be filled with the
+ * amount of the rent that is listed … If he owns you can look which mortgage
+ * is tied to his primary residence. If you can find it. If not you can skip
+ * this field if he owns."*).
+ *
+ *   rent       → the rent Encompass lists on the present address (FR0116), or
+ *                the mirror's `lt_residences.monthly_rent` when Encompass is off.
+ *   own        → FR0116 if Encompass carries a payment there; otherwise the
+ *                mortgage TIED TO THE HOME — the borrower's REO row that is the
+ *                primary residence (Encompass `propertyUsageType`
+ *                PrimaryResidence, or the same street + zip as the present
+ *                address), and on it the mortgage/HELOC liabilities Encompass
+ *                hangs on that property (`lt_liabilities.reo_property_id`), or
+ *                the REO's own `monthly_mortgage_payment` when no liability is
+ *                linked. Two candidate homes, or none → SKIPPED, never guessed.
+ *   rent free  → nothing to write.
+ *
+ * Pure: reads only the bag. Anything it cannot find answers null (= not
+ * written, never cleared).
+ */
+function housingBasis(fr0115, mirrorBasis) {
+  const v = norm(fr0115) || norm(mirrorBasis);
+  if (!v) return null;
+  if (v.includes('rentfree') || v.includes('rent free') || v.includes('liverentfree') || v.includes('live rent free')
+      || v.includes('no primary housing expense') || v.includes('noprimaryhousingexpense')) return 'rent_free';
+  if (v.includes('rent')) return 'rent';
+  if (v.includes('own')) return 'own';
+  return null;
+}
+function sameStreetAndZip(a, b) {
+  const st = (x) => norm(x && x.street);
+  const zip = (x) => String((x && x.zip) || '').replace(/\D/g, '').slice(0, 5);
+  return !!(st(a) && st(b) && zip(a) && zip(b) && st(a) === st(b) && zip(a) === zip(b));
+}
+function isPrimaryResidenceReo(reo, residence) {
+  const occ = norm(reo && reo.occupancy_type);
+  if (occ === 'primaryresidence' || occ === 'primary residence' || occ === 'primary') return true;
+  return sameStreetAndZip(reo, residence);
+}
+function isMortgageLiability(liab) {
+  const t = norm(liab && liab.liability_type);
+  return t.includes('mortgage') || t.includes('heloc');
+}
+function primaryResidenceMortgagePayment(bag) {
+  const reos = Array.isArray(bag && bag.reos) ? bag.reos : [];
+  const homes = reos.filter((r) => isPrimaryResidenceReo(r, bag.residence));
+  if (homes.length !== 1) return null;                   // none, or two — a guess either way
+  const home = homes[0];
+  const liabs = (Array.isArray(bag.liabilities) ? bag.liabilities : [])
+    .filter((l) => l && l.reo_property_id && String(l.reo_property_id) === String(home.id)
+      && !l.to_be_paid_off && isMortgageLiability(l));
+  const fromLiabs = liabs.reduce((sum, l) => sum + (T.parseMoney(l.monthly_payment) || 0), 0);
+  if (fromLiabs > 0) return fromLiabs;
+  const own = T.parseMoney(home.monthly_mortgage_payment);
+  return own != null && own > 0 ? own : null;
+}
+function housingPayment(bag) {
+  const residence = (bag && bag.residence) || null;
+  const basis = housingBasis(exv(bag, 'FR0115'), residence && residence.residency_basis);
+  if (!basis || basis === 'rent_free') return null;
+  const listed = T.parseMoney(exv(bag, 'FR0116'));
+  if (listed != null && listed > 0) return listed;
+  if (basis === 'rent') {
+    const mirror = T.parseMoney(residence && residence.monthly_rent);
+    return mirror != null && mirror > 0 ? mirror : null;
+  }
+  return primaryResidenceMortgagePayment(bag);
+}
+
+/** URLA.X1 (`urla2020CitizenshipResidencyType`; live vocabulary USCitizen /
+ * PermanentResidentAlien / NonPermanentResidentAlien) -> the 'Citizenship'
+ * short_text, spelled the way the card's team reads it. An unmeasured word is
+ * never guessed. */
+function citizenshipLabel(v) {
+  const t = norm(v).replace(/ /g, '');
+  if (!t) return null;
+  if (t === 'uscitizen' || t === 'unitedstatescitizen' || t === 'citizen') return 'US Citizen';
+  if (t === 'permanentresidentalien' || t === 'permanentresident') return 'Permanent Resident Alien';
+  if (t === 'nonpermanentresidentalien' || t === 'nonpermanentresident') return 'Non-Permanent Resident Alien';
+  return null;
+}
+
+/** Field 53 / `lt_parties.dependent_count` -> the 'Number of Dependents'
+ * short_text. A stated 0 IS an answer ("no dependants") and is written; a
+ * blank states nothing. */
+function dependentsCountText(live, mirror) {
+  const pick = (x) => { const n = num(x); return n != null && n >= 0 && Number.isInteger(n) ? n : null; };
+  const n = pick(live) != null ? pick(live) : pick(mirror);
+  return n == null ? null : String(n);
+}
+
+/** A vendor card off the file's own contacts desk (`lt_loan_vendors` →
+ * `service_contacts`), or null. The bag carries `vendors.title` and
+ * `vendors.hazard_insurance`; a desk the push could not read is `undefined`. */
+const vendorCard = (bag, kind) => (bag && bag.vendors && bag.vendors[kind]) || null;
+const vendorCompany = (bag, kind) => { const c = vendorCard(bag, kind); return s(c && c.company_name); };
+/** The card's scalar column, else the first entry of its array twin (db/224
+ * added `emails[]` / `phones[]` beside `email` / `phone`). A missing array is
+ * null, never the boolean `false` that `&&` would hand to String(). */
+const firstOf = (scalar, arr) => s(scalar) || (Array.isArray(arr) && arr.length ? s(arr[0]) : null);
+const vendorEmail = (bag, kind) => { const c = vendorCard(bag, kind); return c ? firstOf(c.email, c.emails) : null; };
+/** "Contact info" for a short_text: who · email · phone — whatever the card holds. */
+function vendorContactText(bag, kind) {
+  const c = vendorCard(bag, kind);
+  if (!c) return null;
+  const parts = [s(c.contact_name), vendorEmail(bag, kind), firstOf(c.phone, c.phones)].filter(Boolean);
+  return parts.length ? parts.join(' · ') : null;
 }
 
 /** 4008 word -> the '*Vesting' dropdown (the db/624 rule: Individual means
@@ -448,7 +584,7 @@ const FIELD_MAP = [
   { cu: CU.primaryHousing, key: 'primary_housing', name: 'Primary Housing', type: 'dropdown',
     src: (b) => housingLabel(exv(b, 'FR0115'), exv(b, 'FR0116')) },
   { cu: CU.primaryHousingPayment, key: 'primary_housing_payment', name: 'Primary Housing ($)', type: 'currency',
-    src: (b) => exv(b, 'FR0116') || s(b.residence && b.residence.monthly_rent) },
+    src: (b) => housingPayment(b) },
   { cu: CU.yearsAtResidence, key: 'years_at_residence', name: 'How many Years at Primary Residence?', type: 'text',
     src: (b) => yearsAtResidenceText(exv(b, 'FR0112'), exv(b, 'FR0124'), b.residence && b.residence.duration_months) },
   { cu: CU.priorAddress, key: 'prior_address', name: 'Prior Address', type: 'location',
@@ -468,6 +604,12 @@ const FIELD_MAP = [
       if (t !== 'officer' && t !== 'trustee') return null;   // Individual NEVER writes an entity name (db/624)
       return s(b.loan && b.loan.vesting_entity_name);
     } },
+  { cu: CU.citizenship, key: 'citizenship', name: 'Citizenship', type: 'text',
+    src: (b) => citizenshipLabel(exv(b, 'URLA.X1') || s(b.borrower && b.borrower.citizenship)) },
+  { cu: CU.dependents, key: 'dependents', name: 'Number of Dependents', type: 'text',
+    src: (b) => dependentsCountText(exv(b, '53'), b.borrower && b.borrower.dependent_count) },
+  { cu: CU.dependentsAges, key: 'dependents_ages', name: 'Age of Dependents', type: 'text',
+    src: (b) => exv(b, '54') || s(b.borrower && b.borrower.dependents_ages) },
   { cu: CU.maritalStatus, key: 'marital_status', name: 'Marital Status', type: 'dropdown',
     src: (b) => {
       const verdict = T.normalizeMarried(exv(b, '52') || s(b.borrower && b.borrower.marital_status));
@@ -539,10 +681,21 @@ const FIELD_MAP = [
     src: (b) => exv(b, '1005') || s(b.prop && (b.prop.gross_monthly_rent || b.prop.actual_monthly_rent)) },
   { cu: CU.freeAndClear, key: 'free_and_clear', name: 'Free and Clear', type: 'checkbox',
     src: (b) => (isChecked(exv(b, 'CX.FREECLEAR')) ? true : null) },
+  // THE VENDOR CONTACTS (owner-directed 2026-09-03: "fill the vendor contact
+  // information from Encompass"). Encompass's File Contacts first — 411 is the
+  // title company's name (filled on 232 of the tenant's long-term loans in the
+  // 2026-08 export), 88 its email, L252 the hazard insurer's name (215), and the
+  // two CX contact boxes — then the file's own contacts desk (the title and
+  // hazard-insurance cards the loan officer picked before submittal) when
+  // Encompass holds nothing.
+  { cu: CU.titleCompany, key: 'title_company', name: 'Desired Title Company', type: 'text',
+    src: (b) => exv(b, '411') || vendorCompany(b, 'title') },
   { cu: CU.titleContact, key: 'title_contact', name: 'Title Company Contact', type: 'email',
-    src: (b) => emailIn(exv(b, 'CX.TITLECONTACT')) },
+    src: (b) => emailIn(exv(b, 'CX.TITLECONTACT')) || emailIn(exv(b, '88')) || vendorEmail(b, 'title') },
+  { cu: CU.insuranceCompany, key: 'insurance_company', name: 'Insurance Company Name', type: 'text',
+    src: (b) => exv(b, 'L252') || vendorCompany(b, 'hazard_insurance') },
   { cu: CU.insuranceContact, key: 'insurance_contact', name: 'Insurance Company Contact Info', type: 'text',
-    src: (b) => exv(b, 'CX.INSURANCECONTACT') },
+    src: (b) => exv(b, 'CX.INSURANCECONTACT') || vendorContactText(b, 'hazard_insurance') },
   { cu: CU.dateSubmitted, key: 'date_submitted', name: 'Date File Submitted', type: 'date',
     src: (b) => exv(b, '745') },
   { cu: CU.actualClosing, key: 'actual_closing', name: 'Actual Closing Date', type: 'date',
@@ -583,6 +736,12 @@ const EX_FIELD_IDS = Object.freeze([
   'CX.SUBMITEDTOINVESTOR', 'VEND.X276', 'VEND.X263',
   'FR0115', 'FR0116', 'FR0112', 'FR0124', 'FR0326', 'FR0306', 'FR0315',
   'VASUMM.X23',
+  // 2026-09-03 — the blank-card report. Every id below is in the tenant's own
+  // 2026-08 field export (docs/longterm/research-exports/01-every-field.csv)
+  // with its long-term fill count: URLA.X1 citizenship (488), 53 dependants
+  // count (273), 54 their ages (281), 411 title company name (232), 88 title
+  // company email (223), L252 hazard insurer name (215).
+  'URLA.X1', '53', '54', '411', '88', 'L252',
   // The status engine's terminal signal (live vocabulary: 'Loan Originated' /
   // 'Active Loan' / 'Application withdrawn' / 'Application denied').
   '1393',
@@ -884,6 +1043,8 @@ module.exports = {
     propertyTypeLabel, occupancyLabel, termLabel, pppLabel, pppText, lenderLabel,
     appSubmittedLabel, ltvText, yearsAtResidenceText, purchaseOrEstimate,
     sameNameLoose, emailIn, isChecked,
+    housingBasis, housingPayment, primaryResidenceMortgagePayment, citizenshipLabel,
+    dependentsCountText, vendorContactText,
     // exported as a TEST SEAM so a guard can reach the real field row rather than
     // restating its logic — a test that re-types the rule proves nothing about it.
     FIELD_MAP,

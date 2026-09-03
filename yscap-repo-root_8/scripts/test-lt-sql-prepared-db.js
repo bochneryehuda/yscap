@@ -234,6 +234,7 @@ async function main() {
     // composes the shared owner descriptor's WHERE, and an UPDATE that matches
     // nothing raises no error — so it went silent once before, on every order
     // ever placed, and nothing said so.
+    'orders/condition-sync.js': 'test-lt-order-condition-sync-db.js drives all three assembled statements live — onDocumentFiled (section A), onConditionSatisfied through write.satisfy / write.waive (B, D) and onConditionReopened through write.reopen (C) — each asserted on the ORDER ROW it moved, so a statement the schema refused could not pass',
     'orders/desk.js': 'test-lt-orders-db.js drives the place-order path live, which assembles and runs the owner-scoped UPDATE',
     // The read that turns "a vendor replied" into "file it onto THIS condition".
     // Section G of the orders suite exists specifically to run it: it had never

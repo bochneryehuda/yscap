@@ -211,6 +211,16 @@ async function tickOnce({ trigger = 'worker' } = {}) {
     } catch (e) {
       out.conditionRules = { ok: false, reason: (e && e.message) || String(e) };
     }
+    // THE ORDERS FOLLOW THEIR CONDITIONS (owner-directed 2026-09-03). An order
+    // whose condition is signed off is finished; one whose condition holds a
+    // document has its documents in — whichever email chain they came back on.
+    // The live doors (sign-off, waive, upload) do this at once; this pass is the
+    // "previous AND future" half over the whole book, through the same module.
+    try {
+      out.orderConditions = await require('../orders/condition-sync').sweepOnce({});
+    } catch (e) {
+      out.orderConditions = { ok: false, reason: (e && e.message) || String(e) };
+    }
     // The tenant's own milestone catalog. It skips itself unless a day has passed,
     // so this costs nothing on all but one pass — and when it does run it is what
     // stops a step a buyer added from blanking the progress bar on every file

@@ -170,6 +170,97 @@ async function completeOrder(applicationId, orderType, { actorId = null, reason 
 }
 
 /**
+ * THE CONDITION DRIVES THE ORDER — at the moment it moves (owner-directed
+ * 2026-09-03: *"if the provider accidentally replies in a new email chain, we
+ * can't see that response under the original Order section … If the documents
+ * are being uploaded to the condition and the condition is being signed off,
+ * then update the status of the order that it's done. Don't say 'hey, orders
+ * past due'."*).
+ *
+ * `retireSatisfiedOrdersOnce` below already finishes an order whose condition
+ * is signed off — on the digest tick, up to half an hour later, during which the
+ * desk still calls it outstanding and the overdue nudge can still go out. These
+ * two are the same rule applied AT THE DOOR: the checklist sign-off calls
+ * `completeFromCondition`, and every document that lands on the condition (the
+ * shared upload chokepoint's `conditionTouched` hook) calls
+ * `documentsInFromCondition`. Both answer only for a condition that IS an
+ * order's (`order-slots.CONDITION_CODE`, the one map) and are best-effort by
+ * this module's contract — they can never fail the sign-off or the upload.
+ *
+ * `reopenFromCondition` is the mirror: undoing the sign-off puts back ONLY an
+ * order the condition itself finished (its 'completed' event says
+ * `via: 'condition'`); an order a person marked finished is theirs.
+ */
+async function orderTypeOfCondition(checklistItemId, q) {
+  if (!checklistItemId) return null;
+  const r = await q.query(
+    `SELECT ci.application_id, t.code
+       FROM checklist_items ci LEFT JOIN checklist_templates t ON t.id = ci.template_id
+      WHERE ci.id = $1 AND ci.application_id IS NOT NULL`, [checklistItemId]);
+  const row = r.rows[0];
+  if (!row || !row.code) return null;
+  const type = Object.keys(CONDITION_CODE).find((k) => CONDITION_CODE[k] === row.code);
+  return type ? { applicationId: row.application_id, orderType: type } : null;
+}
+
+async function completeFromCondition(checklistItemId, { actorId = null, client = null } = {}) {
+  const q = client || db;
+  try {
+    const hit = await orderTypeOfCondition(checklistItemId, q);
+    if (!hit) return false;
+    const r = await q.query(
+      `UPDATE file_orders
+          SET status = 'completed', completed_at = COALESCE(completed_at, now()), updated_at = now()
+        WHERE application_id = $1 AND order_type = $2 AND status IN ('ordered','documents_in')
+      RETURNING id`, [hit.applicationId, hit.orderType]);
+    if (!r.rows[0]) return false;
+    await recordEvent({
+      applicationId: hit.applicationId, orderType: hit.orderType, kind: 'completed', actorId,
+      orderId: r.rows[0].id, client,
+      detail: { via: 'condition', reason: `the ${hit.orderType} condition was signed off` },
+    });
+    return true;
+  } catch (_) { return false; }
+}
+
+async function documentsInFromCondition(checklistItemId, { actorId = null, client = null } = {}) {
+  const q = client || db;
+  try {
+    const hit = await orderTypeOfCondition(checklistItemId, q);
+    if (!hit) return false;
+    const r = await q.query(
+      `UPDATE file_orders SET status = 'documents_in', updated_at = now()
+        WHERE application_id = $1 AND order_type = $2 AND status = 'ordered'
+      RETURNING id`, [hit.applicationId, hit.orderType]);
+    if (!r.rows[0]) return false;
+    await recordEvent({
+      applicationId: hit.applicationId, orderType: hit.orderType, kind: 'documents_in', actorId,
+      orderId: r.rows[0].id, client, detail: { via: 'condition' },
+    });
+    return true;
+  } catch (_) { return false; }
+}
+
+async function reopenFromCondition(checklistItemId, { actorId = null, client = null } = {}) {
+  const q = client || db;
+  try {
+    const hit = await orderTypeOfCondition(checklistItemId, q);
+    if (!hit) return false;
+    // Only an order the CONDITION finished: its newest 'completed' line says so.
+    const last = await q.query(
+      `SELECT e.detail FROM file_order_events e
+         JOIN file_orders o ON o.id = e.order_id
+        WHERE o.application_id = $1 AND o.order_type = $2 AND o.status = 'completed'
+          AND e.kind = 'completed'
+        ORDER BY e.created_at DESC, e.id DESC LIMIT 1`, [hit.applicationId, hit.orderType]);
+    const detail = last.rows[0] && last.rows[0].detail;
+    if (!detail || detail.via !== 'condition') return false;
+    const v = await reopenOrder(hit.applicationId, hit.orderType, { actorId, client });
+    return !!(v && v.ok !== false);
+  } catch (_) { return false; }
+}
+
+/**
  * PUT A FINISHED ORDER BACK ON THE DESK.
  *
  * Reopen answers two different mistakes and must handle both: an order somebody
@@ -365,4 +456,5 @@ module.exports = {
   ORDER_TYPES,
   recordEvent, defaultAssignee, ensureAssignee, noteFirstResponse,
   completeOrder, reopenOrder, retireSatisfiedOrdersOnce, listEvents,
+  completeFromCondition, documentsInFromCondition, reopenFromCondition,
 };

@@ -697,7 +697,13 @@ async function satisfy(loanId, conditionId, staffId, client = db) {
       WHERE id = $1::uuid RETURNING id, status, waived_at, is_required`,
     [String(conditionId), staffId || null, note],
   );
-  return { ok: true, condition: shapeStatus(rows[0]), checkSkipped: gate.checkSkipped || null };
+  // THE ORDER THIS CONDITION ASKED FOR IS FINISHED (owner-directed 2026-09-03) —
+  // after the answer is safely down, best-effort, one definition in
+  // orders/condition-sync.js. A vendor who replied in a fresh email chain
+  // never reached the order's thread; the signed-off condition is what says
+  // the work is done, so the desk stops calling the order outstanding.
+  const order = await require('../orders/condition-sync').onConditionSatisfied(loanId, conditionId, client);
+  return { ok: true, condition: shapeStatus(rows[0]), checkSkipped: gate.checkSkipped || null, order };
 }
 
 /**
@@ -728,7 +734,10 @@ async function waive(loanId, conditionId, staffId, reason, client = db) {
       WHERE id = $1::uuid RETURNING id, status, waived_at, is_required`,
     [String(conditionId), staffId || null, clean.slice(0, 500)],
   );
-  return { ok: true, condition: shapeStatus(rows[0]) };
+  // A waived order condition finishes its order the same way a signed-off one
+  // does — the desk has nothing left to chase (orders/condition-sync.js).
+  const order = await require('../orders/condition-sync').onConditionSatisfied(loanId, conditionId, client);
+  return { ok: true, condition: shapeStatus(rows[0]), order };
 }
 
 /**
@@ -754,7 +763,10 @@ async function reopen(loanId, conditionId, client = db) {
     [String(conditionId), ...w.params],
   );
   if (!rows.length) return { ok: false, status: 404, error: 'That condition is not on this file.' };
-  return { ok: true, condition: shapeStatus(rows[0]) };
+  // An order THE CONDITION closed comes back with it; one a person finished
+  // stays finished (orders/condition-sync.js decides off `meta.completed_via`).
+  const order = await require('../orders/condition-sync').onConditionReopened(loanId, conditionId, client);
+  return { ok: true, condition: shapeStatus(rows[0]), order };
 }
 
 /**
