@@ -291,20 +291,28 @@ H('THE ONE THING THIS AUDIT ASSERTS — a shared field name must mean one thing'
 H('AN INVESTOR NOBODY HAS RECORDED — what happens, and what fixes it');
 {
   const roster = require('../src/longterm/pricing/investor-roster');
-  const NAME = 'ClearEdge Lending';
+  /**
+   * ⛔ THE SUBJECT IS FICTIONAL ON PURPOSE, AND THIS FIXTURE HAS ALREADY GONE STALE ONCE.
+   * It used to be "ClearEdge Lending" — a REAL company on the LoanNEX board — so the day the owner
+   * asked for ClearEdge to be added to the registry, this section reported the product broken when
+   * the product had done exactly what was asked. A section whose whole subject is "a name nobody
+   * has recorded" may not be anchored to a name somebody might record.
+   */
+  const NAME = 'Meridian Trust Partners';
+  const KEY = 'meridian_trust';
   const cold = roster.effectiveResolve(NAME, null);
   console.log(`  "${NAME}" against the registry alone: ${cold.key ? `${cold.key} (${cold.match})` : 'nobody — the row would be kept off the board'}`);
   ok(cold.key === null,
-    'NEW-1 a name the registry has never seen resolves to NOBODY rather than to a guess — the row is reported unmapped, never priced under the wrong name');
+    `NEW-1 a name the registry has never seen resolves to NOBODY rather than to a guess — the row is reported unmapped, never priced under the wrong name${cold.key ? ` [it resolved to "${cold.key}": this fixture's fictional subject has been added to the registry — pick another invented name, the product is fine]` : ''}`);
 
   const added = roster.validateCustom({
-    clearedge: { label: NAME, whiteLabel: 'Summit Ridge', aliases: ['ClearEdge', 'CLEAREDGE LENDING LLC'] },
+    [KEY]: { label: NAME, whiteLabel: 'Summit Ridge', aliases: ['Meridian Trust', 'MERIDIAN TRUST PARTNERS LLC'] },
   });
   ok(added.ok, 'NEW-2 …and it can be ADDED by hand, which used to take a code change and a deploy');
   const custom = roster.readCustom(added.custom).custom;
-  const warm = roster.effectiveResolve('CLEAREDGE LENDING LLC', custom);
+  const warm = roster.effectiveResolve('MERIDIAN TRUST PARTNERS LLC', custom);
   console.log(`  once added, a vendor's own spelling resolves to: ${warm.key} (${warm.match})`);
-  ok(warm.key === 'clearedge',
+  ok(warm.key === KEY,
     'NEW-3 …after which every spelling recorded for it prices onto the board under one investor');
   const sentence = 'Your Summit Ridge quote is ready to review.';
   // The block is asked ABOUT THIS MAP rather than told to adopt it — an audit

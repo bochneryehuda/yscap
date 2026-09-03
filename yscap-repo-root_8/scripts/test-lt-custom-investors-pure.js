@@ -541,12 +541,19 @@ head('E. it behaves like a recorded investor everywhere a roster is read');
   {
     const inForce = {
       [CE.key]: { label: CE.label, whiteLabel: CE.whiteLabel, aliases: CE.aliases },
-      clearedge_lending: { label: 'ClearEdge Lending', whiteLabel: 'Summit', aliases: ['ClearEdge'] },
+      // ⛔ A FICTIONAL NAME ON PURPOSE. This fixture is the SECOND hand-added
+      // investor, and a hand-added name that is already a recorded spelling of a
+      // REGISTRY investor is refused at the door (asserted a few checks above) —
+      // so the moment ClearEdge Lending joined the registry (owner-directed
+      // 2026-09-02, as "Crystal") this fixture stopped being hand-added at all and
+      // the count control below went red. A name no real investor can take is the
+      // only fixture that cannot be overtaken by tomorrow's roster.
+      meridian_trust: { label: 'Meridian Trust Partners', whiteLabel: 'Summit', aliases: ['Meridian Trust'] },
     };
     const pricerGroups = require(path.join(ROOT, 'src/longterm/pricer-groups'));
     const sheetKeys = new Set(programs.fullRoster().map((r) => r.key));
     const groupProbe = [...sheetKeys].slice(0, 3)
-      .concat([CE.key, 'clearedge_lending', 'nameless_capital', 'not_a_key']);
+      .concat([CE.key, 'meridian_trust', 'nameless_capital', 'not_a_key']);
 
     /**
      * Run one bare call twice — once with the hand-added investors in force in
@@ -574,10 +581,10 @@ head('E. it behaves like a recorded investor everywhere a roster is read');
       ['a saved investor group’s filter', () => pricerGroups._internals.sanitizeInvestors(groupProbe)],
       ['the white label of every investor, asked bare', () => programs.fullRoster().map((r) => programs.whiteLabelOf(r.key))],
       ['the general engine’s decoration of a priced board', () => programs.decorate([
-        { lender: CE.label, program: 'P' }, { lender: 'ClearEdge Lending', program: 'Q' },
+        { lender: CE.label, program: 'P' }, { lender: 'Meridian Trust Partners', program: 'Q' },
       ]).programs.map((p) => ({ k: p.investorKey, w: p.whiteLabel }))],
       ['its decoration of a declined board', () => programs.decorateDisqualifiedLenders([
-        { lender: 'ClearEdge Lending', items: [] },
+        { lender: 'Meridian Trust Partners', items: [] },
       ]).map((l) => ({ k: l.investorKey, w: l.whiteLabel }))],
       ['the merge, called without a roster', () => {
         const out = mergeMod.merge(board, {});

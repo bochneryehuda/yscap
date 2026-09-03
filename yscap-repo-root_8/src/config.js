@@ -1270,7 +1270,14 @@ module.exports = {
 
     // ---- hosts (all overridable; see the note above) ----
     // environment: 'uat' (default) | 'test' | 'production'
-    environment: (process.env.CLASS_ENVIRONMENT || 'uat').trim().toLowerCase(),
+    // Accepts the short spellings an operator naturally types (`prod`, `prd`, `live`)
+    // and folds them to `production`, because an unrecognised value used to fall back
+    // to UAT in silence — production credentials against the UAT sign-in host, and
+    // the only symptom was `invalid_client` (seen live 2026-09-02).
+    environment: (() => {
+      const raw = (process.env.CLASS_ENVIRONMENT || 'uat').trim().toLowerCase();
+      return { prod: 'production', prd: 'production', live: 'production' }[raw] || raw;
+    })(),
     tokenUrl:  (process.env.CLASS_TOKEN_URL || '').trim().replace(/\/+$/, '') || null,
     ordersUrl: (process.env.CLASS_ORDERS_URL || '').trim().replace(/\/+$/, '') || null,
 

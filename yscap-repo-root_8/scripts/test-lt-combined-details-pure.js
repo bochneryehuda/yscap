@@ -22,6 +22,7 @@
  * rather than through the parser is the whole point: the parser was never broken, the ROUTE never
  * asked it for the itemization.
  */
+const fs = require('fs');
 const path = require('path');
 const ROOT = path.join(__dirname, '..');
 
@@ -55,6 +56,7 @@ nexClient.price = async () => ({ board: { source: 'loannex', programs: [{
 
 const { priceBoth } = require(path.join(ROOT, 'src/longterm/routes/combined-pricer'))._internals;
 const vendorMargin = require(path.join(ROOT, 'src/longterm/pricing/vendor-margin'));
+const quoteShape = require(path.join(ROOT, 'src/longterm/pricing/quote-shape'));
 
 let pass = 0; let fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log(`  ok   ${m}`); } else { fail++; console.log(`  FAIL ${m}`); } };
@@ -397,6 +399,77 @@ const nexRowOf = (out) => (out.programs || []).find((p) => p.program === 'DSCR 3
     ok(/\$\{engine\.sheetSubject\} returned no fee lines/.test(pricer)
       && /\$\{engine\.sheetSubject\} returned no comp lines/.test(pricer),
       'WIRE-13 the two empty states no longer name one vendor on a board quoted by two');
+  }
+
+  console.log('\n── THE LOANNEX ROW SAYS WHAT LOAN IT WAS QUOTED FOR ──');
+  {
+    /**
+     * ⛔ THE DEFECT THIS EXISTS FOR (owner-reported: *"I realized that, by the loannex, it's
+     * missing the loan amount by the terms"*). A LoanNEX rung states no loan amount — that figure
+     * is the question we asked, not part of the vendor's answer — so the terms block restates it
+     * from the search. `optionsFromLoanNex` was handed the search by the route; the BOARD builder
+     * behind `programsForBoard`, which is the one the Details panel actually reads, was not. Two
+     * copies of one rule, and the copy that drifted is the copy on screen.
+     *
+     * ONE REQUEST answers both ways here on purpose: whatever else changes, the two shapes a
+     * single price call produces must not describe the loan differently.
+     */
+    const out = await board({ shape: 'options' });
+    const nexRow = nexRowOf(out);
+    const boardOpt = (nexRow && nexRow.options && nexRow.options[0]) || {};
+    const bt = boardOpt.terms || {};
+
+    ok(bt.loanAmount === 375000,
+      `NEX-T1 the loan amount is on the LoanNEX row the panel draws (${bt.loanAmount === undefined ? 'key absent' : bt.loanAmount}) — the owner's em dash`);
+    ok(bt.fico === 760 && bt.loanPurpose === 'Purchase',
+      `NEX-T2 …and so is the rest of the search it was quoted for (FICO ${bt.fico}, ${bt.loanPurpose})`);
+
+    // THE ANTI-DRIFT GUARD, and it is the assertion that would have caught this. Comparing the two
+    // builders' whole terms blocks — not one field — is what makes the NEXT divergence fail here
+    // instead of on somebody's screen.
+    const optRow = ((out.options && out.options.rows) || []).find((r) => r.program === 'DSCR 30 Yr') || null;
+    ok(!!optRow, 'NEX-T3 the same rung also reaches the ?shape=options answer, so the two are comparable');
+    const ot = (optRow && optRow.terms) || {};
+    /**
+     * The two are NOT byte-identical and should not be: `optionsFromLoanNex` merges its terms into
+     * the empty option's full shape, so it additionally carries `mortgageType` / `cltv` / `dti` /
+     * `hti` as nulls that a LoanNEX rung never states. So the guard is exact in BOTH directions
+     * instead of loose in one: every key the shared builder emits must AGREE, and any key only one
+     * side carries must be null — a real value appearing on one board and not the other is the
+     * failure, and a key going MISSING is the failure that shipped.
+     *
+     * The key list is DERIVED from the real builder, so adding a term keeps this honest for free.
+     */
+    const sharedKeys = Object.keys(quoteShape.loanNexTerms({}, {}, {}));
+    const disagree = sharedKeys.filter((k) => JSON.stringify(bt[k]) !== JSON.stringify(ot[k]));
+    ok(sharedKeys.length >= 12 && disagree.length === 0,
+      `NEX-T4 the BOARD builder and the OPTIONS builder describe one rung identically across all ${sharedKeys.length} shared terms${disagree.length ? ` — disagree on ${disagree.join(', ')}` : ''}`);
+    const extras = [...new Set([...Object.keys(bt), ...Object.keys(ot)])].filter((k) => !sharedKeys.includes(k));
+    const nonNullExtras = extras.filter((k) => bt[k] != null || ot[k] != null);
+    ok(nonNullExtras.length === 0,
+      `NEX-T4b …and a key only one of them carries is null, never a figure the other board would not show (${nonNullExtras.join(', ') || 'none'})`);
+
+    // An input nobody handed us is NULL, never 0: the validated scenario carries no LTV, and a
+    // `0` there would print as a real leverage figure on a loan that has one.
+    ok(bt.ltv === null && ot.ltv === null,
+      `NEX-T5 an input the search never stated stays null, never 0 (ltv ${JSON.stringify(bt.ltv)})`);
+
+    // The key must EXIST even when null — `r.lockDays` written raw is `undefined` on a rung that
+    // omits it, and JSON DROPS an undefined key, so the panel reads a missing field rather than a
+    // stated blank. This is the second way the two copies had drifted.
+    ok(Object.prototype.hasOwnProperty.call(bt, 'loanAmount') && Object.prototype.hasOwnProperty.call(bt, 'dayLock'),
+      'NEX-T6 …and the keys are present rather than undefined, so JSON cannot drop them on the way to the browser');
+
+    // SOURCE GUARD: no pure test can see whether the ROUTE hands the search to both builders, and
+    // wiring one and not the other is exactly how this shipped.
+    const route = fs.readFileSync(path.join(ROOT, 'src/longterm/routes/combined-pricer.js'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    ok(/const nxSearch = \{[^}]*loanAmount: sc\.loan/.test(route),
+      'NEX-T7 the route declares the search ONCE');
+    ok(/optionsFromLoanNex\(\{ programs: progs \}, nxSearch\)/.test(route),
+      'NEX-T8 …the options builder reads that one declaration');
+    ok(/programsForBoard\([\s\S]{0,600}?\.\.\.nxSearch/.test(route),
+      'NEX-T9 …and so does the board builder, which is the half that was missing');
   }
 
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);

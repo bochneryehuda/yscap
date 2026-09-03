@@ -295,5 +295,82 @@ console.log('\n== E. THE SETTING ==');
     'REPORT-3 …and the settings ceiling is the SAME number the pricing side enforces — two ceilings for one kind of figure is how a screen accepts what the board then refuses');
 }
 
+// ---- F. THE CLIENT-SAFE NAME IS JUDGED, NOT JUST TRIMMED --------------------
+console.log('\n== F. THE SIBLING SETTING FINALLY HAS A DOOR ==');
+{
+  /* AUDIT N9, pre-existing. `pricing.combinedInvestors` carries a per-investor `whiteLabel` that
+     OUTRANKS the hand-added roster's, and it was the ONE investor map with no `validate` at all.
+     Reproduced: "Deephaven Group" stored with `problems: []`, and a borrower then read
+     "Your our capital partner Group quote is ready to review." — the name block doing its job on a
+     name that was never safe to show. Not a leak; nonsense on a client-facing quote. */
+  const bad = settings.readSettings({ oaktree: { whiteLabel: 'Deephaven Group' } });
+  ok(bad.problems.some((p) => p.error === 'white_label_would_be_redacted')
+    && !(bad.settings.oaktree || {}).whiteLabel,
+    `NAME-1 a client-safe name the BLOCK would blank out is refused and named, never stored (${bad.problems.map((p) => p.error).join(', ') || 'none'})`);
+  const audience = require('../src/longterm/audience');
+  ok(audience.scrubInvestorNames('Your Deephaven Group quote is ready to review.', 'borrower')
+    !== 'Your Deephaven Group quote is ready to review.',
+    'NAME-1b CONTROL: that name really would have been blanked out — so NAME-1 is about a real harm, not a rule for its own sake');
+
+  const taken = settings.readSettings({ oaktree: { whiteLabel: 'Pearl' } });
+  ok(taken.problems.some((p) => p.error === 'white_label_taken'),
+    'NAME-2 …and a name that is ALREADY another investor\'s client-safe name is refused — two investors showing a client one name is its own confusion');
+
+  const good = settings.readSettings({ oaktree: { whiteLabel: 'Summit Ridge' } });
+  ok(good.problems.length === 0 && good.settings.oaktree.whiteLabel === 'Summit Ridge',
+    'NAME-3 …while a genuinely client-safe name is stored untouched, so the door is not simply refusing everything');
+
+  /* AND THE WRITE DOOR IS ASSERTED THROUGH THE DECLARATION, invoked rather than grepped — the
+     lesson this codebase keeps re-learning. */
+  const decl = require('../src/longterm/settings/encompass-settings')
+    .SETTINGS.find((d) => d && d.key === 'pricing.combinedInvestors');
+  ok(!!decl && typeof decl.validate === 'function',
+    'NAME-4 the setting declares a write door at all — it was the only investor map without one');
+  ok(decl.validate({ oaktree: { whiteLabel: 'Deephaven Group' } }).ok === false
+    && decl.validate({ oaktree: { whiteLabel: 'Summit Ridge' } }).ok === true,
+    'NAME-5 …and running THAT door refuses the unsafe name and accepts the safe one — so deleting it from the settings file reddens this line');
+}
+
+// ---- G. ONE ANSWER TO "WHAT MAY A CLIENT CALL THIS INVESTOR" ----------------
+console.log('\n== G. THE CLIENT-SAFE NAME IS DECIDED ONCE ==');
+{
+  /* AUDIT F9. `merge.js` asked `whiteLabelOf` — the owner's SHEET and nothing else — while
+     `investor-routing` asked `settingFor(...).whiteLabel`, the name somebody TYPED or the sheet's.
+     Two answers to one question, and the merge was the copy that drifted. Today it only reaches the
+     sort order, which is why it went unnoticed; but it is the question rule 10 turns on. */
+  const wl = require('../src/longterm/lenderprice/investor-programs');
+  const investorsMod = require('../src/longterm/encompass/investors');
+  /* ⛔ THE SUBJECT IS DERIVED, NOT HAND-PICKED, and that is the whole point of this
+     control. It needs an investor the SHEET says nothing about, so that the sheet's
+     answer (null) and the ONE definition's answer ("Slate") genuinely differ. It used
+     to name `button_finance` — until the owner put Button Finance ON the sheet
+     (2026-09-02, as "Jade"), at which point the control silently stopped testing
+     anything and the suite went red. Picking a different investor by hand would just
+     re-arm the same trap for the next sheet change. The first registry key not on the
+     sheet, in sorted order so two runs never disagree — and it THROWS rather than
+     skips if every investor is on the sheet, because a control that quietly has
+     nothing to control is exactly the "green for the wrong reason" this file exists
+     to prevent. */
+  const offSheet = investorsMod.list().map((r) => r.key)
+    .filter((k) => wl.whiteLabelOf(k) === null).sort()[0];
+  if (!offSheet) throw new Error('ONE-1 has no subject: every registry investor is on the white-label sheet, so this control can no longer tell the two answers apart. Re-point it rather than deleting it.');
+  const offSheetLabel = investorsMod.list().find((r) => r.key === offSheet).label;
+  const saved = settings.readSettings({ [offSheet]: { whiteLabel: 'Slate' } }).settings;
+  const board = { lenderprice: { programs: [{ lender: offSheetLabel, investor: offSheetLabel, options: [] }] }, loannex: null };
+  const nameIn = (out) => ((out.investors || []).find((e) => e.key === offSheet) || {}).whiteLabel;
+
+  ok(wl.whiteLabelOf(offSheet) === null && wl.effectiveWhiteLabel(offSheet, undefined, saved) === 'Slate',
+    'ONE-1 CONTROL: the sheet alone says nothing about this investor, while the ONE definition says "Slate" — so the two answers really do differ');
+  ok(nameIn(mergeMod.merge(board, { settings: saved })) === 'Slate',
+    'ONE-2 THE ONE THAT MATTERS: the merge now answers with the ONE definition, so it and the routing cannot disagree about what a client may see');
+  ok(nameIn(mergeMod.merge(board, {})) === null,
+    'ONE-3 …and a caller that hands over no settings still gets the sheet alone — exactly what this did before, so nothing that never had settings changed');
+
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src/longterm/routes/combined-pricer.js'), 'utf8');
+  ok(/const investorRowsForNames = routing\.readSettings\(saved\.raw, custom\)\.settings;/.test(src)
+    && /merge\(boards, \{ errors, links: linked\.raw, custom, settings: investorRowsForNames \}\)/.test(src),
+    'ONE-4 …and the route reads the settings ONCE and hands the same map to both, so they cannot even read different rows');
+}
+
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

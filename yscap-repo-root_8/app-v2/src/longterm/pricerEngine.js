@@ -46,6 +46,18 @@ export const GENERAL_ENGINE = {
      has always asked: `revealSource` is a combined-engine idea and is deliberately not forwarded,
      so the request on the wire is unchanged to the byte. */
   price: (scenario) => ltApi.dscrPrice(scenario, { full: true }),
+  /**
+   * WHY EACH INVESTOR SAID NO — the door, and the handle it needs.
+   *
+   * The general engine asks Lender Price exactly as it always has: `disqualifyHandle` reads the
+   * search key off the price answer and `disqualify` polls it. Byte-identical to the call this
+   * screen has made since it shipped; the only change is that the screen now asks the ENGINE for
+   * the handle instead of reaching into the price answer itself, which is what lets a second
+   * engine answer differently without forking the screen.
+   */
+  disqualifyHandle: (res) => ((res && res.searchKey) ? { searchKey: res.searchKey } : null),
+  disqualify: (h) => ltApi.dscrDisqualifications(h.searchKey),
+
   /* THE INVESTOR ROSTER, already in the shape the picker reads. Normalising here rather than in
      the screen is what lets one picker serve two doors that answer in two shapes. */
   investors: () => ltApi.dscrInvestors().then((r) => (r && r.investors) || []),
@@ -67,6 +79,13 @@ export const GENERAL_ENGINE = {
      programs, which is why the combined engine answers with a clause of its own rather than a name
      English cannot place there. */
   sheetReturned: 'Lender Price returned',
+  /* FORK 11 — THE EMPTY BOARD'S OWN SENTENCE, whole rather than assembled. `sheetSubject` is the
+     right word in the three places that describe ONE QUOTE's own sheet ("this rate sheet returned
+     no fee lines on this quote"), and the wrong one for the WHOLE BOARD, which on the combined
+     engine two rate sheets quote. Splicing a subject into a shared sentence cannot fix that —
+     "Neither rate sheet returned no priced rungs" — so each engine owns its own grammar, the same
+     reason `sheetReturned` exists. */
+  emptyBoardLine: 'Lender Price returned no priced rungs for this scenario.',
   /* FORK 9 — MAY THE OFFICER CHOOSE FIXED OR ARM? Both programs take the answer (Lender Price as
      `criteria.loanType`, LoanNEX by narrowing its own board on `amortizationType`), but this
      engine's search has forced `Fixed` since it was written — a DSCR investor search is a
@@ -132,12 +151,40 @@ export const COMBINED_ENGINE = {
      of a mapping the server already holds — and the copy that drifts is the one drawing the price
      somebody quotes. */
   explain: (quote, scenario, option) => ltApi.combinedExplain(quote, scenario, option),
+  /**
+   * WHY EACH INVESTOR SAID NO — BOTH RATE SHEETS, ONE LIST.
+   *
+   * ⛔ THIS SECTION WAS DEAD ON THIS BOARD, for both rate sheets, and that was MEASURED rather than
+   * inferred: `askDisqualified` reads a search key off the price answer, and the combined answer
+   * has never carried one at the top level (the identities sat inside `provenance`, which is
+   * reveal-gated and which no browser code reads), so it returned early every time and nothing was
+   * ever asked. The server now hands back an `ineligibility` handle naming the two searches — by
+   * MECHANISM, not by vendor — and this asks both through one door.
+   *
+   * ⛔ NO PORTAL IS SENT, AND THAT IS DELIBERATE RATHER THAN AN OMISSION. This screen prices
+   * without naming one (`engine.price` sends only the scenario and `reveal`), so the search this
+   * handle points at was made on the vendor's default aggregator portal and the ineligible tree
+   * must be asked for on the same one — a portal invented here would ask a session that never saw
+   * this search. IF A PORTAL IS EVER ADDED TO THE PRICE CALL IT MUST BE ADDED HERE IN THE SAME
+   * COMMIT, or the two will quietly describe different searches.
+   */
+  disqualifyHandle: (res) => {
+    const h = res && res.ineligibility;
+    if (!h || (!h.pollKey && !h.treeId)) return null;
+    return { pollKey: h.pollKey || null, treeId: h.treeId || null };
+  },
+  disqualify: (h, ctx) => ltApi.combinedDisqualifications({ ...h, revealSource: !!(ctx && ctx.reveal) }),
+
   /* ONE SYSTEM, SO NO VENDOR IS NAMED. Two programs quote this board and a line may have come from
      either, so naming one of them on every line would be wrong half the time. */
   sheetLabel: 'the rate sheet that quoted this loan',
   sheetSubject: 'This rate sheet',
   sheetPossessive: "The rate sheet's",
   sheetReturned: 'came back',
+  /* FORK 11 — two rate sheets quote this board, so the singular was simply wrong (audit F2).
+     A person reading "this rate sheet returned nothing" on a board quoted by two has been told
+     something untrue about which sheets were asked. */
+  emptyBoardLine: 'Neither rate sheet returned a priced rung for this scenario.',
   /* FORK 9 — the officer picks the product, because on THIS board it decides what comes back from
      both programs at once. Lender Price is asked for it; LoanNEX cannot be asked, so its board is
      narrowed on the fields it publishes about each programme. */

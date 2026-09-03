@@ -46,9 +46,9 @@
  *  27.  make the holdback CREATE a price/points gap rather than shift    → MARGIN-2/3
  *  28.  let that gap grow past one rounding step                         → MARGIN-3b
  *  15.  pre-fill a missing white label with the investor's REAL name      → SET-2/2b/3
- *  16.  stop pre-filling Button Finance off                               → HIDE-2, SET-6
+ *  16.  stop HIDING an investor somebody switched off                      → HIDE-1/2 (+2b control)
  *  17.  coerce a non-boolean on/off instead of refusing it                → SET-7
- *  18.  make the pre-filled source `both` again                           → ROUTE-1, SET-5
+ *  18.  make the pre-filled source `both` again                           → ROUTE-1, SET-5/5a
  *  19.  drop NQM/Acra/eResi from the owner's standing instruction         → OWNER-1/2/5
  *  20.  keep the vendor on every row of the ordinary board                → ONE-2/3
  *  21.  keep the per-vendor summary counts on the ordinary board          → ONE-4
@@ -290,11 +290,24 @@ console.log('Two programs, one loan — parity');
     ],
     unmapped: [],
   };
-  const out = routing.applyRouting(merged, { routes: {} });
+  /* ⛔ THE SWITCH IS NOW DRIVEN EXPLICITLY, AND THAT IS THE POINT OF THE CHANGE.
+     These two used to lean on Button Finance being PRE-FILLED off, so they proved
+     the hiding mechanism only for as long as that one pre-fill existed. The owner
+     turned Button Finance ON (2026-09-02) and both went red — not because hiding
+     broke, but because the example vanished. What has to stay guarded is the
+     MECHANISM: an investor somebody switches off must leave the board AND be
+     reported, or a short board cannot be accounted for. So the switch is now set
+     by hand here, which is also how a real one is set. */
+  const offRoutes = { button_finance: { enabled: false } };
+  const out = routing.applyRouting(merged, { routes: offRoutes });
   ok(!out.investors.some((i) => /button/i.test(String(i.investor))),
-    'HIDE-1 Button Finance is not on the investor list');
-  ok(out.hidden.some((h) => h.key === 'button_finance' && h.why === 'switched_off' && /pre-filled off/i.test(String(h.reason))),
+    'HIDE-1 an investor switched off is not on the investor list');
+  ok(out.hidden.some((h) => h.key === 'button_finance' && h.why === 'switched_off'),
     'HIDE-2 …and the removal is REPORTED with its reason, so a short board can always be accounted for');
+  const onOut = routing.applyRouting(merged, { routes: {} });
+  ok(onOut.investors.some((i) => /button/i.test(String(i.investor)))
+    && !onOut.hidden.some((h) => h.key === 'button_finance'),
+    'HIDE-2b CONTROL: with nothing switched off it IS on the board — so HIDE-1 is the switch working, not the investor being absent for some other reason');
   // They used to arrive as an UNMAPPED NAME, which is how they slipped past a
   // key-based rule in the first place. The registry knows them now, so they
   // resolve to a key on every road in and the setting can actually reach them.
@@ -602,11 +615,20 @@ console.log('Two programs, one loan — parity');
   const three = ['nqm', 'acra', 'eresi'].map((k) => d.investors.find((r) => r.key === k));
   ok(three.every((r) => r && r.source === 'loannex' && r.sourceOrigin === 'owner_directed'),
     'SET-4 the three the owner named are pre-filled to LoanNEX, and the row says the instruction is where that came from');
-  ok(d.investors.filter((r) => r.key !== 'nqm' && r.key !== 'acra' && r.key !== 'eresi').every((r) => r.source === 'lenderprice'),
-    'SET-5 …and every other investor is pre-filled to Lender Price — where the system fetches everything today');
-  const btn = d.investors.find((r) => r.key === 'button_finance');
-  ok(btn && btn.enabled === false && btn.enabledOrigin === 'owner_directed' && d.summary.off === 1,
-    'SET-6 Button Finance is pre-filled OFF and is the only one that is — the rest are on');
+  /* DERIVED from the owner's own standing instruction, never a hand-typed list of
+     three: it was nqm/acra/eresi until the owner added Button Finance and
+     ClearEdge on 2026-09-02, and a literal here turns every such instruction into
+     a red build that reads as a broken feature. */
+  const ownerSourced = d.investors.filter((r) => r.sourceOrigin === 'owner_directed').map((r) => r.key);
+  ok(ownerSourced.length >= 3 && ownerSourced.every((k) => d.investors.find((r) => r.key === k).source === 'loannex'),
+    `SET-5a every investor the owner moved is on LoanNEX and says so (${ownerSourced.length}: ${ownerSourced.join(', ')})`);
+  ok(d.investors.filter((r) => r.sourceOrigin !== 'owner_directed').every((r) => r.source === 'lenderprice'),
+    'SET-5 …and every OTHER investor is pre-filled to Lender Price — where the system fetches everything today');
+  /* The owner turned the last pre-filled-off investor ON (2026-09-02). What still
+     has to hold is that nothing is off WITHOUT an instruction behind it — an
+     investor silently missing from the board is the failure this counts. */
+  ok(d.summary.off === d.investors.filter((r) => r.enabledOrigin === 'owner_directed' && r.enabled === false).length,
+    `SET-6 nobody is switched off except by an explicit instruction (${d.summary.off} off)`);
   const set = routing.readSettings('{"acra":{"enabled":"yes"},"not_an_investor":{"source":"loannex"}}');
   ok(set.problems.some((p) => p.investor === 'acra' && p.error === 'non_boolean_enabled') && set.settings.acra === undefined,
     'SET-7 a non-boolean "on" is REFUSED rather than coerced — the string "no" is truthy, and a coerced switch is a lender switched on by a typo');
@@ -626,10 +648,19 @@ console.log('Two programs, one loan — parity');
     const fresh = routing.describeSettings(null, {}).investors.find((r) => r.key === 'nqm');
     ok(fresh && fresh.prefill && fresh.prefill.source === 'loannex' && fresh.prefill.enabled === true,
       'SET-9 every row says what it WOULD answer with no setting of its own, so a screen can offer the way back rather than only describe it');
-    const btnPinnedOn = routing.describeSettings({ button_finance: { enabled: true } }, {})
+    /* ⛔ PIN THE OPPOSITE OF WHATEVER THE PRE-FILL IS, worked out at run time. This
+       used to pin Button Finance ON because its pre-fill was OFF — so the moment
+       the owner turned it on (2026-09-02) the stored value and the pre-fill agreed
+       and the check could no longer tell "reports the instruction" from "reports
+       what is stored". Deriving the opposite means the two can never accidentally
+       coincide again, whichever way a future default goes. */
+    const subject = routing.describeSettings(null, {}).investors.find((r) => r.key === 'button_finance');
+    const opposite = !subject.prefill.enabled;
+    const pinnedOpp = routing.describeSettings({ button_finance: { enabled: opposite } }, {})
       .investors.find((r) => r.key === 'button_finance');
-    ok(btnPinnedOn && btnPinnedOn.enabled === true && btnPinnedOn.prefill.enabled === false,
-      'SET-9b …and the pre-fill it reports is the owner\'s instruction, not a copy of whatever is stored right now');
+    ok(pinnedOpp && pinnedOpp.enabled === opposite && pinnedOpp.prefill.enabled === subject.prefill.enabled
+      && pinnedOpp.prefill.enabled !== pinnedOpp.enabled,
+      `SET-9b …and the pre-fill it reports is the owner's instruction (${subject.prefill.enabled}), not a copy of whatever is stored right now (${opposite})`);
 
     // The SCREEN'S OWN rule, lifted verbatim out of the JSX — never retyped here,
     // or this would prove only that the test agrees with itself.
@@ -858,6 +889,26 @@ console.log('Two programs, one loan — parity');
     'BOARD-9b …and a reveal asked for HERE alone cannot resurrect what the one-system view already dropped — the flag travels together or not at all');
   ok(progs.every((p) => p.investorKey) && progs.every((p) => p.whiteLabel !== undefined),
     'BOARD-10 every row carries the canonical investor key and the client-safe name the server resolved — never re-derived in a browser');
+}
+
+/* ── ONE VALUE, ONE NAME: the monthly payment (audit F9) ─────────────────────────────────────
+   `optionsFromLoanNex` wrote `{ total }` while `programsFromLoanNex` wrote `{ monthlyPI }` for the
+   very same `r.payment`, and `monthlyPI` is the key EVERY reader uses — LtPricer twice,
+   bracket-board, and lenderprice/client which reads it first and falls back to `total`. So the flat
+   option list answered `undefined` to the only question anybody asks it.
+
+   Asserted as an INVARIANT across the two builders rather than about one key name, so a third
+   builder cannot quietly introduce a third spelling. */
+{
+  const oneBoard = { programs: [{ lender: 'L', investor: 'Acra Lending', program: 'P', product: '30 Yr Fixed',
+    rungs: [{ rate: 7, price: 101, points: -1, lockDays: 30, payment: 2500, priceHashKey: 'h1' }] }] };
+  const fromOptions = quoteShape.optionsFromLoanNex(oneBoard, {})[0];
+  const fromRow = quoteShape.programsFromLoanNex(oneBoard, {})[0].options[0];
+  const keysOf = (o) => Object.keys((o && o.monthlyPayment) || {}).sort();
+  ok(JSON.stringify(keysOf(fromOptions)) === JSON.stringify(keysOf(fromRow)),
+    `PAY-1 both builders name the monthly payment the SAME way (${keysOf(fromOptions).join('|') || 'none'} vs ${keysOf(fromRow).join('|') || 'none'}) — one value under two names is how a reader gets undefined from one door and a number from the other`);
+  ok(fromOptions.monthlyPayment.monthlyPI === 2500 && fromRow.monthlyPayment.monthlyPI === 2500,
+    'PAY-2 …and it is `monthlyPI`, the key every reader actually uses — the screen labels this figure "Monthly P&I", so `total` also invited it to be read as PITI');
 }
 
 console.log(fail ? `\nFAILURES: ${fail} (${pass} passed, ${fail} failed)` : `\nOFFLINE: all passed (${pass} passed, 0 failed)`);
