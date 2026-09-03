@@ -297,10 +297,10 @@ async function syncBorrowerPairs(loanId, loan, opts = {}) {
             date_of_birth, ssn_last4, citizenship, marital_status, dependent_count,
             email, home_phone, mobile_phone,
             fico_experian, fico_transunion, fico_equifax, fico_representative,
-            encompass_id, updated_at)
+            encompass_id, dependents_ages, updated_at)
          VALUES (gen_random_uuid(), $1::uuid, $2::lt_party_role, $3::lt_party_type,
                  $4, $5, $6, $7, $8::date, $9, $10, $11, $12, $13, $14, $15,
-                 $16, $17, $18, $19, $20, now())
+                 $16, $17, $18, $19, $20, $21, now())
          ON CONFLICT (pair_id, role) DO UPDATE SET
            first_name         = COALESCE(EXCLUDED.first_name, lt_parties.first_name),
            middle_name        = COALESCE(EXCLUDED.middle_name, lt_parties.middle_name),
@@ -319,13 +319,14 @@ async function syncBorrowerPairs(loanId, loan, opts = {}) {
            fico_equifax       = COALESCE(EXCLUDED.fico_equifax, lt_parties.fico_equifax),
            fico_representative = COALESCE(EXCLUDED.fico_representative, lt_parties.fico_representative),
            encompass_id       = COALESCE(EXCLUDED.encompass_id, lt_parties.encompass_id),
+           dependents_ages    = COALESCE(EXCLUDED.dependents_ages, lt_parties.dependents_ages),
            updated_at         = now()
          RETURNING id`,
         [pairId, p.role, p.partyType, p.firstName, p.middleName, p.lastName, p.nameSuffix,
           p.dateOfBirth, p.ssnLast4, p.citizenship, p.maritalStatus, p.dependentCount,
           p.email, p.homePhone, p.mobilePhone,
           p.ficoExperian, p.ficoTransunion, p.ficoEquifax, p.ficoRepresentative,
-          p.encompassId || null],
+          p.encompassId || null, p.dependentsAges || null],
       );
       parties += 1;
 

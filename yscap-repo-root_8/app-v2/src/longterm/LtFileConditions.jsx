@@ -298,6 +298,38 @@ export default function LtFileConditions({ loanId }) {
     return next;
   });
 
+  /* "OPEN" FROM THE PRIOR-TO-SUBMITTAL LIST TAKES YOU TO THE CONDITION
+     (owner-reported 2026-09-03: *"The open button over there is not taking him
+     directly to the place where he needs to do that."*). Expanding the row was
+     never enough: the row may not be DRAWN — the default view is "mine", which
+     hides a row the officer has already marked done, and that is exactly the
+     row the list sends them back to when something is still missing on it. So:
+     expand it, switch the view to "all" if the current one hides it, and once
+     it is on the page scroll it into view and flash it. The scroll waits for the
+     render that puts the row on the page (`pendingGoTo` + the effect below),
+     never for a timer. */
+  const pendingGoTo = useRef(null);
+  const openCondition = useCallback((id) => {
+    setOpen((prev) => new Set(prev).add(id));
+    const all = ((data && data.buckets) || []).flatMap((b) => b.conditions || []);
+    const c = all.find((x) => x.id === id);
+    if (c && !matchConditionFilter(asSharedCondition(c), condFilter, role)) setCondFilter('all');
+    pendingGoTo.current = id;
+    setGoTo(id);
+  }, [data, condFilter, role, setCondFilter]);
+  const [goTo, setGoTo] = useState(null);
+  useEffect(() => {
+    if (!goTo || pendingGoTo.current !== goTo) return;
+    const el = typeof document !== 'undefined' ? document.getElementById(`lt-cond-${goTo}`) : null;
+    if (!el) return;                         // not drawn yet — the next render tries again
+    pendingGoTo.current = null;
+    if (el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('lt-cond-flash');
+    const t = setTimeout(() => el.classList.remove('lt-cond-flash'), 1800);
+    setGoTo(null);
+    return () => clearTimeout(t);
+  });
+
   /* ── THE ADAPTER ────────────────────────────────────────────────────────────
    *
    * The shared components speak ONE verb — `onPatch(id, patch)` — because on the
@@ -602,7 +634,7 @@ export default function LtFileConditions({ loanId }) {
             <LtSubmittalPanel
               loanId={loanId}
               refreshKey={data}
-              onOpenCondition={(id) => setOpen((prev) => new Set(prev).add(id))}
+              onOpenCondition={openCondition}
               onChanged={load} />
           )}
 
@@ -701,7 +733,8 @@ function ConditionRow({
        exactly what it did (owner-reported 2026-08-31). The card is a plain white
        rounded box with no child that paints to its corners, so the clip bought
        nothing; `styles.css` already records the same trap for `.lt-card`. */
-    <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, background: '#FFFFFF' }}>
+    <div id={`lt-cond-${c.id}`} className="lt-cond-row"
+      style={{ border: `1px solid ${LINE}`, borderRadius: 10, background: '#FFFFFF' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px' }}>
         <div style={{ minWidth: 0, flex: 1 }}>
           <ConditionLine it={it} role={role} docs={docs} open={open}

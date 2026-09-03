@@ -182,7 +182,10 @@ const uploadOwnDoc = async (req, res) => {
          crossing the two-product law forbids. Their long-term view is this door.
          `uploaded_by_kind` + `uploaded_by_id` already record who sent it. */
       borrowerId: null,
-      hooks: {},
+      /* A DOCUMENT ON AN ORDER'S CONDITION MOVES THE ORDER (owner-directed
+         2026-09-03): the same seam the short-term side uses for its ClickUp
+         push, pointed at the long-term orders desk. Best-effort inside. */
+      hooks: { conditionTouched: (itemId) => require('../orders/condition-sync').onDocumentFiled(loan.id, itemId, db) },
       q: db,
     });
     /* THE SAME RULE ON THE BORROWER'S OWN DOOR. An ID they send here is their

@@ -16,8 +16,23 @@ import { stamp } from './format.js';
  * A card under the bucket's heading: a progress bar, the outstanding list —
  * each item with what still blocks it, in the SERVER'S words (the same
  * sign-off rules the back office uses), and a button that opens the condition
- * — and the one button. The button is disabled until nothing is outstanding,
- * and it says why. Once complete: who, when, and the ClickUp state — filled,
+ * — and the one button.
+ *
+ * ── DONE GOES DOWN THE LIST THE MOMENT IT IS CLICKED (owner-reported
+ * 2026-09-03: *"It doesn't fill out what was done already."*) ─────────────
+ * The owner's sentence was *"Everything that he clicks Done goes down this
+ * list"*, and the first cut kept a clicked item UP the list whenever the
+ * server still found something missing on it — so an officer who had pressed
+ * Done on all six saw "6 of 6 still to do" and, reasonably, read the list as
+ * broken. Now the list has THREE shelves: still to do (Done not pressed),
+ * marked done (pressed — down the list, ticked, but with what the server still
+ * finds missing said in amber right under it, and an Open button to go and
+ * put it right), and done (finished, nothing missing, or signed off / waived
+ * by the back office). The COMPLETE button is unchanged and still the server's
+ * check: it opens only when nothing is missing anywhere — a Done stamp on an
+ * empty condition moves it down the list; it does not hand the file over.
+ *
+ * The button is disabled until nothing is outstanding, and it says why. Once complete: who, when, and the ClickUp state — filled,
  * owed (no card linked yet, or the writer is off), or failed with a by-hand
  * retry. The orders (title, insurance, the VOR) are shown as the loan-setup
  * desk's, by the owner's own list, so nobody looks for them on this list.
@@ -133,9 +148,17 @@ export default function LtSubmittalPanel({ loanId, onOpenCondition, onChanged, r
   if (!data) return <p style={{ margin: '8px 0 0', fontSize: 13, color: MUTED }}>Reading what is left before submittal…</p>;
 
   const items = data.items || [];
-  const open = items.filter((i) => !i.done);
+  // THREE SHELVES. `done` is the server's verdict (finished, or signed off /
+  // waived); `reviewedAt` is the officer's own Done click. A clicked item with
+  // something still missing sits on the middle shelf — down the list, as the
+  // owner asked, and honest about what is left.
+  const open = items.filter((i) => !i.done && !i.reviewedAt);
+  const marked = items.filter((i) => !i.done && i.reviewedAt);
   const done = items.filter((i) => i.done);
   const completed = data.completed;
+  // What the server still finds missing on an item — its own list, apart from
+  // the officer's "click Done" step (submittal.js judge → `missing`).
+  const missingOf = (i) => (Array.isArray(i.missing) ? i.missing : (i.blockers || []));
 
   return (
     <div style={{ margin: '10px 0 14px', border: `1px solid ${completed ? '#CFE3D5' : LINE}`, borderRadius: 12,
@@ -146,11 +169,13 @@ export default function LtSubmittalPanel({ loanId, onOpenCondition, onChanged, r
           <div style={{ fontSize: 15, fontWeight: 700, color: INK, marginTop: 2 }}>
             {completed
               ? 'Completed'
-              : (open.length === 0
+              : (open.length === 0 && marked.length === 0
                 ? 'Everything on this list is done — ready to complete'
-                : `${open.length} of ${items.length} still to do`)}
+                : (open.length === 0
+                  ? `Everything is marked done — ${marked.length} item${marked.length === 1 ? ' still needs' : 's still need'} something before this can be completed`
+                  : `${open.length} of ${items.length} still to do${marked.length ? ` · ${marked.length} marked done, still missing something` : ''}`))}
           </div>
-          <div style={{ marginTop: 8 }}><Bar done={done.length} total={items.length} /></div>
+          <div style={{ marginTop: 8 }}><Bar done={done.length + marked.length} total={items.length} /></div>
         </div>
 
         {completed ? (
@@ -203,6 +228,35 @@ export default function LtSubmittalPanel({ loanId, onOpenCondition, onChanged, r
         </div>
       )}
 
+      {/* MARKED DONE — the officer pressed Done, so it comes down the list; what
+          the server still finds missing is said right under it, with the way
+          to the condition. */}
+      {marked.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ ...eyebrow, color: MUTED }}>Marked done — still missing something</div>
+          <ul style={{ listStyle: 'none', margin: '6px 0 0', padding: 0, display: 'grid', gap: 6 }}>
+            {marked.map((i) => (
+              <li key={i.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 10px',
+                background: '#FFFFFF', border: '1px solid #EBD9A8', borderRadius: 8 }}>
+                <span aria-hidden="true" style={{ width: 16, height: 16, marginTop: 2, borderRadius: 4, background: AMBER, color: '#FFFFFF',
+                  fontSize: 11, lineHeight: '16px', textAlign: 'center', flex: '0 0 auto' }}>✓</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: INK }}>
+                    {i.label} <span style={{ fontWeight: 400, color: MUTED }}>· marked done</span>
+                  </div>
+                  <ul style={{ margin: '2px 0 0', paddingLeft: 16, fontSize: 12.5, color: AMBER, lineHeight: 1.5 }}>
+                    {missingOf(i).map((b, n) => <li key={n}>{b}</li>)}
+                  </ul>
+                </div>
+                {onOpenCondition && (
+                  <button type="button" className="btn ghost small" onClick={() => onOpenCondition(i.id)}>Open</button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* DONE GOES DOWN THE LIST — kept in view, ticked, so the officer sees the
           whole shape of the work rather than a shrinking list. */}
       {done.length > 0 && (
@@ -230,9 +284,9 @@ export default function LtSubmittalPanel({ loanId, onOpenCondition, onChanged, r
       {completed && (
         <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid #CFE3D5' }}>
           <ClickupLine clickup={data.clickup} onRetry={retry} busy={busy} />
-          {open.length > 0 && (
+          {(open.length + marked.length) > 0 && (
             <p style={{ margin: '6px 0 0', fontSize: 12.5, color: AMBER, lineHeight: 1.5 }}>
-              Since it was completed, {open.length} item{open.length === 1 ? ' has' : 's have'} come back open — see above.
+              Since it was completed, {open.length + marked.length} item{(open.length + marked.length) === 1 ? ' has' : 's have'} come back open — see above.
             </p>
           )}
         </div>

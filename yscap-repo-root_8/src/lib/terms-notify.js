@@ -4,6 +4,17 @@
  * terms-notify.js — the single chokepoint for CONFIRMING a registered product's
  * terms to the borrower (the "your loan terms are ready" email).
  *
+ * AND THE ONE PLACE THAT REMEMBERS WHAT THE BORROWER WAS LAST TOLD (db/692;
+ * owner-reported 2026-09-03: *"processor adjusted the experience from 4 to 3 and
+ * borrower received an email that product has been registered … if you didn't
+ * re-register the product, why are you getting an email … if it's fully
+ * registered, then yes"*). Each caller has its own "did the economics change"
+ * guard keyed on the previous REGISTRATION; this door keys on the previous
+ * SEND, on the borrower-visible numbers only, so a re-register that moves
+ * nothing the borrower can see — an experience edit on a program where it does
+ * not change the leverage, a program-label change, a door with a weaker guard —
+ * is never announced twice. See `borrowerSentTermsKey` / `decideSend`.
+ *
  * It is called from exactly the places a borrower is allowed to see confirmed
  * terms (owner-directed 2026-07-21):
  *   • a CLEAN, auto-eligible Standard/Gold registration (confirms immediately), and
@@ -18,7 +29,78 @@
  * own deal numbers, and the notify chokepoint scrubs note-buyer names again.
  */
 
-async function sendBorrowerTerms(appId, { quote, total, termMonths, encompassOverride } = {}) {
+/**
+ * THE BORROWER-VISIBLE NUMBERS, AS ONE STRING — what "the same terms" means at
+ * this door (owner-reported 2026-09-03: an experience edit re-registered a file
+ * and the borrower was told the product was registered although nothing they
+ * could see had moved). Composed from the two keys the file already trusts —
+ * `file-lock.finalNumbersKey` (loan amount, construction holdback, financed
+ * reserve, origination dollars, note rate, term: the figures printed on the
+ * sent term sheet) plus the two the borrower's own email leads with (cash to
+ * close, initial advance). It deliberately reads NO INPUT — not the experience,
+ * not the program name, not a product label — so a re-register that changes
+ * only how the deal was priced, and none of what the borrower is told, is the
+ * same terms. Pure.
+ */
+function borrowerSentTermsKey(quote, termMonths) {
+  const q = quote || {};
+  const s = q.sizing || {};
+  const r = (v) => { const x = Number(v); return v == null || v === '' || !Number.isFinite(x) ? null : Math.round(x); };
+  const fileLock = require('./file-lock');
+  return JSON.stringify([
+    fileLock.finalNumbersKey(q, termMonths),
+    r(q.cashToClose),
+    r(s.initialAdvance),
+  ]);
+}
+
+/**
+ * Send, or not? Pure. `force` is a person explicitly asking for a re-send.
+ * @returns {{send:boolean, reason:'first'|'changed'|'forced'|'unchanged'}}
+ */
+function decideSend({ lastKey, key, force = false } = {}) {
+  if (force) return { send: true, reason: 'forced' };
+  if (lastKey == null) return { send: true, reason: 'first' };
+  return lastKey === key ? { send: false, reason: 'unchanged' } : { send: true, reason: 'changed' };
+}
+
+async function sendBorrowerTerms(appId, { quote, total, termMonths, encompassOverride, force = false } = {}) {
+  if (!appId || !quote) return { sent: false, reason: 'nothing_to_send' };
+  const db0 = require('../db');
+
+  // THE DOOR'S OWN MEMORY (db/692). Whatever the caller's guard decided, the
+  // borrower is told about their terms only when a number they would notice has
+  // changed since they were LAST TOLD — or when a person asks for a re-send.
+  // Fails OPEN: an unreadable memory sends, as this door always did.
+  const key = borrowerSentTermsKey(quote, termMonths);
+  let lastKey = null;
+  try {
+    const r = await db0.query('SELECT terms_key FROM borrower_terms_sent WHERE application_id = $1', [appId]);
+    lastKey = r.rows[0] ? r.rows[0].terms_key : null;
+  } catch (_) { lastKey = null; }
+  const verdict = decideSend({ lastKey, key, force: force === true });
+  if (!verdict.send) {
+    console.log(`[terms-notify] app ${appId}: borrower-visible terms unchanged since last sent — not re-announced`);
+    return { sent: false, reason: verdict.reason, key };
+  }
+  const out = await sendBorrowerTermsNow(appId, { quote, total, termMonths, encompassOverride });
+  // Remember what was sent — after the send, so a send that threw is not recorded
+  // as told. Best-effort: a memory write that fails costs one possible repeat
+  // later, never the email that just went.
+  try {
+    await db0.query(
+      `INSERT INTO borrower_terms_sent (application_id, terms_key, last_reason)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (application_id) DO UPDATE
+         SET terms_key = EXCLUDED.terms_key, sent_at = now(),
+             send_count = borrower_terms_sent.send_count + 1, last_reason = EXCLUDED.last_reason`,
+      [appId, key, verdict.reason]);
+  } catch (e) { console.warn('[terms-notify] could not remember the sent terms:', (e && e.message) || e); }
+  return { sent: true, reason: verdict.reason, key, ...(out || {}) };
+}
+
+/** The send itself — everything below is exactly the door as it was. */
+async function sendBorrowerTermsNow(appId, { quote, total, termMonths, encompassOverride } = {}) {
   if (!appId || !quote) return;
   // WO-E — the term-sheet issuance gate, at the CHOKEPOINT: withhold the "your
   // terms are ready" email while the file has OPEN blocking Encompass mismatches,
@@ -148,4 +230,4 @@ async function sendBorrowerTerms(appId, { quote, total, termMonths, encompassOve
   });
 }
 
-module.exports = { sendBorrowerTerms };
+module.exports = { sendBorrowerTerms, borrowerSentTermsKey, decideSend, _internals: { sendBorrowerTermsNow } };
