@@ -235,6 +235,41 @@ async function boardForScenario(sc, deps, opts = {}) {
     ...nxSearch,
   });
 
+  /**
+   * ⛔ A LENDER PRICE PROGRAM NOBODY CAN NAME STILL REACHES THIS BOARD — a REGRESSION this file
+   * introduced, reported by the owner as *"the entire Lender Price is disconnected from the general
+   * pricing engine"* (2026-09-03).
+   *
+   * Until this board became two-source, every Lender Price program went straight from
+   * `investorPrograms.decorate` onto the screen, named or not: an unresolved one simply carried
+   * `investorKey: null, whiteLabel: null` and showed under the vendor's own lender name, with the
+   * screen's standing "No white-label program name yet for: …" warning naming it. Routing the whole
+   * Lender Price half through `merge.merge` changed that silently — the merge keeps a row it cannot
+   * name OFF the priced board (correctly, for ITS purpose), so a lender the registry does not carry
+   * DISAPPEARED from a board it had always been on, and `investorsUnmapped` came back EMPTY because
+   * this function reports the routed lens's list rather than the merge's.
+   *
+   * ⛔ ONLY THE LENDER PRICE HALF, and that is the whole point rather than an omission. Restoring
+   * these is a RESTORATION: they were on this board yesterday. A LoanNEX row nobody can name was
+   * never on it, and the owner's standing rule for a LoanNEX investor that does not arrive is to
+   * leave it off silently and tell a super admin — so bringing one on under a vendor spelling would
+   * be a new decision, not a repair.
+   *
+   * ⛔ IT CANNOT PUT A REAL INVESTOR NAME IN FRONT OF A CLIENT. This board is staff-only, an
+   * unnamed row carries `whiteLabel: null` so `rosterFromRouted` reports it in `unmapped` (which is
+   * exactly what makes it visible rather than silent), and the term-sheet door refuses a programme
+   * that has no client-safe name outright (`termsheet/snapshot.buildMember` → `program_not_named`).
+   * The name rule is enforced where a document is built, not by deleting rows from a staff screen.
+   */
+  const lpUnnamed = [];
+  for (const p of (lpBoard.programs || [])) {
+    // The SAME resolver the merge just used, so "could not be named" means the same thing in both
+    // places and a row can never be dropped by one and restored by the other on a different rule.
+    const id = merge.resolveInvestor(p, links, custom);
+    if (!id || !id.key) lpUnnamed.push({ ...p, investorKey: null, whiteLabel: null, consumerLabel: null });
+  }
+  if (lpUnnamed.length) programs.push(...lpUnnamed);
+
   /* ── WHO WAS EXPECTED FROM LOANNEX AND DID NOT COME ────────────────────────
      Owner-directed: an investor the settings point at LoanNEX which LoanNEX did
      not price is left off the board SILENTLY and reported to the super admin

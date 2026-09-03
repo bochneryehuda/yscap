@@ -322,6 +322,70 @@ const byInvestor = (programs) => {
       'DUP-8 with no twin on the board there is no duplicate, so nothing is dropped');
   }
 
+
+  /* ── A LENDER PRICE PROGRAM NOBODY CAN NAME STILL REACHES THIS BOARD ──────
+     The owner: *"it's not even pricing LenderPrice right now at all"* (2026-09-03).
+     Routing the whole Lender Price half through `merge.merge` was a silent regression:
+     the merge keeps a row it cannot name OFF the priced board — correctly, for ITS
+     purpose — so a lender the registry does not carry DISAPPEARED from a board it had
+     always been on, and the screen's "no white-label name yet" warning came back empty.
+
+     ⛔ THE CONTROL IS THE MERGE ITSELF, not a copy of the board with the fix cut out.
+     `merge.merge` is the very function whose behaviour caused the regression, so asking
+     IT what it does with the same input is the honest before-picture — and it can never
+     go stale the way a hand-maintained "old version" of the board would. */
+  console.log('\n── A LENDER PRICE LENDER WITH NO WHITE LABEL IS BACK ON THE BOARD ──');
+  {
+    const mergeMod = require(path.join(ROOT, 'src/longterm/pricing/merge.js'));
+    const unknownLp = { results: { qualifiedNonQMData: { type: 'CriteriaFromLineResultKey', keyLabel: 'DSCR', childs: [
+      { type: 'LenderKey', keyLabel: 'Deephaven', plenderId: 'C', leafs: [leaf('Deephaven', 7.6)] },
+      // Two lenders the investor registry has never heard of. On a live board these are
+      // the ordinary case — Lender Price adds lenders faster than anybody names them.
+      { type: 'LenderKey', keyLabel: 'ResiCentral', plenderId: 'E', leafs: [leaf('ResiCentral', 7.8)] },
+      { type: 'LenderKey', keyLabel: 'Harbourline Credit', plenderId: 'F', leafs: [leaf('Harbourline Credit', 7.9)] },
+    ] } } };
+    const lpUnknown = { price: async () => ({ ok: true, raw: unknownLp, searchKey: 'k9', request: {}, provenance: null }), parseFull: lpModel.parseFull };
+    const nexDown = { price: async () => { throw new Error('loannex is not answering'); } };
+
+    // THE CONTROL: what the merge alone does with exactly these programmes.
+    const lpParsed = lpModel.parseFull({ ...unknownLp });
+    const lpBoard = { source: 'lenderprice', programs: investorPrograms.decorate(lpParsed.programs).programs };
+    const mergedOnly = mergeMod.merge({ lenderprice: lpBoard, loannex: null }, { errors: { lenderprice: null, loannex: 'down' } });
+    const mergedLenders = new Set((mergedOnly.programs || []).map((p) => String(p.lender || '')));
+    ok(lpBoard.programs.length === 3, `LPU-0 CONTROL: Lender Price returned 3 lenders (${lpBoard.programs.length})`);
+    ok(!mergedLenders.has('ResiCentral') && !mergedLenders.has('Harbourline Credit'),
+      'LPU-1 CONTROL: the merge alone drops BOTH unnamed lenders — the regression, reproduced');
+
+    const out2 = await run(lpUnknown, nexDown, { wantLoanNex: true });
+    const lenders = (out2.programs || []).map((p) => String(p.lender || ''));
+    ok(out2.ok === true, 'LPU-2 the board is still built when LoanNEX refuses outright');
+    ok(lenders.includes('ResiCentral') && lenders.includes('Harbourline Credit'),
+      'LPU-3 …and BOTH unnamed Lender Price lenders are on it');
+    const unnamedRows = (out2.programs || []).filter((p) => !p.investorKey);
+    ok(unnamedRows.length === 2 && unnamedRows.every((p) => p.whiteLabel === null && p.consumerLabel === null),
+      'LPU-4 an unnamed row carries NO white label and NO client-safe label — it can never be quoted to a client');
+    const unmappedLenders = (out2.unmapped || []).map((u) => String(u.lender || u.investor || ''));
+    ok(unmappedLenders.includes('ResiCentral') && unmappedLenders.includes('Harbourline Credit'),
+      'LPU-5 …and each is REPORTED as still needing a name, which is what makes it visible rather than silent');
+    ok(!lenders.some((l) => /^\s*$/.test(l)) && lenders.filter((l) => l === 'Deephaven').length === 1,
+      'LPU-6 a NAMED lender is not duplicated by the restoration');
+
+    /* ⛔ ONLY THE LENDER PRICE HALF. A LoanNEX row nobody can name was never on this
+       board, and the owner's standing rule for a LoanNEX investor that does not arrive
+       is to leave it off silently and tell a super admin — so bringing one on under a
+       vendor spelling would be a NEW decision, not a repair. */
+    // It must be a FIXED programme, or the ARM filter drops it before the restoration
+    // could ever see it and the assertion passes for the wrong reason.
+    const aFixedNxProgram = RECORDED.programs.find((x) => String(x.amortizationType || '').toLowerCase() === 'fixed');
+    ok(!!aFixedNxProgram, 'LPU-7a CONTROL: the recording carries a FIXED LoanNEX programme to stand in');
+    const strangeNx = { price: async () => ({ board: { ...RECORDED, programs: [{
+      ...aFixedNxProgram, lender: 'Someone Nobody Named', investor: 'Someone Nobody Named', lenderId: 99999,
+    }] }, transactionId: 't9', portal: null }) };
+    const out3 = await run(lpUnknown, strangeNx, { wantLoanNex: true });
+    ok(!(out3.programs || []).some((p) => String(p.lender || '') === 'Someone Nobody Named'),
+      'LPU-7 an unnameable LOANNEX row is still left off — the restoration is the Lender Price half only');
+  }
+
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('THREW', (e && e.stack) || e); process.exit(1); });

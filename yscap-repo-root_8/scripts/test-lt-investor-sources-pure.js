@@ -212,9 +212,110 @@ console.log('\nH · nothing about the pricing page moved');
   ok(!/settingsStore|require\('\.\.\/db'\)/.test(board),
     'H2b …and writes nothing itself — it touches no database, so the route records it');
   const route = strip(read('src/longterm/routes/dscr-pricer.js'));
-  ok(/investorConfig\.recordSightings/.test(route), 'H3 the route records it ONCE, after the search');
-  ok((route.match(/investorConfig\.recordSightings/g) || []).length === 1,
-    'H3b …exactly once, never per band — a narrow band’s silence is not evidence about a sheet');
+  /* ⛔ RE-POINTED, NEVER LOOSENED (2026-09-03). This pair used to pin the spelling
+     `investorConfig.recordSightings` appearing exactly once in the route. Its SUBJECT was
+     never that spelling — it is that the register is written by the ROUTE, ONCE per search
+     and never per band. Both doors now go through the shared `search-record` collector, so
+     the assertions follow the property to where it lives. And the owner's own report
+     (*"the side by side… is not actually connected"*) added a THIRD thing worth pinning:
+     the IMMEDIATE board is a search too, so it must record as well — a guard that only
+     watched the bands door is what let that door stay silent. */
+  ok(/searchRecord\.collector\(\)/.test(route),
+    'H3 the bands door records through the SHARED collector — never a second copy of the rules');
+  ok((route.match(/searchSeen\.flush\(/g) || []).length === 1,
+    'H3b …flushed exactly once, after the search');
+  const runSearchBody = route.slice(route.indexOf('const runSearch ='), route.indexOf('const out = await bracketRun'));
+  ok(!/\.flush\(/.test(runSearchBody),
+    'H3c …and NEVER inside the band loop — a narrow band’s silence is not evidence about a sheet');
+  ok(/searchSeen\.observe\(/.test(runSearchBody),
+    'H3d …the bands are UNIONED instead: an investor that answers in one band is carried');
+  const fullDoor = route.slice(route.indexOf('if (body.full)'), route.indexOf('// The SUMMARY door'));
+  ok(/searchRecord\.recordOne\(board/.test(fullDoor),
+    'H3e THE IMMEDIATE BOARD RECORDS TOO — it is the first thing an officer sees and often the only door that runs');
+}
+
+/* ── I · THE SAVE THE OWNER COULD NOT MAKE ───────────────────────────────────
+   The owner: *"When you turn off an investor, it doesn't turn off. When you turn on an
+   investor, it doesn't actually work. When you switch from where the investor's pricing
+   should come in, it doesn't actually work."* (2026-09-03)
+
+   ROOT CAUSE, reproduced below: `whiteLabelProblem` refused ANY name already in the
+   `taken` map — including the investor's OWN client-safe name off the rate sheet. The
+   screen restates that name on every row it draws, and the PUT is all-or-nothing
+   (`problems.length` → HTTP 422), so ONE row was enough to refuse the whole form.
+   Nothing was stored, and the screen read back exactly what it sent, which is why it
+   looked as though the buttons did nothing at all.
+
+   ⛔ THE COLLISION GUARD IS NOT WEAKENED, and that is the half worth the assertions:
+   the map now records WHO owns each name, so a name is a collision only when it belongs
+   to somebody ELSE. */
+console.log('\nI · an investor may restate its OWN client-safe name');
+{
+  const settings = require(path.join(ROOT, 'src/longterm/pricing/investor-settings'));
+  const sheet = require(path.join(ROOT, 'src/longterm/lenderprice/investor-programs'));
+  const named = Object.entries(sheet.PROGRAM_NAMES);
+  ok(named.length > 0, `I0 CONTROL: the rate sheet carries client-safe names to restate (${named.length})`);
+
+  /* The payload the SCREEN sends: every row it can draw, each carrying the name it is
+     already showing. This is the owner's own save, not a contrived one. */
+  const asTheScreenSends = {};
+  for (const [key, whiteLabel] of named) asTheScreenSends[key] = { source: 'lenderprice', enabled: true, whiteLabel };
+  const saved = settings.readSettings(asTheScreenSends, new Map());
+  eq(saved.problems.map((p) => `${p.investor}:${p.error}`), [],
+    'I1 THE ONE THAT MATTERS: the whole form saves with NOTHING refused');
+  eq(Object.keys(saved.settings).length, named.length,
+    'I2 …and every row is stored, not a subset');
+  ok(named.every(([k, wl]) => saved.settings[k] && saved.settings[k].whiteLabel === wl),
+    'I3 …each keeping the name it was sent');
+
+  /* And the three things the owner said did not work, on one row: off, on, and switched. */
+  const moved = settings.readSettings({
+    [named[0][0]]: { source: 'loannex', enabled: true, whiteLabel: named[0][1] },
+    [named[1][0]]: { source: 'lenderprice', enabled: false, whiteLabel: named[1][1] },
+  }, new Map());
+  eq(moved.problems, [], 'I4 turning one off and moving another to the second sheet is refused by nothing');
+  eq(moved.settings[named[0][0]].source, 'loannex', 'I5 …the switched row stores its new sheet');
+  eq(moved.settings[named[1][0]].enabled, false, 'I6 …and the switched-off row stores OFF');
+
+  /* ⛔ THE GUARD STILL BITES — four ways, each a real harm. */
+  const [k0, wl0] = named[0]; const [k1] = named[1];
+  ok(settings.readSettings({ [k1]: { whiteLabel: wl0 } }, new Map())
+    .problems.some((p) => p.error === 'white_label_taken'),
+  'I7 …but ANOTHER investor reaching for that same name is still refused — two investors may never show a client one name');
+  const registryName = require(path.join(ROOT, 'src/longterm/encompass/investors')).INVESTORS[0].label;
+  ok(settings.readSettings({ [k0]: { whiteLabel: registryName } }, new Map())
+    .problems.length > 0,
+  'I8 …a real investor name is still refused, whoever asks for it');
+  ok(settings.readSettings({ [k0]: { whiteLabel: `${registryName} Group` } }, new Map())
+    .problems.length > 0,
+  'I9 …and so is a name the client-facing block would blank out, which would reach a borrower as nonsense');
+}
+
+/* ── J · THE SCREEN ITSELF ───────────────────────────────────────────────────
+   Three defects the owner met on the way to that save, each on the settings screen and
+   each invisible without a guard: a row nobody touched being rewritten on the way out,
+   the screen believing its own patch instead of the server, and a row switched OFF
+   staying on the default list — which is the owner's *"your side-by-side comparison list
+   still shows all of the investors that you turned off"*. */
+console.log('\nJ · the settings screen sends what it was shown, and shows what was saved');
+{
+  const src = strip(read('app-v2/src/longterm/LtInvestorSources.jsx'));
+  ok(/\(!e && r\.source\)\s*\n?\s*\?\s*r\.source/.test(src) || /!e && r\.source/.test(src),
+    'J1 an UNTOUCHED row sends the source it was given, verbatim — never a rewritten one');
+  ok(/setEdits\(\{\}\);\s*load\(\);/.test(src),
+    'J2 after saving, the screen RE-READS the server rather than believing its own patch');
+  /* Scoped to the FILTER, not the file: `sourceOrigin === 'setting'` is also read by
+     `patchOf`, where it is CORRECT (the whole map is sent on every save, so a row carrying a
+     stored setting must re-state it). A guard written over the whole file would forbid the
+     right use to catch the wrong one. */
+  const filter = src.slice(src.indexOf('if (onlyOn) {'), src.indexOf('if (!needle) return list;'));
+  ok(filter.length > 40, 'J3a CONTROL: the "only the ones that are on" filter was found to read');
+  ok(!/Origin === 'setting'/.test(filter),
+    'J3 a row switched OFF leaves the default list — it is not pinned there by having a saved setting');
+  ok(/choiceOf\(r, edits\[r\.key\]\) !== 'off'/.test(filter),
+    'J3b …the filter asks what the row IS, and a row being edited right now is still kept');
+  ok(/switched off/i.test(read('app-v2/src/longterm/LtInvestorSources.jsx')),
+    'J4 …and the empty state SAYS the switched-off rows are hidden, so nobody hunts for one');
 }
 
 console.log('\n' + pass + ' checks passed\n');

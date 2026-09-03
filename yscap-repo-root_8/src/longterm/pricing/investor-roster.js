@@ -278,7 +278,9 @@ function readCustomUncached(raw) {
       if (a.length < MIN_ALIAS || !n) {
         problem = { key, alias: a, problem: 'alias_unusable', message: `"${a}" is too short to be a spelling of "${label}".` };
       } else if (taken.has(a.toLowerCase())) {
-        problem = { key, alias: a, problem: 'alias_taken', message: `"${a}" is ${taken.get(a.toLowerCase())} — it cannot also mean "${label}".` };
+        // `taken` holds { who, key } — the SENTENCE and the OWNER — so a message must
+        // read `.who`. Interpolating the record itself renders "[object Object]".
+        problem = { key, alias: a, problem: 'alias_taken', message: `"${a}" is ${taken.get(a.toLowerCase()).who} — it cannot also mean "${label}".` };
       } else if (normals.has(n)) {
         problem = { key, alias: a, problem: 'alias_is_registry_spelling', message: `"${a}" reads as a registry investor once the company words are set aside — it cannot also mean "${label}".` };
       } else if (claimed.has(n) && claimed.get(n) !== key) {
@@ -294,7 +296,7 @@ function readCustomUncached(raw) {
         continue;
       }
       claimed.set(n, key);
-      taken.set(a.toLowerCase(), `a spelling of ${key}`);
+      taken.set(a.toLowerCase(), { who: `a spelling of ${key}`, key });
       aliases.push(a);
     }
     if (labelUnusable) continue;
@@ -322,7 +324,7 @@ function readCustomUncached(raw) {
       e.whiteLabel = null;
       continue;
     }
-    taken.set(e.whiteLabel.toLowerCase(), `the client-safe name of ${e.key}`);
+    taken.set(e.whiteLabel.toLowerCase(), { who: `the client-safe name of ${e.key}`, key: e.key });
   }
 
   return { custom, problems };
@@ -350,11 +352,26 @@ function readCustomUncached(raw) {
 function whiteLabelProblem(key, label, whiteLabel, taken, rosterMap) {
   if (!whiteLabel) return null;
   const owner = taken.get(whiteLabel.toLowerCase());
-  if (owner) {
+  /**
+   * ⛔ A NAME IS NEVER TAKEN BY ITS OWN INVESTOR (owner-reported 2026-09-03: *"I went to the
+   * settings. I set everything up… Everybody was turned on"*).
+   *
+   * MEASURED: this refused every save the General engine's settings screen made. That screen sends
+   * each row back carrying the name it is already showing, so `whiteLabelProblem('phh','phh','Opal',…)`
+   * asked "is Opal taken?", found "yes — it is the client-safe name of phh", and refused it. The
+   * PUT is all-or-nothing, so ONE such row lost the whole form: 26 of the 43 investors carry a sheet
+   * name, and all 26 of the rows the screen shows carry one, so 100% of what the owner could see
+   * was unsaveable. Turning an investor off, switching its rate sheet and naming it all failed
+   * together, silently as far as the pricing board was concerned, for five days.
+   *
+   * The fix is identity, not a looser check: a collision still refuses, it simply has to be with
+   * SOMEBODY ELSE. Restating your own name is a no-op, not a clash.
+   */
+  if (owner && owner.key !== key) {
     return {
       key,
       problem: 'white_label_taken',
-      message: `The client-safe name "${whiteLabel}" is ${owner}. A client may never see an investor's name, and two investors may never show a client one name.`,
+      message: `The client-safe name "${whiteLabel}" is ${owner.who}. A client may never see an investor's name, and two investors may never show a client one name.`,
     };
   }
   // THE ROUND TRIP. Not "is this name on a list" — "would a client actually read
@@ -381,10 +398,17 @@ function whiteLabelProblem(key, label, whiteLabel, taken, rosterMap) {
  */
 function takenNames() {
   const taken = new Map();
-  for (const spelling of registrySpellings()) taken.set(spelling, 'a recorded spelling of a registry investor');
+  /* ⛔ THE ENTRY CARRIES THE OWNER'S KEY, not only a sentence naming them. The sentence is for a
+     person to read; the KEY is what lets `whiteLabelProblem` tell "somebody else already uses this
+     name" from "this investor's own name, restated". Storing only the sentence made those two
+     indistinguishable, and the answer to both was REFUSE — see the note on that function.
+     A registry SPELLING has no single owner key here, so it carries `key: null`, which can never
+     equal a subject's key: an investor whose client-safe name is a real recorded spelling is still
+     refused, exactly as before. */
+  for (const spelling of registrySpellings()) taken.set(spelling, { who: 'a recorded spelling of a registry investor', key: null });
   const sheet = require('../lenderprice/investor-programs');
   for (const [k, v] of Object.entries(sheet.PROGRAM_NAMES)) {
-    taken.set(String(v).toLowerCase(), `the client-safe name of ${k}`);
+    taken.set(String(v).toLowerCase(), { who: `the client-safe name of ${k}`, key: k });
   }
   return taken;
 }
@@ -538,11 +562,11 @@ function validateCustom(raw) {
       const lower = a.toLowerCase();
       const n = investors.normalize(a);
       if (a.length < MIN_ALIAS || !n) { problems.push({ key: e.key, alias: a, problem: 'alias_unusable', message: `"${a}" is too short to be matched as a spelling of "${e.label}".` }); continue; }
-      if (takenSpelling.has(lower)) { problems.push({ key: e.key, alias: a, problem: 'alias_taken', message: `"${a}" is ${takenSpelling.get(lower)} — it cannot also mean "${e.label}".` }); continue; }
+      if (takenSpelling.has(lower)) { problems.push({ key: e.key, alias: a, problem: 'alias_taken', message: `"${a}" is ${takenSpelling.get(lower).who} — it cannot also mean "${e.label}".` }); continue; }
       if (normals.has(n)) { problems.push({ key: e.key, alias: a, problem: 'alias_is_registry_spelling', message: `"${a}" reads as a registry investor once the company words are set aside — it cannot also mean "${e.label}".` }); continue; }
       if (takenNormal.has(n) && takenNormal.get(n) !== e.key) { problems.push({ key: e.key, alias: a, problem: 'alias_claimed', message: `"${a}" already belongs to "${takenNormal.get(n)}".` }); continue; }
       takenNormal.set(n, e.key);
-      takenSpelling.set(lower, `a spelling of ${e.key}`);
+      takenSpelling.set(lower, { who: `a spelling of ${e.key}`, key: e.key });
     }
   }
   /* THE CLIENT-SAFE NAMES, through the SAME routine the READ runs — one
@@ -555,7 +579,7 @@ function validateCustom(raw) {
     for (const e of entries) {
       const bad = whiteLabelProblem(e.key, e.label, e.whiteLabel, takenSpelling, candidate);
       if (bad) { problems.push({ ...bad, message: `${bad.message} Pick a different one.` }); continue; }
-      if (e.whiteLabel) takenSpelling.set(e.whiteLabel.toLowerCase(), `the client-safe name of ${e.key}`);
+      if (e.whiteLabel) takenSpelling.set(e.whiteLabel.toLowerCase(), { who: `the client-safe name of ${e.key}`, key: e.key });
     }
   }
 

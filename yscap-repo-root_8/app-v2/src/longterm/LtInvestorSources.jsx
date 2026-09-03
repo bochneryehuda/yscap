@@ -180,10 +180,21 @@ export default function LtInvestorSources() {
     const needle = q.trim().toLowerCase();
     let list = rows;
     if (onlyOn) {
-      // The default view is what the board is actually pricing plus anything somebody
-      // has deliberately touched — forty-odd rows of "off, nobody has ever set this"
-      // is a wall, and the owner asked for the five investors to be readable at a glance.
-      list = list.filter((r) => choiceOf(r, edits[r.key]) !== 'off' || edits[r.key] || r.sourceOrigin === 'setting' || r.enabledOrigin === 'setting');
+      /**
+       * ⛔ "ONLY THE ONES THAT ARE ON" HIDES THE ONES THAT ARE OFF — including, and especially,
+       * the ones somebody deliberately switched off (owner-reported 2026-09-03: *"Your side-by-side
+       * comparison list still shows all of the investors that you turned off officially, like you
+       * removed from that list, like constructive and broad view."*).
+       *
+       * It used to keep any row carrying a saved setting, so switching an investor OFF made it
+       * MORE permanent on the list than never having touched it — the opposite of what pressing
+       * "Off" means to the person pressing it. A deliberate off is exactly the case this filter
+       * exists to remove.
+       *
+       * A row being edited RIGHT NOW is still kept, unsaved, or it would vanish under the hand
+       * that just pressed Off before they could save it.
+       */
+      list = list.filter((r) => choiceOf(r, edits[r.key]) !== 'off' || !!edits[r.key]);
     }
     if (!needle) return list;
     return list.filter((r) => `${r.label} ${r.whiteLabel || ''} ${r.key}`.toLowerCase().includes(needle));
@@ -253,8 +264,20 @@ export default function LtInvestorSources() {
       || r.whiteLabelOrigin === 'setting' || r.holdbackOrigin === 'setting';
     if (!touched && !pinned) return null;
     const choice = choiceOf(r, e);
+    /**
+     * ⛔ AN UNTOUCHED ROW RE-STATES WHAT IS STORED, VERBATIM — it never re-derives it through the
+     * three-button vocabulary.
+     *
+     * `both` is a real stored value: the COMBINED engine's settings screen offers it and writes the
+     * same key (`pricing.combinedInvestors`). This screen deliberately does not offer it, so
+     * `choiceOf` answers `'lenderprice'` for it — and a save nobody made a change on then silently
+     * re-routed every stored `both` row to Lender Price, with no button pressed. A screen that does
+     * not offer a value must PASS IT THROUGH, never translate it into the nearest one it knows.
+     */
     const out = {
-      source: choice === 'off' ? (r.source === 'loannex' ? 'loannex' : 'lenderprice') : choice,
+      source: (!e && r.source)
+        ? r.source
+        : (choice === 'off' ? (r.source === 'loannex' ? 'loannex' : 'lenderprice') : choice),
       enabled: choice !== 'off',
     };
     const wl = e && e.whiteLabel !== undefined ? e.whiteLabel : r.whiteLabel;
@@ -278,7 +301,16 @@ export default function LtInvestorSources() {
         if (p) map[r.key] = p;
       }
       const out = await ltApi.sourceSaveInvestors(map);
-      setData(out); setEdits({});
+      /**
+       * ⛔ RE-READ, NEVER INSTALL THE WRITE'S OWN ANSWER. The PUT answers `describeSettings` — the
+       * FULL 43-row roster with no `availability`, no `lockedOut`, no `connections`, no
+       * `lastAnswered` and no `hidden`. Installing it made a SUCCESSFUL save visibly degrade the
+       * screen: the list jumped from the ~26 rows this screen shows to 43, the "Available on"
+       * column emptied to a dangling dash, and buttons the register had locked went live again.
+       * A save that works must leave the screen showing what the screen is for.
+       */
+      setEdits({});
+      load();
       setSaved(`Saved. ${out.saved} investor${out.saved === 1 ? '' : 's'} now carry a setting of their own; the rest use the pre-fill.`);
     } catch (e) {
       const problems = e && e.data && Array.isArray(e.data.problems) ? e.data.problems : null;
@@ -434,7 +466,7 @@ export default function LtInvestorSources() {
         </div>
         {shown.length === 0 && (
           <div style={{ padding: 14, fontSize: 13, color: MUTED }}>
-            Nothing matches. {onlyOn ? 'Un-tick “Only the ones that are on” to see every investor.' : ''}
+            Nothing matches. {onlyOn ? 'Un-tick “Only the ones that are on” to see every investor, including the ones switched off.' : ''}
           </div>
         )}
         {shown.map((r) => {
