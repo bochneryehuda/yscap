@@ -139,6 +139,8 @@ const d16 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z' }, 'x', '202
 ok(d14.material !== d15.material && d14.material !== d16.material, 'a top-level "__proto__" key is content, never an assignment to the prototype');
 
 console.log("\n--- created without a timezone is UTC, never the server's local clock ---");
+ok(new Date(2026, 0, 15).getTimezoneOffset() !== 0 && new Date(2026, 6, 15).getTimezoneOffset() !== 0,
+   'the TZ pin bit — this process is NOT on a zero-offset clock, so the checks below can fail');
 const u1 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00' }, 'x', '2026-09-03');
 const u2 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z' }, 'x', '2026-09-03');
 ok(u1.keyed && u1.material === u2.material, 'an offset-less ISO created is read as UTC (same key as the Z form)');

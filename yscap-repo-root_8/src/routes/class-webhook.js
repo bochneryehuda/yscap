@@ -127,36 +127,59 @@ const TRANSPORT_KEYS = new Set(['sent', 'Sent', 'created', 'Created']);
 // where the STORED body overflows into the marker was exactly where a deep retry with
 // a moved `sent` digested differently and was processed twice.
 function canonical(root) {
+  // A string on the stack is text to emit; an object or array is a node to expand.
+  // Scalars and separators go on as their final text, so the only allocation per
+  // element is the key label — the first cut wrapped every element in a small object
+  // and ran 3-9x slower than the recursive form on a wide body.
+  if (root === null || typeof root !== 'object') return scalar(root);
   const out = [];
-  const stack = [{ v: root }];
-  const lit = (s) => ({ s });
+  const stack = [root];
   while (stack.length) {
     const it = stack.pop();
-    if (it.s !== undefined) { out.push(it.s); continue; }
-    const v = it.v;
-    if (v === null || typeof v !== 'object') {
-      const j = JSON.stringify(v === undefined ? null : v);
-      out.push(j === undefined ? 'null' : j);
-      continue;
-    }
-    const items = [];
-    if (Array.isArray(v)) {
+    if (typeof it === 'string') { out.push(it); continue; }
+    if (Array.isArray(it)) {
+      // A leaf array is emitted by the native serializer in one call: with no keys to
+      // sort its JSON IS the canonical form, element for element (undefined and holes
+      // both print null, -0 prints 0 — exactly what scalar() does).
+      if (allScalar(it)) { out.push(JSON.stringify(it)); continue; }
       out.push('[');
-      for (let i = 0; i < v.length; i++) { if (i) items.push(lit(',')); items.push({ v: v[i] }); }
-      items.push(lit(']'));
-    } else {
-      out.push('{');
-      const keys = Object.keys(v).sort();
-      for (let i = 0; i < keys.length; i++) {
-        if (i) items.push(lit(','));
-        items.push(lit(JSON.stringify(keys[i]) + ':'));
-        items.push({ v: v[keys[i]] });
+      stack.push(']');
+      for (let i = it.length - 1; i >= 0; i--) {
+        pushValue(stack, it[i]);
+        if (i) stack.push(',');
       }
-      items.push(lit('}'));
+    } else {
+      const keys = Object.keys(it).sort();
+      if (allScalarValues(it, keys)) {
+        out.push('{' + keys.map((k) => JSON.stringify(k) + ':' + scalar(it[k])).join(',') + '}');
+        continue;
+      }
+      out.push('{');
+      stack.push('}');
+      for (let i = keys.length - 1; i >= 0; i--) {
+        pushValue(stack, it[keys[i]]);
+        stack.push(JSON.stringify(keys[i]) + ':');
+        if (i) stack.push(',');
+      }
     }
-    for (let i = items.length - 1; i >= 0; i--) stack.push(items[i]);
   }
   return out.join('');
+}
+function scalar(v) {
+  const j = JSON.stringify(v === undefined ? null : v);
+  return j === undefined ? 'null' : j;
+}
+function allScalar(arr) {
+  for (let i = 0; i < arr.length; i++) { const v = arr[i]; if (v !== null && typeof v === 'object') return false; }
+  return true;
+}
+function allScalarValues(obj, keys) {
+  for (let i = 0; i < keys.length; i++) { const v = obj[keys[i]]; if (v !== null && typeof v === 'object') return false; }
+  return true;
+}
+function pushValue(stack, v) {
+  if (v !== null && typeof v === 'object') stack.push(v);
+  else stack.push(scalar(v));
 }
 // The digest is over the body sans the transport stamps. `rest` has a null prototype
 // so a top-level "__proto__" key — which JSON.parse does produce as an own property —
