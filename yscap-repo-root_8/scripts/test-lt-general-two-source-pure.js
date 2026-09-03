@@ -94,6 +94,17 @@ const byInvestor = (programs) => {
   const out = await run(lpOk, nexOk);
   ok(out.ok === true && Array.isArray(out.programs) && out.programs.length > 0,
     `GEN-1 the board is built at all (${out.programs.length} programmes)`);
+  /* THE INITIAL BOARD'S LENS ROSTER AND UNNAMED LIST. The immediate `/price` door
+     reads these to draw its investor lens and its "name this lender" warning; they
+     are derived from the ROUTED programmes so the board and the lens can never
+     describe two different sets. (owner-directed 2026-09-03 — LoanNEX now reaches the
+     immediate board, not only the bands.) */
+  ok(Array.isArray(out.roster) && Array.isArray(out.unmapped),
+    'GEN-1b the board carries a lens roster and an unnamed-lender list');
+  ok(out.roster.every((x) => x && x.key && Array.isArray(x.programs) && x.programs.length === x.programCount),
+    'GEN-1c …each roster entry is well-shaped, its programme count in step with its list');
+  ok(out.roster.every((x) => x.whiteLabel) && out.unmapped.every((u) => !u.whiteLabel),
+    'GEN-1d …a NAMED investor is in the roster and only an unnamed one in the unmapped list');
   const by = byInvestor(out.programs);
 
   // The LoanNEX board carries these; the Lender Price answer carries NQM and Acra too.

@@ -148,8 +148,14 @@ ok(g.nexted && g.code === null, 'gate passes through on correct token');
   // moment it exists), so it is async and needs a stubbed store to prove.
 
   const routeSrc = require('fs').readFileSync(require('path').join(__dirname, '../src/longterm/routes/dscr-pricer.js'), 'utf8');
-  ok(/investorPrograms\.decorate\(full\.programs\)/.test(routeSrc) && /investorRoster: deco\.roster/.test(routeSrc),
-    'the FULL price answer is decorated and carries the investor roster');
+  /* THE FULL PRICE ANSWER IS NOW BUILT FROM BOTH RATE SHEETS (owner-directed 2026-09-03:
+     LoanNEX reaches the immediate board, not only the bands), so the decoration + roster
+     ride `boardForScenario` — the SAME router the bracket door uses — rather than a bare
+     `lp.price` + `decorate`. What is held here is unchanged in intent: the full answer still
+     carries an investor roster, and a one-word deletion of the roster field would leave it bare. */
+  ok(/const board = await generalBoard\.boardForScenario\(sc, \{ lp, nex, investorPrograms \}, cfg\)/.test(routeSrc)
+    && /investorRoster: board\.roster/.test(routeSrc),
+    'the FULL price answer is built from BOTH rate sheets and carries the routed investor roster');
   ok(/decorateDisqualifiedLenders\(parsed\.lenders\)/.test(routeSrc)
     && /decorateDisqualifiedLenders\(pd\.lenders\)/.test(routeSrc)
     && /decorateDisqualifiedLenders\(pdFull\.lenders\)/.test(routeSrc),

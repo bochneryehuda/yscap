@@ -64,6 +64,57 @@ function expectedFromLoanNex(rows) {
 }
 
 /**
+ * THE PRESENT-INVESTOR ROSTER AND THE STILL-UNNAMED LIST, FOR THE ROUTED BOARD.
+ *
+ * The initial board's screen carries an investor lens (which investors this
+ * answer holds) and a staff-only warning (a lender quoting with no white-label
+ * name yet). Both were built from `investorPrograms.decorate`, which resolves a
+ * LENDER PRICE programme against the Lender Price registry — right for a board of
+ * only Lender Price rows, wrong for this one, which has dropped the turned-off
+ * investors and carries LoanNEX's. So it is derived from the ROUTED programmes
+ * themselves — the exact rows on the board — with the real investor label read
+ * from the merge (`mergedInvestors`, keyed by investor). Same output shape as
+ * `decorate` so the screen reads it unchanged. Pure.
+ */
+function rosterFromRouted(programs, mergedInvestors) {
+  const list = Array.isArray(programs) ? programs : [];
+  const labelByKey = new Map();
+  for (const inv of mergedInvestors || []) {
+    if (inv && inv.key != null) labelByKey.set(inv.key, inv.investor || inv.whiteLabel || inv.key);
+  }
+  // One roster entry per NAMED investor on the board, with its distinct programme
+  // names — exactly the investors a lens may offer to narrow to.
+  const byKey = new Map(); // key -> { whiteLabel, names: Map<program, consumerLabel> }
+  for (const p of list) {
+    if (!p || !p.investorKey || !p.whiteLabel) continue;
+    let g = byKey.get(p.investorKey);
+    if (!g) { g = { whiteLabel: p.whiteLabel, names: new Map() }; byKey.set(p.investorKey, g); }
+    const name = String(p.program || '');
+    if (!g.names.has(name)) g.names.set(name, p.consumerLabel || p.whiteLabel);
+  }
+  const roster = [...byKey.entries()].map(([key, g]) => {
+    const sorted = [...g.names.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    return {
+      key,
+      whiteLabel: g.whiteLabel,
+      investorLabel: labelByKey.get(key) || g.whiteLabel,
+      programCount: sorted.length,
+      programs: sorted.map(([program, consumerLabel]) => ({ consumerLabel, program })),
+    };
+  }).sort((a, b) => String(a.whiteLabel).localeCompare(String(b.whiteLabel)));
+  // A row with no white-label name yet — distinct by WHO it is, so the warning
+  // names each once. `key` present = the registry placed it (off the sheet);
+  // `key` null = it could not be placed at all.
+  const unseen = new Map();
+  for (const p of list) {
+    if (!p || p.whiteLabel) continue;
+    const k = `${p.lender || ''} ${p.investor || ''}`;
+    if (!unseen.has(k)) unseen.set(k, { lender: p.lender || null, investor: p.investor || null, key: p.investorKey || null });
+  }
+  return { roster, unmapped: [...unseen.values()] };
+}
+
+/**
  * THE CONFIGURATION ONE SEARCH RUNS UNDER, READ ONCE.
  *
  * The bracket loop asks the sheets once PER DSCR BAND. Reading the settings inside that
@@ -217,15 +268,24 @@ async function boardForScenario(sc, deps, opts = {}) {
     loannex: { answered: !!nxOk, keys: nxOk ? sightedOn('loannex') : [] },
   };
 
+  /* THE LENS ROSTER AND THE UNNAMED WARNING, for the board actually shown — the
+     initial-board door reads these; the bracket door ignores them and reads the
+     bands. Derived from the routed programmes so it can never describe a different
+     board than the one on screen. */
+  const lens = rosterFromRouted(programs, mergedRaw.investors);
+
   return {
     ok: true,
     sightings,
     parsed: Object.assign({}, lpParsed, { programs }),
     programs,
     missing,
+    roster: lens.roster,
+    unmapped: lens.unmapped,
     searchKey: lpAnswer.searchKey || null,
     request: lpAnswer.request || null,
     provenance: lpAnswer.provenance || null,
+    recovered: !!lpAnswer.recovered,
     nx: nxMeta,
     sources: {
       lenderprice: { ok: true },
@@ -235,4 +295,4 @@ async function boardForScenario(sc, deps, opts = {}) {
   };
 }
 
-module.exports = { boardForScenario, loadConfig, _internals: { reasonOf, expectedFromLoanNex } };
+module.exports = { boardForScenario, loadConfig, _internals: { reasonOf, expectedFromLoanNex, rosterFromRouted } };

@@ -130,6 +130,58 @@ const investorsOf = (j) => {
     ok(!downInv.has('nqm'),
       'BR-11 …and a switched investor is NOT quietly served from Lender Price instead');
     nexDown = false;
+
+    /* ── THE IMMEDIATE, UNBANDED BOARD IS BUILT FROM BOTH SHEETS TOO ──────────
+       Owner-directed 2026-09-03: *"First, it will do a general search according to the
+       ratio that it populated, and everything populates without bands. Then it runs
+       slowly, and the bands start populating… It should follow the same exact path…
+       right away, it searches the initial stuff and then it starts dividing it into the
+       bands."* So POST /price (full) must merge LoanNEX exactly as the bracket door
+       does — before this it asked Lender Price and NOTHING else, so the five switched
+       investors were absent from the immediate board and only reached the screen once
+       the bands landed. */
+    console.log('\n── THE INITIAL BOARD, BOTH SHEETS (owner-directed 2026-09-03) ──');
+    const postPrice = async (b) => {
+      const rr = await fetch(`${base}/lt/price`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) });
+      return { status: rr.status, json: await rr.json() };
+    };
+    const flatInvestors = (j) => {
+      const m = new Map();
+      for (const p of (j.programs || [])) m.set(p.investorKey || '(none)', (m.get(p.investorKey || '(none)') || 0) + 1);
+      return m;
+    };
+    lpCalls = 0; nexCalls = 0;
+    const ib = await postPrice({ scenario: SCENARIO, full: true });
+    ok(ib.status === 200 && ib.json.ok === true, `IB-1 the immediate board is built (HTTP ${ib.status}${ib.json.error ? ' ' + ib.json.error : ''})`);
+    ok(lpCalls === 1 && nexCalls === 1,
+      `IB-2 BOTH sheets are asked ONCE for the immediate board (Lender Price ${lpCalls}, LoanNEX ${nexCalls})`);
+    const ibInv = flatInvestors(ib.json);
+    ok(['nqm', 'acra', 'eresi', 'button_finance', 'clearedge'].every((k) => ibInv.has(k)),
+      `IB-3 ALL FIVE LoanNEX investors are on the immediate board, not only in the bands (${[...ibInv.keys()].sort().join(', ')})`);
+    ok(ibInv.has('deephaven'), 'IB-4 …and a Lender Price investor is still there, untouched');
+    const ibNqm = (ib.json.programs || []).filter((p) => p.investorKey === 'nqm');
+    ok(ibNqm.length > 0 && ibNqm.every((p) => Array.isArray(p.options) && p.options.some((o) => o.explain && o.explain.priceHashKey)),
+      `IB-5 every NQM row on the immediate board is the LoanNEX copy, never the Lender Price one (${ibNqm.length} rows)`);
+    let ibArm = 0; let ibTotal = 0;
+    for (const p of (ib.json.programs || [])) { ibTotal++; if (/ARM/i.test(String(p.amortizationType || p.product || ''))) ibArm++; }
+    ok(ibTotal > 0 && ibArm === 0, `IB-6 no ARM on the immediate board either (${ibArm} of ${ibTotal})`);
+    ok(Array.isArray(ib.json.investorRoster) && ib.json.investorRoster.some((x) => x.key === 'nqm'),
+      'IB-7 the lens roster names the routed investors, so the board and the lens describe one set');
+
+    console.log('\n── THE INITIAL BOARD WHEN LOANNEX IS DOWN ──');
+    nexDown = true;
+    const ibDown = await postPrice({ scenario: SCENARIO, full: true });
+    ok(ibDown.status === 200 && ibDown.json.ok === true,
+      'IB-8 LoanNEX refusing does not cost the immediate board — Lender Price still answers');
+    const ibDownInv = flatInvestors(ibDown.json);
+    ok(ibDownInv.has('deephaven'), 'IB-9 …the Lender Price investors are all there');
+    ok(!ibDownInv.has('eresi') && !ibDownInv.has('button_finance') && !ibDownInv.has('clearedge'),
+      'IB-10 …the LoanNEX-only ones are simply absent');
+    ok(!ibDownInv.has('nqm'),
+      'IB-11 …and a switched investor is NOT quietly served from Lender Price');
+    ok(ibDown.json.sources && ibDown.json.sources.loannex && ibDown.json.sources.loannex.ok === false,
+      'IB-12 …and the board records that LoanNEX did not answer, so the "no login" banner can fire');
+    nexDown = false;
   } catch (e) {
     console.error('THREW', (e && e.stack) || e);
     fail++;

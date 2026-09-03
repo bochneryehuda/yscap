@@ -473,25 +473,51 @@ async function price(req, res) {
   // triple exists for was defeated (post-merge audit of #1220).
   const requestedScenario = requestedOf(sc);
   sc = chk.scenario; // price the ZIP-ENRICHED scenario, never the original
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+
+  // full:true → the COMPLETE capture (every option's price build, itemized LLPAs, margin/holdback,
+  // comp, fees, ratios, monthly payment). A price is ALSO the disqualify kickoff — hand back the
+  // stable searchKey so the caller polls GET /disqualifications/:searchKey instead of restarting.
+  if (body.full) {
+    /* ⛔ THE INITIAL BOARD IS BUILT FROM BOTH RATE SHEETS — the SAME `boardForScenario`
+       router the bracket door uses (owner-directed 2026-09-03: *"It should follow the same
+       exact path… right away, it searches the initial stuff and then it starts dividing it
+       into the bands."*). So LoanNEX appears on the immediate unbanded board exactly as
+       Lender Price does, and the bracket door then divides that same board into DSCR bands.
+
+       Nobody routed to LoanNEX → `boardForScenario` makes no second vendor call at all
+       (`wantLoanNex`), so a shop that has switched no investor over prices exactly as before,
+       at Lender Price speed. A LoanNEX that refuses never costs the board: the router asks the
+       sheets with `allSettled` and returns the Lender Price half on its own. The register of
+       sightings/misses is written ONCE per search by the bracket door, never here — the
+       initial board reads `sources`/`missing` only to say when a sheet has no login. */
+    const cfg = await generalBoard.loadConfig({ routes: body.routes, links: body.links, marginHoldback: body.marginHoldback });
+    const board = await generalBoard.boardForScenario(sc, { lp, nex, investorPrograms }, cfg);
+    if (!board.ok) return res.status((board.http && board.http >= 500) ? 502 : 400).json(priceErrorBody(board));
+    if (rejectInvalidValues(board.request, res)) return; // a supported field carried an unrecognized value
+    const effectiveFull = effectiveOf(board.request); // requested-vs-effective transparency
+    const out = {
+      ok: true,
+      ...board.parsed,                       // the FULL parse, its programme list already routed
+      programs: board.programs,
+      investorRoster: board.roster,          // the lens roster, for the routed board
+      investorsUnmapped: board.unmapped,     // a lender quoting with no white-label name yet
+      missing: board.missing,                // investors LoanNEX was asked for and did not carry
+      sources: board.sources,                // which sheet answered — drives the "no login" banner
+      requestedScenario, derivedScenario: derivedOf(sc),
+      countyEnrichment: chk.countyEnrichment, effectiveScenario: effectiveFull,
+      cashoutAmount: cashoutNote(sc), dscrClamped: chk.dscrClamped || null,
+      request: board.request, searchKey: board.searchKey,
+      disqualifyStatus: 'computing', provenance: board.provenance || null, recovered: !!board.recovered,
+    };
+    return res.json(out);
+  }
+
+  // The SUMMARY door (a saved scenario re-run) stays Lender Price only, unchanged.
   const r = await lp.price(sc);
   if (!r.ok) return res.status((r.http && r.http >= 500) ? 502 : 400).json(priceErrorBody(r));
   if (rejectInvalidValues(r.request, res)) return; // a supported field carried an unrecognized value
   const effective = effectiveOf(r.request); // requested-vs-effective transparency
-  // full:true → the COMPLETE capture (every option's price build, itemized LLPAs, margin/holdback,
-  // comp, fees, ratios, monthly payment). Add raw:true to also attach each option's untouched leaf.
-  // A price is ALSO the disqualify kickoff — hand back the stable searchKey so the caller polls the
-  // separate status route (GET /disqualifications/:searchKey) instead of ever restarting the search.
-  if (req.body && req.body.full) {
-    const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
-    // The white-label decoration (2026-08-27): the SAME programs, annotated with the
-    // canonical investor key + white-label / consumer labels, plus the roster of
-    // investors PRESENT in this answer and anything that resolved to no name — named,
-    // never dropped, so the owner can christen a new investor the day it appears.
-    const deco = investorPrograms.decorate(full.programs);
-    const out = { ok: true, ...full, programs: deco.programs, investorRoster: deco.roster, investorsUnmapped: deco.unmapped, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), dscrClamped: chk.dscrClamped || null, request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
-    if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
-    return res.json(out);
-  }
   const parsed = lp.parse(r.raw);
   const decoSummary = investorPrograms.decorate(parsed.programs);
   const out = { ok: true, ...trimPrograms({ ...parsed, programs: decoSummary.programs }), investorRoster: decoSummary.roster, investorsUnmapped: decoSummary.unmapped, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), dscrClamped: chk.dscrClamped || null, request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
