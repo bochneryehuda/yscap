@@ -80,7 +80,8 @@ the swap." PILOT does that through `CLASS_CALLBACK_PASSWORD_PREVIOUS`.
    all 15 events with the new password. Deliveries Class sends in the seconds between the
    delete and the addAll are retried by them (at-least-once), and the receiver is
    answering throughout.
-3. Run `verify` → `complete: true`.
+3. Run `verify` → `complete: true`. If `rotate` failed part-way (the delete went
+   through but the addAll did not), run `register` again — it adds only what is missing.
 4. Remove `CLASS_CALLBACK_PASSWORD_PREVIOUS` in Render. Save; redeploy. The old password
    is dead.
 5. Send the new password to Class through the secure channel.

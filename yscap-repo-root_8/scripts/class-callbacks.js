@@ -259,7 +259,10 @@ if (require.main === module) {
     const doomed = a.ids.concat(a.twins);
     say('ROTATE', { deleting: doomed.length, twins: a.twins.length });
     for (const r of doomed) { if (r.id != null) await cmdDelete(r.id); }
-    await db.query(`UPDATE class_callback_registrations SET removed_at = now() WHERE callback_url = $1 AND removed_at IS NULL`, [intent().url]).catch(() => {});
+    // Under CLASS_DRYRUN nothing was deleted at Class, so our record must not say it was.
+    if (!st.dryrun) {
+      await db.query(`UPDATE class_callback_registrations SET removed_at = now() WHERE callback_url = $1 AND removed_at IS NULL`, [intent().url]).catch(() => {});
+    }
     await cmdRegister();
   }
 
@@ -300,7 +303,7 @@ if (require.main === module) {
       else if (cmd === 'rotate') await cmdRotate();
       else { say('USAGE', { commands: ['list', 'verify', 'register', 'selftest', 'delete <id>', 'rotate --confirm'] }); process.exitCode = 2; }
     } catch (e) {
-      say('ERROR', { message: e && e.message, code: e && e.code, status: e && e.status, body: e && e.body });
+      say('ERROR', { message: e && e.message, code: e && e.code, status: e && e.status, body: client._internals.maskSafe(e && e.body) });
       process.exitCode = 1;
     } finally {
       await db.pool.end().catch(() => {});

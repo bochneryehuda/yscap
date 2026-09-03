@@ -98,5 +98,27 @@ ok(!k7.keyed && k7.material === k8.material, 'the fallback still collapses a ver
 const k9 = hook.deliveryKey(env, { Created: '2026-09-03T10:00:00Z' }, '{"a":1}', '2026-09-03');
 ok(k9.keyed && k9.material === k1.material, 'their Pascal-case spelling reads the same');
 
+console.log("\n--- the content discriminator: same three fields, different content, is two events ---");
+const d1 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: { note: 'first' } }, 'x', '2026-09-03');
+const d2 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: { note: 'second' } }, 'x', '2026-09-03');
+ok(d1.keyed && d2.keyed && d1.material !== d2.material, 'two different notes on one order in the same second are two deliveries');
+const d3 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: { note: 'first' }, sent: '2026-09-03T10:05:00Z' }, 'y', '2026-09-03');
+ok(d3.material === d1.material, 'a retry of the first — same content, moved sent — is still ONE delivery');
+const d4 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00.000Z', data: { b: 1, a: [1, { z: 2, y: 3 }] } }, 'x', '2026-09-03');
+const d5 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: { a: [1, { y: 3, z: 2 }], b: 1 } }, 'x', '2026-09-04');
+ok(d4.material === d5.material, 'key order and the created spelling never change the identity — the digest is canonical');
+ok(!d1.material.endsWith('|'), 'the digest is part of the material, not an empty tail');
+const deep = {}; let cur = deep; for (let i = 0; i < 200; i++) { cur.n = {}; cur = cur.n; }
+const d6 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: deep }, 'MARKER-A', '2026-09-03');
+const d7 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z', data: deep }, 'MARKER-B', '2026-09-03');
+ok(d6.keyed && d7.keyed && d6.material !== d7.material, 'an unserializable body falls back to the stored marker for its digest, never a throw');
+
+console.log("\n--- created without a timezone is UTC, never the server's local clock ---");
+const u1 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00' }, 'x', '2026-09-03');
+const u2 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00Z' }, 'x', '2026-09-03');
+ok(u1.keyed && u1.material === u2.material, 'an offset-less ISO created is read as UTC (same key as the Z form)');
+const u3 = hook.deliveryKey(env, { created: '2026-09-03T10:00:00+02:00' }, 'x', '2026-09-03');
+ok(u3.keyed && u3.material !== u2.material, 'an explicit offset is honoured, not overwritten');
+
 console.log(`\ntest-class-callbacks-cli-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

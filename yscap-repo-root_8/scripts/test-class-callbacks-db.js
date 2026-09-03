@@ -410,6 +410,21 @@ async function main() {
   ok(await countFor(`Oversize-${tag}`) === 2,
      'but a real retry of the same oversize body still collapses — dedupe is not lost to the fix');
 
+  // 4. THE SAME PROOF ON THEIR KEYED PATH. With `created` present the dedupe key is
+  //    orderId + eventName + created + a digest of the content. Two different oversize
+  //    bodies sharing all three of their fields must STILL be two rows — the digest is
+  //    what keeps them apart — and a retry with a moved `sent` must still collapse.
+  const kc = new Date().toISOString();
+  const bigK = (fill, sent) => ({ ...big(fill), eventName: `OversizeKeyed-${tag}`, created: kc, sent: sent || kc });
+  const k1 = await post(bigK('a'), { Authorization: basic });
+  const k2 = await post(bigK('b'), { Authorization: basic });
+  ok(k1.status === 200 && k2.status === 200, 'both keyed oversize deliveries are accepted');
+  ok(await countFor(`OversizeKeyed-${tag}`) === 2,
+     'two DIFFERENT oversize bodies sharing orderId + eventName + created stay two rows');
+  await post(bigK('a', new Date(Date.now() + 5000).toISOString()), { Authorization: basic });
+  ok(await countFor(`OversizeKeyed-${tag}`) === 2,
+     'a keyed retry of the same oversize body (moved sent) still collapses to the existing row');
+
   await db.query('DELETE FROM class_callback_events WHERE event_name LIKE $1', [`%${tag}`]);
 
   // =========================================================================

@@ -106,13 +106,49 @@ function authed(req) {
 // created". A retry is NOT guaranteed byte-identical (the `sent` stamp moves), so a
 // payload hash alone would file a retry as a second event and process it twice. When
 // the envelope carries both an order id and a parseable `created`, the dedupe key is
-// exactly theirs; otherwise (a malformed or partial body, a marker) it falls back to
-// the payload bytes + the day, which still collapses a verbatim retry.
+// theirs — PLUS a digest of the content with the transport stamps (`sent`, `created`)
+// removed. Their three fields are the identity of a retry; the content digest is what
+// keeps two DIFFERENT legitimate events that happen to share all three (two notes on
+// one order in the same second, a status change re-fired with new data) from
+// silently collapsing to one. A retry carries the same content, so it still collapses.
+// Otherwise (a malformed or partial body, a marker) it falls back to the payload
+// bytes + the day, which still collapses a verbatim retry.
+//
+// `created` without a timezone is read as UTC: their examples are `…Z`, and
+// Date.parse treats an offset-less ISO string as LOCAL time, which would make the
+// same instant hash differently on two servers in two zones.
+const ISO_NO_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+const TRANSPORT_KEYS = new Set(['sent', 'Sent', 'created', 'Created']);
+function canonical(v, depth) {
+  if (depth > 64) throw new Error('too deep');
+  if (v === null || typeof v !== 'object') return JSON.stringify(v === undefined ? null : v);
+  if (Array.isArray(v)) return '[' + v.map((x) => canonical(x, depth + 1)).join(',') + ']';
+  const keys = Object.keys(v).sort();
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonical(v[k], depth + 1)).join(',') + '}';
+}
+function contentDigest(p, payload) {
+  let material;
+  try {
+    const rest = {};
+    for (const k of Object.keys(p || {})) if (!TRANSPORT_KEYS.has(k)) rest[k] = p[k];
+    material = canonical(rest, 0);
+  } catch (_) {
+    // Unserializable body: the stored payload is the marker carrying the raw-body
+    // digest, which is exactly as distinguishing as the content itself.
+    material = String(payload);
+  }
+  return crypto.createHash('sha256').update(material).digest('hex');
+}
 function deliveryKey(env, p, payload, day) {
   const createdRaw = p && (p.created != null ? p.created : p.Created);
-  const createdMs = createdRaw == null || createdRaw === '' ? NaN : Date.parse(String(createdRaw));
+  let createdStr = createdRaw == null || createdRaw === '' ? null : String(createdRaw).trim();
+  if (createdStr && ISO_NO_OFFSET.test(createdStr)) createdStr += 'Z';
+  const createdMs = createdStr == null ? NaN : Date.parse(createdStr);
   if (env.classOrderId && Number.isFinite(createdMs)) {
-    return { keyed: true, material: `k|${env.eventName}|${env.classOrderId}|${new Date(createdMs).toISOString()}` };
+    return {
+      keyed: true,
+      material: `k|${env.eventName}|${env.classOrderId}|${new Date(createdMs).toISOString()}|${contentDigest(p, payload)}`,
+    };
   }
   return { keyed: false, material: `${env.eventName}|${day}|${payload}` };
 }
@@ -217,4 +253,4 @@ router.post('/', receive);
 router.post('/:event', receive);
 
 module.exports = router;
-module.exports._internals = { authed, deliveryKey, envelope, sameSecret };
+module.exports._internals = { authed, deliveryKey, envelope, sameSecret, canonical, contentDigest };
