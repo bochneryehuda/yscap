@@ -1,4 +1,6 @@
 'use strict';
+
+const duplicatePrograms = require('./duplicate-programs');
 /**
  * LONG-TERM — NARROWING THE LOANNEX BOARD TO THE PRODUCT THE OFFICER ASKED FOR.
  *
@@ -271,6 +273,15 @@ function narrowProgramRungs(p, lockDays) {
  * those agree. Filtering later would leave the counts describing a board nobody sees.
  */
 function narrowBoard(board, want = {}) {
+  /* ⛔ THE SHEET'S OWN DUPLICATES COME OFF FIRST, and unconditionally — before the
+     "nothing was asked" shortcut below, which would otherwise hand back a board with
+     the duplicate still on it whenever the officer narrowed by nothing. A programme
+     published twice is noise on every board, not a preference. One call site, so both
+     engines get it — the owner asked for it off "the general pricing engine and not on
+     the combined pricing engine". */
+  const deduped = duplicatePrograms.dropDuplicates(board);
+  board = deduped.board;
+  const dupes = { duplicates: deduped.dropped, diverged: deduped.diverged };
   const programs = (board && Array.isArray(board.programs)) ? board.programs : null;
   const dropped = { amortization: 0, interestOnly: 0, term: 0, lock: 0 };
   // Rungs are counted separately from programmes because they are a different quantity: the lock
@@ -278,7 +289,7 @@ function narrowBoard(board, want = {}) {
   // read as "the lock dropped 3733 programmes" over a board of 90.
   const droppedRungs = { lock: 0 };
   if (!programs) {
-    return { board, kept: 0, dropped, droppedRungs, unclassified: 0, unclassifiedRungs: 0, narrowed: false };
+    return { board, kept: 0, dropped, droppedRungs, unclassified: 0, unclassifiedRungs: 0, narrowed: false, ...dupes };
   }
 
   const lock = Number.isFinite(want.lockDays) && want.lockDays > 0 ? want.lockDays : null;
@@ -287,7 +298,7 @@ function narrowBoard(board, want = {}) {
     && !(Array.isArray(want.termMonths) && want.termMonths.length)
     && lock == null;
   if (nothingAsked) {
-    return { board, kept: programs.length, dropped, droppedRungs, unclassified: 0, unclassifiedRungs: 0, narrowed: false };
+    return { board, kept: programs.length, dropped, droppedRungs, unclassified: 0, unclassifiedRungs: 0, narrowed: false, ...dupes };
   }
 
   const keep = [];
@@ -333,6 +344,7 @@ function narrowBoard(board, want = {}) {
     unclassified,
     unclassifiedRungs,
     narrowed: true,
+    ...dupes,
   };
 }
 

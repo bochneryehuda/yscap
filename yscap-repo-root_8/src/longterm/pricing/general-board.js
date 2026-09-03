@@ -114,6 +114,10 @@ async function boardForScenario(sc, deps, opts = {}) {
       transactionId: nxRes.value.transactionId || null,
       portal: nxRes.value.portal || null,
       droppedArm: (narrowed.dropped && narrowed.dropped.amortization) || 0,
+      // What the sheet published twice, and what it published twice that no longer
+      // prices alike — carried out so the board can account for every programme.
+      duplicates: narrowed.duplicates || [],
+      diverged: narrowed.diverged || [],
     };
   }
 

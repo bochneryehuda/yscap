@@ -82,8 +82,14 @@ const byInvestor = (programs) => {
   const armInSheet = NX_BOARD.programs.filter((p) => p.amortizationType === 'ARM').length;
   ok(armInSheet > 0, `GEN-6 the recorded LoanNEX sheet really does carry ARMs to exclude (${armInSheet} of ${NX_BOARD.programs.length})`);
   ok(armOnBoard === 0, `GEN-7 …and NONE of them reaches the general board (${armOnBoard})`);
-  ok(out.nx && out.nx.droppedArm === armInSheet,
-    `GEN-8 …the count dropped is stated, and equals the sheet's own ARM count (${out.nx && out.nx.droppedArm})`);
+  /* The sheet's ARMs leave by two doors now: the duplicate suppression takes its share
+     first, and the amortization filter takes the rest. The sum is what must equal the
+     sheet's own ARM count — asserting the filter alone would go stale the moment a
+     duplicate happened to be an ARM, which is exactly what happened. */
+  const armDupes = (out.nx && out.nx.duplicates ? out.nx.duplicates : [])
+    .filter((d) => /ARM/i.test(String(d.product || ''))).length;
+  ok(out.nx && (out.nx.droppedArm + armDupes) === armInSheet,
+    `GEN-8 …every one of them is accounted for: ${out.nx && out.nx.droppedArm} by the fixed-only rule + ${armDupes} that were duplicates = ${armInSheet}`);
 
   console.log('\n── THE LENDER PRICE HALF IS PASSED THROUGH UNTOUCHED ──');
   const direct = lpModel.parseFull(LP_RAW);
@@ -169,6 +175,49 @@ const byInvestor = (programs) => {
     const wording = (bd._internals && bd._internals.NO_BREAKDOWN) || null;
     ok(wording === null || /ours to fix/i.test(String(wording.quote_incomplete || '')),
       'IDENT-5 …and the screen says it is ours, not the rate sheet refusing');
+  }
+
+  console.log('\n\u2500\u2500 A PROGRAMME THE SHEET PUBLISHES TWICE \u2500\u2500');
+  {
+    /* Owner-reported: *"BUSINESS PURPOSE / DSCR (5% Fixed) · 30 Yr. Fixed… is just a
+       duplicate. It's the same pricing… not on the general pricing engine and not on
+       the combined pricing engine."* Verified before it was believed: 102 rungs each,
+       every one matching on rate, lock AND price. */
+    const pf = require(path.join(ROOT, 'src/longterm/pricing/product-filter.js'));
+    const dupes = require(path.join(ROOT, 'src/longterm/pricing/duplicate-programs.js'));
+    const nexParse3 = require(path.join(ROOT, 'src/longterm/loannex/parse.js'));
+    const full = nexParse3.parse(require(path.join(ROOT, 'src/longterm/loannex/capture/quick-prices.json')).response);
+    const has = (b, prog, prod) => (b.programs || []).some((p) => p.program === prog && p.product === prod);
+
+    ok(has(full, 'BUSINESS PURPOSE / DSCR (5% Fixed)', '30 Yr. Fixed'),
+      'DUP-1 the recorded sheet really does publish the duplicate, so there is something to drop');
+    const r = pf.narrowBoard(full, {});
+    ok(!has(r.board, 'BUSINESS PURPOSE / DSCR (5% Fixed)', '30 Yr. Fixed'),
+      'DUP-2 …and it is gone from the board');
+    ok(has(r.board, 'BUSINESS PURPOSE / DSCR', '30 Yr. Fixed'),
+      'DUP-3 …while the programme it duplicates stays, which is the whole point');
+    ok(Array.isArray(r.duplicates) && r.duplicates.length > 0 && r.duplicates.every((d) => d.duplicateOf),
+      `DUP-4 what was dropped is REPORTED, with what it duplicated (${r.duplicates.length} products)`);
+    ok(Array.isArray(r.diverged) && r.diverged.length === 0,
+      'DUP-5 …and nothing was suppressed whose pricing no longer matches its twin');
+
+    /* ⛔ THE SUPPRESSION IS CHECKED, NOT TRUSTED. Two programmes that price alike today
+       can diverge tomorrow, and a list that goes on hiding one would drop real pricing
+       on the screen an officer quotes from. Move one price and it must be KEPT. */
+    const moved = JSON.parse(JSON.stringify(full));
+    const five = moved.programs.find((p) => p.program === 'BUSINESS PURPOSE / DSCR (5% Fixed)' && p.product === '30 Yr. Fixed');
+    five.rungs[0].price = Number(five.rungs[0].price) + 0.5;
+    const r2 = pf.narrowBoard(moved, {});
+    ok(has(r2.board, 'BUSINESS PURPOSE / DSCR (5% Fixed)', '30 Yr. Fixed'),
+      'DUP-6 a suppressed programme whose pricing DIVERGES is kept, not hidden');
+    ok(r2.diverged.some((d) => d.program === 'BUSINESS PURPOSE / DSCR (5% Fixed)'),
+      'DUP-7 …and it is named, so somebody finds out the day the assumption breaks');
+
+    /* And a lone programme is never hidden just because a list names it. */
+    const alone = { programs: (full.programs || []).filter((p) => p.program === 'BUSINESS PURPOSE / DSCR (5% Fixed)') };
+    const r3 = dupes.dropDuplicates(alone);
+    ok(r3.board.programs.length === alone.programs.length && r3.dropped.length === 0,
+      'DUP-8 with no twin on the board there is no duplicate, so nothing is dropped');
   }
 
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);
