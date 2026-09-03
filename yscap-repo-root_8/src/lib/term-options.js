@@ -31,7 +31,9 @@ const MIN_INTEREST_DETAIL =
   'This loan carries a 3-month minimum earned interest provision: if the loan pays off before three full months of interest have accrued, the remainder of that minimum is due at payoff. This is an interest floor / minimum earned-interest provision, not a prepayment penalty.';
 
 /* ---------------- 3-month minimum earned interest ---------------- */
-// Default by program: ON for a manual/custom product, OFF for Standard/Gold.
+// Default by program: ON for a manual/custom product, OFF for Standard/Gold/Silver — and
+// OFF for Speed (2026-09-03), which is ON only if it is ON for Standard OR Silver: both are
+// OFF, so the composition is OFF. The studio's explicit per-file flag still wins below.
 function defaultMinInterest(program) {
   return String(program || '').toLowerCase() === 'manual';
 }
@@ -124,7 +126,8 @@ function guarantySummary({ borrowerName, coBorrowerName, pgWaived } = {}) {
  * $299 hybrid draw the borrower could never actually order. Offering a price for a service that
  * cannot be delivered is worse than not naming it.
  *
- * @param {string} program  'gold' | 'standard' | 'silver'
+ * @param {string} program  'gold' | 'standard' | 'silver' | 'speed' (Speed follows its
+ *        Standard/Silver parents — the $299 / $499 lines; only Gold differs)
  * @param {{groundUp?:boolean}} [opts]  the deal's own kind; absent = unchanged (every existing
  *        caller is byte-identical, which is why this is an option rather than a new argument).
  */

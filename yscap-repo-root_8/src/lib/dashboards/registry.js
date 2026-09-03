@@ -81,6 +81,7 @@ const REGISTERED_PROGRAM_OPTIONS = [
   { v: 'standard', label: 'Standard' },
   { v: 'gold', label: 'Gold Standard' },
   { v: 'silver', label: 'Silver' },
+  { v: 'speed', label: 'Speed' },
   { v: 'manual', label: 'Manual / custom' },
 ];
 

@@ -536,12 +536,16 @@ function buildPricingToolCells(loan, opts = {}) {
  * This is EMCAP's own guideline sheet, so it is offered on an EMCAP loan: the
  * file's capital provider is EMCAP (the tape's ENUMERATED alias list — the same
  * closed list, never a fuzzy match, because this direction sends our borrower's
- * figures out of the building), OR the file is registered on the program EMCAP
- * buys (Silver — `program-provider.js`). Either alone is enough: a file often
- * carries the program before anyone sets the provider, and the whole point of the
- * sheet is to ask EMCAP before the loan is theirs.
+ * figures out of the building), OR the file is registered on a program EMCAP
+ * buys (Silver, and since 2026-09-03 Speed — `program-provider.js`
+ * programMatchesBuyer; the wording below lists them through buyer-rule's derived
+ * `programsForProvider`, never a hand-kept pair). Either alone is enough: a file
+ * often carries the program before anyone sets the provider, and the whole point
+ * of the sheet is to ask EMCAP before the loan is theirs.
  */
 function emcapAvailability(loan) {
+  const br = require('./buyer-rule');
+  const emcapPrograms = br.programsLabel(br.programsForProvider(emcapTape.buyerKey));
   const raw = loan && loan.noteBuyerRaw;
   const buyerKey = normNoteBuyer(raw);
   const program = (loan && loan.registration && loan.registration.program) || null;
@@ -556,8 +560,8 @@ function emcapAvailability(loan) {
     program,
     why: available ? null
       : (raw
-        ? `This file's capital provider is "${String(raw).trim()}" and it isn't registered on the ${programProvider.programLabel('silver')} program. The EMCAP pricing & eligibility tool is EMCAP's own sheet — set the capital provider to EMCAP, or register the file as ${programProvider.programLabel('silver')}.`
-        : `This file has no capital provider set and isn't registered on the ${programProvider.programLabel('silver')} program. The EMCAP pricing & eligibility tool is EMCAP's own sheet — set the capital provider to EMCAP, or register the file as ${programProvider.programLabel('silver')}.`),
+        ? `This file's capital provider is "${String(raw).trim()}" and it isn't registered on the ${emcapPrograms} program. The EMCAP pricing & eligibility tool is EMCAP's own sheet — set the capital provider to EMCAP, or register the file as ${emcapPrograms}.`
+        : `This file has no capital provider set and isn't registered on the ${emcapPrograms} program. The EMCAP pricing & eligibility tool is EMCAP's own sheet — set the capital provider to EMCAP, or register the file as ${emcapPrograms}.`),
   };
 }
 

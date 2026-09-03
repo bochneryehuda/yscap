@@ -117,7 +117,7 @@ function isUntouched(inst) {
     && !inst.signed_off_at && !inst.reviewed_at && !inst.has_payload && !inst.has_docs && !inst.notes;
 }
 
-/** The file's registered program ('gold' | 'standard' | 'silver' | 'manual' | null). */
+/** The file's registered program ('gold' | 'standard' | 'silver' | 'speed' | 'manual' | null). */
 async function registeredProgram(appId, client = db) {
   try {
     const r = await client.query(

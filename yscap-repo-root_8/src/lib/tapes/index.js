@@ -41,6 +41,7 @@ const {
   BuyerMismatchError, NotRegisteredError, ProgramMismatchError, ManualAdminOnlyError,
   TapeNotFoundError, LoanNotFoundError,
   loanBuyerKey, buyerMatches, assertBuyer, exportGate, assertExportAllowed, tapeAvailability,
+  programsForProvider, programsLabel,
 } = require('./buyer-rule');
 
 // The loan's registered program (product_registrations.program) drives the
@@ -256,6 +257,8 @@ module.exports = {
   exportGate,
   assertExportAllowed,
   loanRegisteredProgram,
+  programsForProvider,
+  programsLabel,
   BuyerMismatchError,
   NotRegisteredError,
   ProgramMismatchError,

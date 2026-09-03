@@ -1,5 +1,6 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { moneyNum } from '../lib/money.js';
+import { programLabel } from '../lib/programLabel.js';
 
 /* The REAL static Term Sheet Studio (web/tools/term-sheet.html) embedded in
    the portal through a same-origin iframe. The static page and its frozen
@@ -249,18 +250,22 @@ export function readSnapshot(win) {
   const chk = (id) => { const e = doc.getElementById(id); return !!(e && e.checked); };
   const active = (id) => { const e = doc.getElementById(id); return !!(e && e.classList.contains('pcard-active')); };
   const program = active('pcardGold') ? 'gold' : active('pcardSilver') ? 'silver'
-    : active('pcardManual') ? 'manual' : active('pcardStd') ? 'standard' : null;
+    : active('pcardSpeed') ? 'speed' : active('pcardManual') ? 'manual' : active('pcardStd') ? 'standard' : null;
   const missBox = doc.getElementById('rMissing');
   const ready = !!missBox && missBox.style.display === 'none';
   const missing = missBox ? Array.from(missBox.querySelectorAll('li')).map((li) => li.textContent) : [];
-  let std = null, gold = null, silver = null;
+  let std = null, gold = null, silver = null, speed = null;
   try { std = win.TS._calc(); } catch (_) { /* engine not ready yet */ }
   try { gold = win.TS._calcGold(); } catch (_) { /* gold engine optional */ }
   try { silver = win.TS._calcSilver && win.TS._calcSilver(); } catch (_) { /* silver engine optional */ }
+  // Speed (2026-09-03) is the studio's own composition of Standard and Silver —
+  // read exactly like Silver, from the studio's calc, never recomputed here.
+  try { speed = win.TS._calcSpeed && win.TS._calcSpeed(); } catch (_) { /* speed engine optional */ }
   const d = program === 'gold' && gold && !gold.unavailable ? gold
-    : program === 'silver' && silver && !silver.unavailable ? silver : std;
+    : program === 'silver' && silver && !silver.unavailable ? silver
+    : program === 'speed' && speed && !speed.unavailable ? speed : std;
   return {
-    program, ready, missing, std, gold, silver, d,
+    program, ready, missing, std, gold, silver, speed, d,
     fields: {
       entityName: val('entityName'), borrowerName: val('borrowerName'), coBorrowerName: val('coBorrowerName'), propAddr: val('propAddr'), addrTBD: chk('addrTBD'),
       dealPurpose: val('dealPurpose'), dealType: val('dealType'),
@@ -407,7 +412,7 @@ export function selectionFromSnapshot(snap) {
     source: 'term-sheet-studio',
     selectedAt: new Date().toISOString(),
     program: snap.program,
-    programLabel: snap.program === 'gold' ? 'Gold Standard Program' : snap.program === 'silver' ? 'Silver Program' : snap.program === 'manual' ? 'Manual Program' : 'Standard Program',
+    programLabel: programLabel(snap.program),
     strategy: snap.fields.dealType,
     purpose: snap.fields.dealPurpose,
     status: d.status || null,

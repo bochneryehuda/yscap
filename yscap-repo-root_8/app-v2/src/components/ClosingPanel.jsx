@@ -386,10 +386,11 @@ function DealDetails({ appId, app, structure }) {
               <Tile k="Original purchase price" v={money0(price.original)} sub="Seller's contract" />
               <Tile k="Assignment fee" v={money0(price.fee)} sub="Paid to the wholesaler" />
               {/* The capped basis gets its OWN label and shows only when the fee
-                  is over the 15% cap, so it can never be read as the price. */}
+                  is over the program's cap (15%; 10% on Speed), so it can never be
+                  read as the price. The share is read off the registered quote. */}
               {price.effective != null && (
                 <Tile k="Effective purchase price" v={money0(price.effective)}
-                  sub={`The loan sizes on this — the fee counts up to 15% of the original contract price${
+                  sub={`The loan sizes on this — the fee counts up to ${Math.round((price.capPct || 0.15) * 100)}% of the original contract price${
                     price.excessOutOfPocket ? `; ${money0(price.excessOutOfPocket)} is extra cash at closing` : ''}`} />
               )}
             </>

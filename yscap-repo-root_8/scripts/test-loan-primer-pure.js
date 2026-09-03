@@ -138,6 +138,18 @@ async function main() {
     assert(/ASSIGNMENT: seller contract \$100,000 \+ fee \$20,000/.test(asg), 'assignment line rendered with both parts');
   });
 
+  // Speed (2026-09-03) — taught as a real, COMPOSED program, never an unknown one.
+  await check('PRIMER_TEXT teaches the Speed Program as a real, composed program', () => {
+    const t = p.PRIMER_TEXT;
+    assert(/'silver' \(Silver Program — the EMCAP product\), 'speed' \(Speed Program\)/.test(t),
+      'speed is in the authoritative registered_program ENUMERATION, right after silver (not merely mentioned elsewhere)');
+    assert(/speed.{0,80}real,?\s*fully-valid program/i.test(t), 'speed is taught as a valid program, not unknown');
+    assert(/stricter of the two on every cap/i.test(t), 'the composition rule is stated');
+    assert(/\$1,000,000/.test(t) && /financeable at 10%/.test(t), 'the $1,000,000 maximum and the 10% assignment fee are stated');
+    assert(/sold to Fidelis OR EMCAP/.test(t), 'sold to Fidelis or EMCAP — the staff-only primer may name buyers, as it does for Silver/EMCAP');
+    assert(/blank note buyer on a Speed file is normal/.test(t), 'a blank buyer on a Speed file is taught as normal, not a gap');
+  });
+
   console.log(`\nloan-primer: ${n} checks passed`);
 }
 

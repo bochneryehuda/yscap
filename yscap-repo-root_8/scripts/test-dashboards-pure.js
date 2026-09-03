@@ -254,5 +254,14 @@ console.log('\n14. the editor never shows a "how many" the card is not using');
     'and the period dropdown re-seeds on that same shared rule');
 }
 
+console.log('\nSpeed Program (2026-09-03) — the registered-program filter offers it');
+{
+  const regProg = registry.FILTER_FIELDS.find((f) => f.key === 'registered_program');
+  const opts = (regProg && regProg.options) || [];
+  ok(opts.some((o) => o.v === 'speed' && o.label === 'Speed'), 'the registered_program filter offers { speed: "Speed" }');
+  ok(opts.findIndex((o) => o.v === 'speed') === opts.findIndex((o) => o.v === 'silver') + 1,
+    'right after Silver (the fourth program sits where the third does), before Manual');
+}
+
 console.log(`\ndashboards-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

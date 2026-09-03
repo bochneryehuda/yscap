@@ -34,7 +34,7 @@ const OFF = { programAvailability: { gold: { active: false, note: 'The Gold Stan
 const EXC_APP = { program_exceptions: { gold: { by: 'u-1', byName: 'Owner', at: '2026-08-18T00:00:00Z', reason: 'already in process' } } };
 
 // ── A. the truth table ────────────────────────────────────────────────────────
-assert(pa.PROGRAM_KEYS.join(',') === 'standard,gold,silver', 'A1 the three marketed programs, and only them, are togglable');
+assert(pa.PROGRAM_KEYS.join(',') === 'standard,gold,silver,speed', 'A1 the four marketed programs (Speed joined 2026-09-03), and only them, are togglable');
 assert(pa.programActive('gold', {}) === true && pa.programActive('gold', null) === true,
   'A2 no settings / empty settings → every program active');
 assert(pa.programActive('gold', OFF) === false && pa.programActive('standard', OFF) === true && pa.programActive('silver', OFF) === true,

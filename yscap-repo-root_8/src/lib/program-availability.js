@@ -44,12 +44,14 @@
 
 const { programKey } = require('./vesting-program-rule');
 
-// The three MARKETED pricing programs — the only ones an admin may switch off.
+// The MARKETED pricing programs — the only ones an admin may switch off.
 // 'manual' is deliberately absent: it is the admins' own custom-priced product
 // (every manual registration already routes to approval) and switching it off
 // would remove the exception path itself.
-const PROGRAM_KEYS = ['standard', 'gold', 'silver'];
-const PROGRAM_LABEL = { standard: 'Standard', gold: 'Gold Standard', silver: 'Silver' };
+// 'speed' joined 2026-09-03 (owner-directed): the Speed Program, a composition of
+// Standard and Silver, marketed and togglable like the other three.
+const PROGRAM_KEYS = ['standard', 'gold', 'silver', 'speed'];
+const PROGRAM_LABEL = { standard: 'Standard', gold: 'Gold Standard', silver: 'Silver', speed: 'Speed' };
 
 /** The pre-filled wording (owner: "Pre-fill the saying that the gold program is
  *  discontinued") — an admin may replace it per program in the Pricing Admin

@@ -31,6 +31,14 @@ const PROVIDER_FOR_PROGRAM = Object.freeze({
   silver: 'emcap',
 });
 
+// THE SPEED PROGRAM (owner-directed 2026-09-03) MAY BE SOLD TO EITHER OF ITS TWO
+// PARENTS' BUYERS — it is the stricter of Standard and Silver on every axis, so a
+// Speed loan is one Fidelis would buy AND one EMCAP would buy. It therefore has NO
+// single implied provider (providerForProgram → null, so registration leaves the
+// buyer for the team to choose, exactly like Manual) but it DOES match both in the
+// export gate: once the file's buyer is set, that buyer's tape may be exported.
+const PROVIDERS_FOR_PROGRAM = Object.freeze({ speed: Object.freeze(['fidelis', 'emcap']) });
+
 // The reverse: capital-provider key → the program a loan must be registered as.
 const PROGRAM_FOR_PROVIDER = Object.freeze(
   Object.fromEntries(Object.entries(PROVIDER_FOR_PROGRAM).map(([p, b]) => [b, p]))
@@ -43,7 +51,7 @@ const PARKED_PROGRAMS = Object.freeze(new Set([]));
 
 // Plain-language program labels for messages (staff-facing).
 const PROGRAM_LABEL = Object.freeze({
-  gold: 'Gold', standard: 'Standard', silver: 'Silver', manual: 'Manual',
+  gold: 'Gold', standard: 'Standard', silver: 'Silver', speed: 'Speed', manual: 'Manual',
 });
 
 function normProgram(program) { return String(program || '').trim().toLowerCase(); }
@@ -62,7 +70,16 @@ function programForProvider(buyerKey) {
 function programMatchesBuyer(program, buyerKey) {
   if (!buyerKey) return false;
   const p = normProgram(program);
-  return !!p && PROVIDER_FOR_PROGRAM[p] === buyerKey;
+  if (!p) return false;
+  if (PROVIDERS_FOR_PROGRAM[p]) return PROVIDERS_FOR_PROGRAM[p].includes(buyerKey);
+  return PROVIDER_FOR_PROGRAM[p] === buyerKey;
+}
+
+// Every provider a program may be sold to (one for the paired programs, two for Speed, none for manual).
+function providersForProgram(program) {
+  const p = normProgram(program);
+  if (PROVIDERS_FOR_PROGRAM[p]) return PROVIDERS_FOR_PROGRAM[p].slice();
+  return PROVIDER_FOR_PROGRAM[p] ? [PROVIDER_FOR_PROGRAM[p]] : [];
 }
 
 function programLabel(program) {
@@ -71,6 +88,6 @@ function programLabel(program) {
 }
 
 module.exports = {
-  PROVIDER_FOR_PROGRAM, PROGRAM_FOR_PROVIDER, PARKED_PROGRAMS, PROGRAM_LABEL,
-  normProgram, providerForProgram, programForProvider, programMatchesBuyer, programLabel,
+  PROVIDER_FOR_PROGRAM, PROVIDERS_FOR_PROGRAM, PROGRAM_FOR_PROVIDER, PARKED_PROGRAMS, PROGRAM_LABEL,
+  normProgram, providerForProgram, providersForProgram, programForProvider, programMatchesBuyer, programLabel,
 };

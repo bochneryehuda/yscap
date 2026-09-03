@@ -49,7 +49,7 @@ const DEFAULT_CAPS = {
 // maxLTC=0.93 (web/tools/gold-standard.js), and the acq LTV / ARV LTV highs are 0.90 / 0.75 across
 // both program families. If the frozen matrix ever moves, this table stays a SAFE overestimate — a
 // looser fallback never TIGHTENS a validly-registered loan into a false over-leverage finding.
-// Program name is the value on product_registrations.program ('standard' | 'gold' | 'manual').
+// Program name is the value on product_registrations.program ('standard' | 'gold' | 'silver' | 'speed' | 'manual').
 const PROGRAM_HIGHEST_CAPS = {
   standard: { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.925 },
   manual:   { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.925 },   // Manual prices on the Standard engine.
@@ -62,6 +62,15 @@ const PROGRAM_HIGHEST_CAPS = {
   // own caps; a current Silver registration measures against its exact per-tier caps.
   silver:   { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.925 },
 };
+// THE SPEED PROGRAM (owner-directed 2026-09-03) is the LESSER of Standard and Silver on every
+// cap, so its fallback ceiling is the ELEMENTWISE MIN of those two rows — DERIVED here at load,
+// never a hand-typed fourth row that could drift from its parents. Still a SAFE ceiling for the
+// same reason the rows above are: the composition can never price looser than the tighter
+// parent, so measuring against this can only reduce false over-leverage findings, never add one.
+PROGRAM_HIGHEST_CAPS.speed = Object.freeze(Object.fromEntries(
+  Object.keys(PROGRAM_HIGHEST_CAPS.standard).map((k) =>
+    [k, Math.min(PROGRAM_HIGHEST_CAPS.standard[k], PROGRAM_HIGHEST_CAPS.silver[k])])
+));
 
 // Build a caps override from a file's REGISTERED engine caps (quote.caps fractions) so the leverage
 // metrics measure against the EXACT per-tier caps the loan was sized under — not a generic default.
@@ -192,4 +201,4 @@ function computeMetrics(econ = {}, caps = DEFAULT_CAPS) {
   return { loanAmount: loan, initialAdvance: initial, metrics, maxLoan, binding, findings };
 }
 
-module.exports = { computeMetrics, capsFromRegistration, DEFAULT_CAPS, _internals: { round2, pct, money } };
+module.exports = { computeMetrics, capsFromRegistration, DEFAULT_CAPS, _internals: { round2, pct, money, PROGRAM_HIGHEST_CAPS } };

@@ -111,4 +111,13 @@ ok(!noMin.meta.some((m) => m.label && /First payment/.test(m.label)), 'no first-
     'and it is across the board — no program, state or deal-type test anywhere in the wording');
 }
 
+// ---- the Speed Program (2026-09-03) follows its Standard/Silver parents, nothing of its own ----
+eq(to.defaultMinInterest('speed'), false, 'speed default OFF (ON only if ON for Standard OR Silver — both are OFF)');
+eq(to.resolveMinInterest('speed', undefined), false, 'speed resolves OFF by default');
+eq(to.resolveMinInterest('speed', true), true, 'the explicit per-file flag still wins on speed');
+ok(to.drawFeeLines('speed').join(' | ') === to.drawFeeLines('standard').join(' | '),
+  'speed draw fees read exactly as Standard\'s ($299 hybrid / $499 physical)');
+ok(to.drawFeeLines('speed', { groundUp: true }).join(' | ') === to.drawFeeLines('silver', { groundUp: true }).join(' | '),
+  'and a Speed ground-up reads exactly as a Silver ground-up (physical only)');
+
 console.log(`term-options pure tests passed (${n} assertions).`);
