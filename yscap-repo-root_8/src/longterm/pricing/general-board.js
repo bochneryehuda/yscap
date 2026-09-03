@@ -42,6 +42,8 @@ const routing = require('./investor-routing');
 const quoteShape = require('./quote-shape');
 const vendorMargin = require('./vendor-margin');
 const productFilter = require('./product-filter');
+const investorConfig = require('./investor-config');
+const investorLinks = require('./investor-links');
 
 /** The reason a vendor call did not produce a board, in one short phrase. */
 function reasonOf(e) {
@@ -59,6 +61,39 @@ function expectedFromLoanNex(rows) {
     if (r && r.enabled && r.source === 'loannex') out.push(r.key);
   }
   return out;
+}
+
+/**
+ * THE CONFIGURATION ONE SEARCH RUNS UNDER, READ ONCE.
+ *
+ * The bracket loop asks the sheets once PER DSCR BAND. Reading the settings inside that
+ * loop would spend a settings round trip per band and — worse — could price two bands
+ * under two different configurations if somebody saved between them. Read here, passed
+ * down, so every band of one search runs under one answer.
+ *
+ * `wantLoanNex` is the cheap question that keeps this free when it is not needed: with
+ * nobody routed to LoanNEX there is nothing to ask it for, and the board is built from
+ * Lender Price exactly as it always was, with no second vendor call at all.
+ */
+async function loadConfig(opts = {}) {
+  const customCtx = await investorConfig.customRaw();
+  const custom = customCtx.custom;
+  const saved = opts.routes !== undefined ? { raw: opts.routes } : await investorConfig.investorsRaw();
+  const links = opts.links !== undefined ? { raw: opts.links } : await investorConfig.linksRaw();
+  const heldSetting = opts.marginHoldback !== undefined ? opts.marginHoldback : await investorConfig.holdbackRaw();
+  const investorRows = routing.readSettings(saved.raw, custom).settings;
+  const linkMap = investorLinks.readLinks(links.raw, custom).links;
+  const roster = settingsOf.roster(investorRows, custom);
+  return {
+    routes: saved.raw,
+    custom,
+    links: links.raw,
+    settings: investorRows,
+    heldSetting,
+    extraFor: routing.extraResolver(investorRows, linkMap, custom),
+    wantLoanNex: expectedFromLoanNex(roster).length > 0,
+    problem: saved.problem || customCtx.problem || null,
+  };
 }
 
 /**
@@ -127,7 +162,8 @@ async function boardForScenario(sc, deps, opts = {}) {
       : (!nxOk && opts.wantLoanNex !== false ? 'the rate sheet returned no board' : null),
   };
 
-  const mergedRaw = merge.merge({ lenderprice: lpBoard, loannex: nxBoard }, { errors, links, custom });
+  const mergedRaw = merge.merge({ lenderprice: lpBoard, loannex: nxBoard },
+    { errors, links, custom, settings: opts.settings || null });
   const routed = routing.applyRouting(mergedRaw, { routes, custom, revealSource: false });
 
   /* THE SEARCH EVERY LOANNEX ROW WAS QUOTED FOR. A rung states no loan amount,
@@ -174,4 +210,4 @@ async function boardForScenario(sc, deps, opts = {}) {
   };
 }
 
-module.exports = { boardForScenario, _internals: { reasonOf, expectedFromLoanNex } };
+module.exports = { boardForScenario, loadConfig, _internals: { reasonOf, expectedFromLoanNex } };

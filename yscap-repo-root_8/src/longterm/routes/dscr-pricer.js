@@ -18,6 +18,12 @@ const lp = require('../lenderprice/client');
 // never filters, narrows or re-orders anything — the display overlay lives on
 // the screen, and the search always asks for everything.
 const investorPrograms = require('../lenderprice/investor-programs');
+const generalBoard = require('../pricing/general-board');
+/* THE SECOND RATE SHEET. Required here so the bracket loop can hand both clients to
+   `generalBoard`; it is never called unless an investor is routed to it, and a portal
+   with no credentials simply refuses, which leaves the board Lender Price's alone —
+   exactly what this screen did before. */
+const nex = require('../loannex/client');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
 const zipCounty = require('../lenderprice/zip-county');
 const settingsStore = require('../settings/store');
@@ -325,25 +331,43 @@ async function priceBrackets(req, res) {
   // echoing what the vendor understood and where the pricing config came from.
   let firstRequest = null;
   let provenance = null;
+  /* ⛔ THE ONE PLACE THE SECOND RATE SHEET ENTERS THIS SCREEN (owner-directed 2026-09-03:
+     *"we're just adding a new source for these investors"*). The configuration is read
+     ONCE for the whole search — not per band, which would spend a settings round trip on
+     every band and could price two bands under two different configurations if somebody
+     saved between them. With nobody routed to LoanNEX this costs nothing and no second
+     vendor call is made at all. */
+  const cfg = await generalBoard.loadConfig({
+    routes: body.routes, links: body.links, marginHoldback: body.marginHoldback,
+  });
+
   const runSearch = async (dscr) => {
     // A null ratio is the officer's own scenario, untouched — the probe.
     const one = dscr == null ? sc : Object.assign({}, sc, { dscr });
-    const r = await lp.price(one);
+    /* Both sheets, at once, for THIS band. The Lender Price half is passed through
+       untouched but for its programme list, so the bracket loop, the board and the
+       details panel below read exactly what they read before. */
+    const r = await generalBoard.boardForScenario(one, { lp, nex, investorPrograms }, cfg);
     if (!r.ok) return { ok: false, error: r.error || 'lp_price_failed', message: r.message || null, http: r.http || null };
     if (firstRequest == null) { firstRequest = r.request; provenance = r.provenance || null; }
-    /* ⛔ THE FULL PARSE, NOT THE SUMMARY. A band has to render with the SAME code the
-       whole board renders with — the same rows, the same lender grouping, the same
-       details panel behind each quote (the owner: *"Every rate and every investor
-       added, but that whole section should be divided in brackets, and it should work
-       the same"*). The details panel is built on `priceBuild` / the itemised LLPAs,
-       which only `parseFull` carries; the summary parse would give a thinner second
-       board beside the real one, which is exactly what was rejected. */
-    const parsed = lp.parseFull(r.raw);
-    const deco = investorPrograms.decorate(parsed.programs);
+    /* ⛔ THE FULL PARSE, NOT THE SUMMARY — done inside `boardForScenario`, which returns
+       the same `parseFull` answer with only its programme list replaced. A band has to
+       render with the SAME code the whole board renders with (the owner: *"Every rate and
+       every investor added, but that whole section should be divided in brackets, and it
+       should work the same"*), and the details panel is built on `priceBuild` / the
+       itemised LLPAs, which only the full parse carries. */
     return {
       ok: true,
-      parsed: Object.assign({}, parsed, { programs: deco.programs }),
-      meta: { searchKey: r.searchKey, sentDscr: dscr, pricedAt: parsed.pricedAt || null },
+      parsed: r.parsed,
+      meta: {
+        searchKey: r.searchKey,
+        sentDscr: dscr,
+        pricedAt: r.parsed.pricedAt || null,
+        // Investors this search expected from the second sheet and did not get. Carried
+        // out for the review record; the board itself says nothing about them.
+        missingFromLoanNex: r.missing,
+        sources: r.sources,
+      },
     };
   };
 
