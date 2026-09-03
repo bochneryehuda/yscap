@@ -135,30 +135,49 @@ ok(/r\.control = String\(row\.control_status/.test(hubSrc), 'a room re-created a
 // check, under any name. An rrweb stream is stateful; one dropped batch desynchronises
 // the mirror for the session.
 {
-  // THE WINDOW STARTS AT THE FUNCTION'S OWN BOUNDARY, not at the type check. The
-  // first version began at `if (t !== 'rrweb'` — three lines above the relay — and a
-  // cap placed ABOVE that line walked it while reproducing the outage exactly
-  // (pre-merge audit, 2026-09-02). A positional window is only as wide as somebody
-  // remembered to make it, so this one covers everything from the message arriving
-  // to the relay, and every DELIBERATE early exit is named. A new `return` that is
-  // not on this list fails, wherever it is put.
-  const from = hubSrc.indexOf('function onGuestMessage');
-  const to = hubSrc.indexOf('broadcastViewers(r, text);');
-  ok(from > 0 && to > from, 'the relay path is where this suite expects it in hub.js');
+  // ⛔ THE WHOLE RELAY CHAIN, NOT A TEXT WINDOW ENDING AT THE CALL. Version one began at
+  // the type check and a cap three lines above it walked in. Version two began at the
+  // function, and the audit walked it three more ways: a cap inside `broadcastViewers`
+  // ONE LINE below the relay call, a cap inside `send`, and — inside the window — a cap
+  // whose trailing `//` comment quoted an allow-list entry, because `strip()` removes
+  // whole-line comments but not trailing ones. All three reproduced the outage at 252/0.
+  //
+  // So: every function the batch passes through on its way out, scanned with trailing
+  // comments removed, and each deliberate exit anchored to the start of its statement
+  // rather than matched anywhere in the line.
+  const fn = (name) => {
+    const at = hubSrc.indexOf(`function ${name}`);
+    ok(at > 0, `hub.js still has ${name}(), where this suite expects it`);
+    if (at < 0) return '';
+    // To the next top-level `function ` declaration, or the end.
+    const next = hubSrc.indexOf('\nfunction ', at + 1);
+    return hubSrc.slice(at, next > 0 ? next : hubSrc.length);
+  };
+  const RELAY_CHAIN = ['send', 'broadcastViewers', 'onGuestMessage'];
+  // Each entry is the START of a whole statement, named specifically enough that a NEW
+  // refusal cannot wear one as a disguise. `if (len > MAX_MESSAGE_BYTES)` is on the list;
+  // `if (len > 1024 * 1024)` is not, and that is the point.
   const ALLOWED = [
-    'closeWs(ws, 1009,',        // one message over the hard cap: a connection-level refusal
-    'closeWs(ws, 1008,',        // the per-window byte budget: also connection-level
-    'if (isBinary) return;',    // Phase A speaks JSON text only
-    'catch (_) { return; }',    // unparseable JSON
-    "if (t === 'ping')",        // answered, not relayed
-    "if (t !== 'rrweb'",        // an unknown kind is dropped, never relayed
+    'if (len > MAX_MESSAGE_BYTES)',                    // one message over the hard cap: a connection-level refusal
+    'if (r.bytesWindow > BUDGET_BYTES)',               // the per-window byte budget: also connection-level
+    'if (isBinary) return;',                           // Phase A speaks JSON text only
+    'try { const m = JSON.parse(text);',               // unparseable JSON is dropped, never relayed
+    "if (t === 'ping')",                               // answered, not relayed
+    "if (t !== 'rrweb'",                               // an unknown kind is dropped, never relayed
+    'if (!ws || ws.readyState !== 1) return false;',   // send(): a socket that is not open
+    'try { ws.send(',                                  // send(): its own success / failure return
   ];
-  const body = hubSrc.slice(from, to);
-  const strays = body.split('\n')
-    .filter((l) => /\breturn\b/.test(l) && !ALLOWED.some((a) => l.includes(a)))
-    .map((l) => l.trim());
+  const strays = [];
+  for (const name of RELAY_CHAIN) {
+    for (const raw of fn(name).split('\n')) {
+      const line = raw.replace(/\/\/.*$/, '').trim();          // trailing comments cannot excuse a return
+      if (!/\breturn\b/.test(line)) continue;
+      if (ALLOWED.some((a) => line.startsWith(a))) continue;   // anchored, not `includes`
+      strays.push(`${name}: ${line}`);
+    }
+  }
   ok(strays.length === 0,
-    `nothing new refuses a batch between arrival and the relay — no cap of any kind, wherever it is placed (found: ${JSON.stringify(strays)})`);
+    `nothing refuses a batch anywhere on its way out — not in onGuestMessage, not in broadcastViewers, not in send (found: ${JSON.stringify(strays)})`);
 }
 ok(/router\.use\(notAProxy\)/.test(routes), 'every co-browse door refuses a helper / guest-link token');
 ok(/router\.get\('\/mine', notInsideAView/.test(routes) && /router\.get\('\/:id', notInsideAView/.test(routes), '/mine and /:id refuse a view-as token too (no prompt, no banner inside a view)');
@@ -380,12 +399,16 @@ ok(/e\.target\.closest\('\[data-cobrowse-ui\]'\)\) return;/.test(libNow) && /dat
 // instrumented exactly that: a relayed click meant for a search box pressed the guest's own
 // co-browse "Stop" button and ENDED the session — recorded against the watched person, who
 // did nothing. So the viewer sends what it MEANT to act on and the guest refuses a mismatch.
-ok(/function fingerprint\(el\)/.test(libNow) && /if \(typeof fp === 'string' && fp && fp !== fingerprint\(el\)\) return null;/.test(libNow),
+// RE-POINTED, NOT LOOSENED: the subject is that the guest REFUSES a mismatch. The
+// definition moved into `lib/cobrowseFingerprint.js` so the viewer cannot drift from it
+// (that drift is what refused every input — see the fingerprint block above); the refusal
+// itself is unchanged and is what this asserts.
+ok(/const fingerprint = fingerprintOf;/.test(libNow) && /if \(typeof fp === 'string' && fp && fp !== fingerprint\(el\)\) return null;/.test(libNow),
   'the guest refuses an input whose target is not the element the viewer meant');
 ok(/drivable\(m\.id, m\.fp\)/.test(libNow) && !/drivable\(m\.id\)[^,]/.test(libNow),
   'every addressed input is resolved WITH that check — no call site skips it');
-ok(/const fpOf = \(node\) =>/.test(viewerNow) && (viewerNow.match(/fp: fpOf\(/g) || []).length >= 5,
-  'the viewer fingerprints every addressed input it sends (click, key, change, scroll, paste)');
+ok(/const fpOf = fingerprintOf;/.test(viewerNow) && (viewerNow.match(/fp: fpOf\(/g) || []).length >= 5,
+  'the viewer fingerprints every addressed input it sends (click, key, change, scroll, paste), through the shared definition');
 ok(/if \(typeof m\.fp === 'string'\) out\.fp = m\.fp\.slice\(0, 120\);/.test(hubSrc),
   'the hub relays the fingerprint as an opaque capped string and never interprets it');
 // The fingerprint is content-free by construction: a tag, an input type and the first class.
@@ -511,6 +534,47 @@ ok(!/\|\| Date\.now\(\) - 600\)/.test(viewSrc2),
   const built = calls.filter((a) => a !== 'ev');
   ok(built.length === 0,
     `tripwire: startFrom is only ever handed the received event itself, never one built from it (found: ${JSON.stringify(built)})`);
+}
+
+// ---- ONE fingerprint, and the rrweb decoration that broke it --------------------------------
+// The viewer sends `fp` with every addressed input and the guest refuses a mismatch. That
+// check is worth exactly as much as the two sides agreeing on the string — and for weeks
+// they did not: the same six lines were written out twice, and the VIEWER reads the element
+// off rrweb's REPLAYED document, which marks hovered elements with a class literally named
+// `:hover`. So the viewer sent `BODY||:hover`, the guest computed `BODY||`, and every
+// relayed click and keystroke was silently refused. It was filed in CLAUDE.md as a flaky
+// test with a guessed cause; it was the product, and it is the owner's report a second time
+// ("when I ask for control, even if they approve it, I'm not getting it").
+{
+  const fpSrc = read('app-v2/src/lib/cobrowseFingerprint.js').replace(/^export \{[^}]*\};?\s*$/m, '');
+  const F = new Function(`${fpSrc}\nreturn { fingerprintOf, realClasses };`)();
+  const el = (tag, cls, type) => ({
+    nodeType: 1, tagName: tag, className: cls === undefined ? '' : cls,
+    getAttribute: (a) => (a === 'type' ? (type || '') : null),
+  });
+  const eqf = (got, want, m) => ok(got === want, `${m} (got ${JSON.stringify(got)}, want ${JSON.stringify(want)})`);
+  // THE DEFECT, as a value: the two readings of the same element must agree.
+  eqf(F.fingerprintOf(el('BODY', ':hover')), F.fingerprintOf(el('BODY', '')),
+    "the replayer's :hover decoration does not change the fingerprint — this is what refused every input");
+  eqf(F.fingerprintOf(el('INPUT', ':hover search-box', 'text')), F.fingerprintOf(el('INPUT', 'search-box', 'text')),
+    'nor does it when the element has real classes too');
+  eqf(F.fingerprintOf(el('INPUT', 'search-box', 'text')), 'INPUT|text|search-box', 'the fingerprint is tag|type|first real class');
+  eqf(F.fingerprintOf(el('BODY', '')), 'BODY||', 'an unclassed element still fingerprints');
+  // A real class is never dropped just because a decoration sits in front of it.
+  ok(JSON.stringify(F.realClasses({ className: ':hover a b' })) === JSON.stringify(['a', 'b']),
+    'only the decorations are dropped, never a class the page declared');
+  ok(JSON.stringify(F.realClasses({ className: { baseVal: 'icon' } })) === JSON.stringify(['icon']),
+    "an SVG element's SVGAnimatedString is read, not stringified into nonsense");
+  eqf(F.fingerprintOf(null), '', 'a missing node answers empty, so the guest refuses rather than guesses');
+  eqf(F.fingerprintOf({ nodeType: 3, parentElement: el('DIV', 'row') }), 'DIV||row', 'a text node fingerprints its parent element');
+  // ⛔ AND BOTH SIDES USE IT. A second copy is how this happened; a source check is the
+  // right shape for "there is only one definition", because that IS a fact about the source.
+  const libFp = strip(read('app-v2/src/lib/cobrowse.js'));
+  const viewFp = strip(read('app-v2/src/screens/StaffCobrowse.jsx'));
+  for (const [name, src] of [['the guest recorder', libFp], ['the viewer screen', viewFp]]) {
+    ok(/from '\.{1,2}\/(?:lib\/)?cobrowseFingerprint\.js'/.test(src), `${name} imports the one fingerprint definition`);
+    ok(!/split\(\/\\s\+\/\)\.filter\(Boolean\)\[0\]/.test(src), `${name} does not carry its own copy of it`);
+  }
 }
 
 // ---- the baseline arithmetic, called with real numbers -------------------------------------

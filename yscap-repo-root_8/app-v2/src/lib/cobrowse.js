@@ -38,6 +38,7 @@
 import { record } from '@rrweb/record';
 import { getToken, api } from './api.js';
 import { BLOCK_SELECTOR, NO_RECORD_ROUTES, NO_DRIVE_SELECTOR, NO_DRIVE_ROUTES, recordOptions } from './cobrowseMask.js';
+import { fingerprintOf } from './cobrowseFingerprint.js';
 
 export { BLOCK_SELECTOR, NO_RECORD_ROUTES, NO_DRIVE_SELECTOR, NO_DRIVE_ROUTES };
 export const SESSION_KEY = 'ys_cobrowse_session';
@@ -407,13 +408,14 @@ function ensureCursor(state) {
 
 const KEY_CODES = { Enter: 13, Escape: 27, Tab: 9, Backspace: 8, Delete: 46, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Home: 36, End: 35, ' ': 32 };
 
-/** OUR OWN READING OF THE ELEMENT, in the same shape the viewer sends. */
-function fingerprint(el) {
-  try {
-    const cls = String(el.className || '').split(/\s+/).filter(Boolean)[0] || '';
-    return `${el.tagName || ''}|${el.getAttribute ? (el.getAttribute('type') || '') : ''}|${cls}`.slice(0, 120);
-  } catch { return ''; }
-}
+/**
+ * OUR OWN READING OF THE ELEMENT, in the same shape the viewer sends — and it is
+ * literally the same function now, from `lib/cobrowseFingerprint.js`. It used to
+ * be this six-line copy and a second copy in `screens/StaffCobrowse.jsx`, and the
+ * two disagreed about rrweb's replay decorations, so every relayed click and
+ * keystroke was refused. See that file's header.
+ */
+const fingerprint = fingerprintOf;
 
 /**
  * Mirror id → the real element, or null when it may not be driven.

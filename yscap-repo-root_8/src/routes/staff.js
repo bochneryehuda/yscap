@@ -12464,8 +12464,13 @@ router.patch('/borrowers/:id', async (req, res) => {
     }
     // ⛔ REASSIGNING A BORROWER ENDS ANY LIVE CO-BROWSE OF THEM (2026-09-02).
     // `sessions.mayWatch` gates a borrower target on `visibleBorrowerSql`, which
-    // reads `borrowers.primary_officer_id` — so moving a borrower to another officer
-    // is exactly a revocation of the old officer's right to watch them, and it
+    // reads `borrowers.primary_officer_id` — one of its five branches. So a
+    // reassignment MAY revoke the old officer's right to watch and may not: a
+    // `borrower_officers` row or an application of theirs can still carry it
+    // (measured). We end the session either way, and this also fires on a PATCH that
+    // merely echoes the same officer, because it keys on the field being submitted.
+    // Both are the fail-safe direction, and both are written down here rather than
+    // left to be discovered as a mystery disconnect. What matters is that the change
     // touches nothing the co-browse hub's own re-check can see (no `token_version`,
     // no staff row at all). Without this the officer the file was taken FROM keeps
     // receiving that borrower's live screen indefinitely — the same failure that was

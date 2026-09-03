@@ -66,7 +66,7 @@ if (!fs.existsSync(manifestPath)) {
   if (man) {
     const now = sourceHash(root);
     if (man.sourceHash !== now) {
-      bad(`app-v2/src has changed since the committed bundle was built (stamped ${man.sourceHash}, source is now ${now}).\n`
+      bad(`app-v2 source or public/ has changed since the committed bundle was built (stamped ${man.sourceHash}, source is now ${now}).\n`
         + '     The browser drive serves web/v2/portal, so it would be testing the OLD code.\n'
         + '     Fix: cd app-v2 && npm run build   — then commit web/v2/portal/');
     } else {
@@ -89,6 +89,12 @@ if (!fs.existsSync(manifestPath)) {
       bad(`web/v2/portal/index.html has been edited since the build (stamped ${man.indexHash}, now ${indexHash})`);
     } else if (man.indexHash) {
       ok('index.html is byte-for-byte the one that build produced');
+    } else {
+      // NEVER SILENTLY. Deleting one key from the manifest used to turn this check off
+      // with an exit 0 and no line saying anything had been skipped — which is not the
+      // "a stamp is a record of intent" caveat in the header, it is a check that
+      // evaporates on request (pre-merge audit, 2026-09-02).
+      bad(`${MANIFEST} carries no indexHash — re-run \`cd app-v2 && npm run build\` so index.html can be checked`);
     }
     const referenced = [...html.matchAll(/assets\/([A-Za-z0-9._-]+)/g)].map((m) => m[1]);
     const missing = referenced.filter((f) => !onDisk.includes(f));

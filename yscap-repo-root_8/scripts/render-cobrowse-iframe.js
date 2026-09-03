@@ -169,7 +169,10 @@ async function main() {
       for (const ev of window.__ev) walk(ev);
       return {
         total: texts.length,
-        secret: texts.filter((t) => t.includes(secret)).length,
+        // ATTRIBUTES TOO. A secret living in a `value` or a `title` is invisible to a
+        // text-only search, and the walk's own comment claimed to look everywhere.
+        secret: texts.filter((t) => t.includes(secret)).length
+          + attrs.filter((v) => v.includes(secret)).length,
         plain: texts.filter((t) => t.includes(plain)).length,
         maskedAttrs: attrs.filter((v) => v === window.__mask.MASK).length,
       };

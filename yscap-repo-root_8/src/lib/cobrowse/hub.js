@@ -171,7 +171,16 @@ async function stillAllowed(claims) {
       const rv = await db.query(`SELECT 1 FROM revoked_sessions WHERE sid = $1`, [claims.sid]);
       if (rv.rows.length) return null;
     } catch (_) {
-      // ⛔ ALSO UNKNOWN, NOT ALLOWED. This `catch` used to fall through to
+      // ⛔ ALSO UNKNOWN, NOT ALLOWED — and this makes co-browse the ONE surface that
+      // fails closed on this table. `src/auth/index.js` latches `_sidRevocationReady`
+      // false process-wide, and `src/routes/events.js` does the same for SSE, both
+      // deliberately, so a migration hiccup is not a total outage. Co-browse differs
+      // only at CONNECT (an UNKNOWN maps to null there); live sockets survive, because
+      // the beat leaves an UNKNOWN alone. Refusing to START a screen-share while HTTP
+      // and SSE stay up is the right side of that trade for a feature that shows one
+      // person another's screen — but it IS a difference, and it is named here.
+      //
+      // This `catch` used to fall through to
       // "allowed" — a deliberate choice back when the only answers were yes and
       // no, and `token_version` still applied. With a third answer available that
       // is simply the wrong one: a per-device sign-out fails OPEN whenever this
@@ -399,11 +408,22 @@ function close(sessionId, reason) {
  * officer setting a borrower's password; and REASSIGNING A BORROWER to another
  * officer (`PATCH /api/staff/borrowers/:id`, `primaryOfficerId`) — that last one
  * moves `visibleBorrowerSql` out from under the watcher and was missed when the
- * other scope changes were wired. EVERY OTHER revocation — a person changing their
- * own password, a reset-by-token, the TPO firm-wide bump, a `borrower_officers`
- * row written anywhere else — is bounded by ONE BEAT by the check below, and by
- * nothing else. There is no borrower-deactivation endpoint in this product at all;
- * an earlier draft of this comment said there was.
+ * other scope changes were wired.
+ *
+ * WHAT THE BEAT BOUNDS, AND WHAT NOTHING BOUNDS — the distinction is `token_version`,
+ * and an earlier draft of this comment got it wrong in the direction that matters.
+ *   · BOUNDED BY ONE BEAT: anything that bumps `token_version` — a person changing
+ *     their own password, a reset-by-token, the TPO firm-wide bump. `stillAllowed`
+ *     sees those.
+ *   · BOUNDED BY NOTHING: a SCOPE change that leaves `token_version` alone and is not
+ *     wired above. The beat's party check is `isViewer`/`isWatched`, a pure id
+ *     comparison — `mayWatch` is never called from here — so a `borrower_officers`
+ *     row written elsewhere, or an application's `loan_officer_id`/`processor_id`
+ *     moving, revokes the right to watch and closes NOTHING. That is an open gap,
+ *     written down as one. Closing it means calling `mayWatch` for borrower-targeted
+ *     sessions on every beat, at one more query per such session.
+ * There is no borrower-deactivation endpoint in this product at all; an earlier draft
+ * of this comment said there was.
  *
  * NOT RE-ENTRANT, AND THE WHOLE BEAT IS INSIDE THE GUARD — including the ping
  * loop, which is the half that actually kills. `setInterval` fires regardless of
@@ -430,6 +450,11 @@ function close(sessionId, reason) {
  * party re-check (see above) and it collapses the case that would actually hurt,
  * one person holding many viewer tabs.
  */
+// A BEAT THAT NEVER SETTLES LEAVES THIS TRUE FOR THE LIFE OF THE PROCESS, silently
+// disabling the pings, the reaping and the re-check. Every await below is bounded by
+// the pool's own `connectionTimeoutMillis`, so it is a hang in `pg` rather than a
+// plausible failure here — but it is the cost of the flag and it should be written
+// down rather than discovered.
 let beating = false;
 async function heartbeat() {
   if (!wss) return;

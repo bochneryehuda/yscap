@@ -5,6 +5,7 @@ import '@rrweb/replay/dist/style.css';
 import { api, getToken } from '../lib/api.js';
 import { fitScaleFor, appliedScale, stageOverflow, stageHeight, nextZoom, canZoom } from '../lib/cobrowseZoom.js';
 import { startLiveOnce } from '../lib/cobrowseLive.js';
+import { fingerprintOf } from '../lib/cobrowseFingerprint.js';
 
 /* THE VIEWER (owner-directed 2026-09-02).
    Replays the watched person's masked page LIVE inside a sandboxed frame. This is
@@ -236,14 +237,12 @@ export default function StaffCobrowse() {
     // fingerprint travels with every addressed input and the guest drops a mismatch.
     // It carries no content — the tag, the input type and the first class — so it is safe
     // on a masked mirror and cannot leak what a person typed.
-    const fpOf = (node) => {
-      try {
-        const el = node && node.nodeType === 1 ? node : (node && node.parentElement) || null;
-        if (!el) return '';
-        const cls = String(el.className || '').split(/\s+/).filter(Boolean)[0] || '';
-        return `${el.tagName || ''}|${el.getAttribute ? (el.getAttribute('type') || '') : ''}|${cls}`.slice(0, 120);
-      } catch { return ''; }
-    };
+    // ⛔ THE SAME FUNCTION THE GUEST USES, not a copy of it. This was a second copy,
+    // and it read the element off rrweb's REPLAYED document, which decorates hovered
+    // elements with a class literally named `:hover` — so the viewer sent
+    // `BODY||:hover`, the guest computed `BODY||`, and every relayed click and
+    // keystroke was refused. See `lib/cobrowseFingerprint.js`.
+    const fpOf = fingerprintOf;
     const sendInput = (obj) => { const ws = wsRef.current; if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'input', ...obj })); };
     const pageXY = (e) => ({ x: e.clientX + (doc.defaultView ? doc.defaultView.scrollX : 0), y: e.clientY + (doc.defaultView ? doc.defaultView.scrollY : 0) });
     iframe.style.pointerEvents = 'auto';
