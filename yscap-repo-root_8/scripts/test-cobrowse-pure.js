@@ -536,6 +536,27 @@ ok(!/\|\| Date\.now\(\) - 600\)/.test(viewSrc2),
     `tripwire: startFrom is only ever handed the received event itself, never one built from it (found: ${JSON.stringify(built)})`);
 }
 
+// ⛔ THE GUEST'S OWN CO-BROWSE CHROME IS HIDDEN IN THE MIRROR, and this is a product
+// assertion, not a tidiness one. The guest's banner is `position:fixed; top:0;
+// z-index:19999`, and the page below it is pushed down by `--cobrowse-bar`, which
+// `CobrowseHost` sets from the banner's height MEASURED ON THE GUEST. That measurement
+// replays as a value while the banner itself re-renders at the mirror's width with the
+// mirror's fonts — so it wraps to a different number of lines and overhangs its own
+// reserved space. Measured on both documents at the same instant (2026-09-03):
+//   guest  — point 637,88 hits INPUT.app-search-in
+//   mirror — point 636,88 hits BUTTON.btn small, inside DIV[0,0,1276x100 fixed z=19999]
+// So a controller clicking the top of the page they can SEE pressed the guest's Take back
+// / Stop buttons, which carry `data-cobrowse-nodrive` and are correctly refused — and the
+// click did nothing at all. That is the owner's report in its third form: control granted,
+// the take-back no longer stealing it, and the clicks still landing on nothing.
+ok(/insertStyleRules: \['\[data-cobrowse-ui\]\{display:none !important\}'\]/.test(viewSrc2),
+  "the mirror hides the guest's own co-browse banner — it overhangs its reserved space and its buttons cover the page");
+// AND THE MARK IS STILL WHAT THE BANNER CARRIES. The rule above is worth nothing if the
+// banner stops being `data-cobrowse-ui`, which is also what the take-back listener uses to
+// tell the banner apart from the page.
+ok(/data-cobrowse-ui="banner"/.test(strip(read('app-v2/src/components/CobrowseHost.jsx'))),
+  'the guest banner still carries the mark that rule and the take-back listener both name');
+
 // ---- ONE fingerprint, and the rrweb decoration that broke it --------------------------------
 // The viewer sends `fp` with every addressed input and the guest refuses a mismatch. That
 // check is worth exactly as much as the two sides agreeing on the string — and for weeks

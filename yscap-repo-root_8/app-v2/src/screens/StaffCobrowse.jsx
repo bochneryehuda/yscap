@@ -94,6 +94,32 @@ export default function StaffCobrowse() {
       root: hostRef.current, liveMode: true, mouseTail: false, UNSAFE_replayCanvas: false,
       // Nothing inside the mirror may run: the frame is sandboxed by rrweb; we add nothing.
       speed: 1, showWarning: false, showDebug: false,
+      // ⛔ THE GUEST'S OWN CO-BROWSE CHROME IS NOT PART OF THEIR PAGE, and leaving it in
+      // the mirror was breaking the one thing this feature exists for.
+      //
+      // The guest's banner is `position:fixed; top:0; z-index:19999`, and the page below
+      // it is pushed down by `--cobrowse-bar`, which `CobrowseHost` sets from the banner's
+      // MEASURED height ON THE GUEST. That measurement replays as a value; the banner
+      // itself re-renders at the MIRROR's width with the mirror's fonts, and wraps to a
+      // different number of lines. Measured, both documents at the same instant:
+      //
+      //   guest  — banner ~52px, `.app` at top 52, point 637,88 hits INPUT.app-search-in
+      //   mirror — banner 100px, `.app` at top 52, point 636,88 hits BUTTON.btn small
+      //            (inside DIV[0,0,1276x100 pos=fixed z=19999] — the banner, overhanging
+      //             its own reserved space by ~48px)
+      //
+      // So a controller clicking the top of the page they can SEE hits the guest's Take
+      // back / Stop buttons instead. Those carry `data-cobrowse-nodrive`, so the product
+      // correctly refuses — and the click does nothing at all. That is the owner's report
+      // ("when I ask for control, even if they approve it, I'm not getting it") in its
+      // third and final form: control IS granted, the take-back no longer steals it, and
+      // the clicks still land on nothing.
+      //
+      // The viewer has its own banner and its own controls, so the guest's are pure noise
+      // here as well as a hazard. Hiding them removes the overhang and the whole class of
+      // mis-targeted clicks with it. `[data-cobrowse-ui]` is the mark those elements
+      // already carry — the take-back listener uses it to tell the banner from the page.
+      insertStyleRules: ['[data-cobrowse-ui]{display:none !important}'],
     });
     replayerRef.current = rp;
     // THE LIVE BASELINE COMES OFF THE FIRST EVENT'S OWN CLOCK, NEVER OURS. rrweb
