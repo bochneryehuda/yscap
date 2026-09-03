@@ -279,11 +279,13 @@ router.patch('/staff/:id', async (req, res) => {
     // `token_version` is bumped only on deactivation (above), so demoting a
     // super-admin, clearing a permissions override, or stripping visible officers
     // moves what `sessions.mayWatch` would allow WITHOUT invalidating anything the
-    // co-browse hub can see — its heartbeat re-check still resolves the person, so
+    // co-browse hub can see — its `token_version` re-check still resolves the person, so
     // an already-open viewer socket kept streaming that borrower's screen
-    // indefinitely (pre-merge audit, 2026-09-02). The hub cannot re-derive a
-    // permission scope without learning the whole permission model, so the cut-off
-    // belongs here, at the change itself. Best-effort, never blocks the response.
+    // indefinitely (pre-merge audit, 2026-09-02). The hub's beat now ALSO re-asks
+    // `sessions.mayWatch` on borrower-targeted sessions, so this is a belt on braces
+    // rather than the only cut-off — but it is the INSTANT one, where the beat takes
+    // up to 25 seconds, and it is the only one that reaches a staff-targeted session.
+    // Best-effort, never blocks the response.
     const scopeMoved = b.role !== undefined || b.permissions !== undefined || b.visibleOfficerIds !== undefined;
     if (b.isActive === false || scopeMoved) {
       try { require('../lib/cobrowse/sessions').endAllFor('staff', req.params.id, 'revoked').catch(() => {}); } catch (_) {}

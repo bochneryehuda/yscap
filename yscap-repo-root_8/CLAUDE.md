@@ -150,10 +150,12 @@ quiet. `npm test` had stopped: requiring the long-term module arms `settings/sto
 carefully-`unref`'d fifteen-second re-read whose own comment says it "must never hold a process open,
 least of all a test runner's". The timer did not. Its QUERY did — every tick borrows a client from
 Long-Term's own pool and restarts that client's thirty-second idle countdown, so the pooled socket is
-never reaped, and a live TCP handle keeps Node's loop alive however many timers are `unref`'d. MOST
-database suites that boot the app hung after their last assertion — measured over five with the fix
-removed, three hung and two survived, and the two that survived end with an unconditional
-`process.exit()`, so what hangs is precisely what relies on a natural exit. THREE THINGS TO KEEP.
+never reaped, and a live TCP handle keeps Node's loop alive however many timers are `unref`'d. A MINORITY of
+database suites that boot the app hung after their last assertion — first written as "most" from a
+sample of five; measured properly over thirty, it is **5 of 30, about 17%**. The SHAPE of the claim was
+right and the quantifier was not: what hangs is precisely what relies on a natural exit, and the ones
+that survive end with an unconditional `process.exit()`. Seventeen per cent is still every build, because
+the chain stops at the first one. THREE THINGS TO KEEP.
 (1) A pool that a script does not explicitly end needs `allowExitOnIdle: true`; it changes nothing on a
 server, which is held open by its listener. (2) When CI hangs, PROBE THE LIVE PROCESS —
 `process._getActiveHandles()` with `net.Socket.prototype.connect` patched to record a stack named the
@@ -164,12 +166,33 @@ header claiming they made it proof against "a second pool somewhere else". They 
 in `src/longterm/index.js`, the module the server actually mounts, reintroduced the incident in full
 while the suite reported 7 of 7, and so did a plain ref'd `setInterval` there. The fix was a third
 child that requires WHAT THE APPLICATION REQUIRES rather than a model of it. Same pass, same lesson in
-miniature: a marker the child prints after a stubbed call proves nothing, so each marker now carries a
-value only the server could have returned (the backend pid). KNOWN AND DELIBERATELY NOT FIXED HERE:
-`src/db.js` (RTL's pool) and `src/lib/dashboards/run.js` have the identical shape and are unguarded —
-they do not bite today only because nothing re-queries them on an unref'd timer faster than their 30s
-idle window, which is a property no test holds, and RTL's pool costs every RTL-only script a 30-second
-exit tax. Widening the fix there is its own audited change, not a drive-by.
+miniature: a marker the child prints after a stubbed call proves nothing, so the TWO children that
+assert a round trip now carry a value only the server could have returned (the backend pid, and a
+settings read awaited through `keepWarm`'s own `ready`). The third child's marker only proves the module
+loaded, which is all an exit test needs from it — an earlier version of this sentence said "each", and a
+later audit showed that child passes with the pool stubbed so no socket ever opens. KNOWN AND DELIBERATELY NOT FIXED HERE:
+`src/db.js` (RTL's pool) has the identical shape and is unguarded —
+it does not bite today, and THE REASON I FIRST WROTE DOWN WAS FALSE. It said "nothing re-queries them
+on an unref'd timer faster than their 30s idle window". Two things do: `src/lib/flags.js:24,75` re-reads
+`integration_flags` every **20 seconds** on an `unref`'d interval through `require('../db')` — the
+incident verbatim, on RTL's unguarded pool — and `src/pipeline/worker.js:116-117` ticks every **3
+seconds** with the same pool handed to it at `src/server.js:1554`, THOUGH ONLY WHEN `UW_WORKER_ENABLED`
+is set: `src/config.js:1117` defaults it OFF and `src/pipeline/worker.js:95` returns before ever arming
+the timer, so on a default deployment `flags.js` is the only one of the two that actually ticks. (That
+qualifier was missing, which made the sentence read as two live hazards where there is one — the same
+mistake, in the same paragraph, as the false reason it was written to correct.)
+`src/lib/dashboards/run.js` was in this list too and IS NOW GUARDED: it builds its pool lazily on first
+use, so no child that merely requires modules could ever see it, and a single query through it held the
+process for a measured 30.09 s. It carries `allowExitOnIdle` as of 2026-09-03. THE REAL REASON is narrower and more
+fragile than what I wrote: both are armed only BELOW `if (require.main === module)` (`src/server.js:887`;
+flags at `:1540`, pipeline at `:1554`), so they run only in a process an HTTP listener already holds
+open — or in `src/worker.js`, which carries a deliberately ref'd keepalive. Measured: `node -e
+"require('./src/lib/flags').start()"` hangs for the full 70-second timeout without the option and exits
+in 0.078 s with it. **So calling `flags.start()` from any script reproduces the sixty-minute hang on
+RTL's pool.** RTL's pool also costs every RTL-only script a 30-second exit tax. Widening the fix there is
+its own audited change, not a drive-by. **AND THE CLASS: a safety note whose REASON is wrong is worse
+than no note, because the next person budgets against it. When you write down why something is safe,
+grep for the thing you are claiming does not exist.**
 
 ## Repository layout gotcha
 
