@@ -727,32 +727,35 @@ async function compPlanHandler(req, res) {
   res.json({ ok: true, plan, source, degraded: !!(company.degraded || user.degraded) });
 }
 
-// GET /investors — the FULL white-label roster (owner-directed 2026-08-27): every
-// investor on the owner's sheet, live in Lender Price or not, so the pre-search
-// dropdown lists them all and an investor that comes online later "is already
-// there". A pure read of the committed sheet — no vendor call, no database — so
-// the screen may fetch it from an effect.
+// GET /investors — the SETTINGS-AWARE pre-search picker (owner-directed 2026-09-03,
+// the explicit owner call the note below always said this change would need). The
+// tick-boxes offered BEFORE a search now match what a search actually shows: every
+// investor that is ON and named — a LoanNEX-switched investor INCLUDED, a turned-off
+// one EXCLUDED — derived from the SAME settings the board routes on (`pickerRoster`),
+// so the picker and the board can never disagree.
 //
-// ⛔ IT STAYS THAT WAY. This door briefly read the settings store, so that an
-// investor somebody added by hand and a white label typed on the combined
-// engine's settings screen both showed up here. That was wrong twice over, and
-// it is the owner's most-repeated instruction — *"don't touch our current setup
-// that we currently have: our General Pricing Engine"*:
+// WHY THE OLD "IT STAYS LENDER-PRICE-ONLY" NOTE NO LONGER HOLDS. It rested on one
+// fact that is no longer true: *"This engine asks Lender Price and nobody else, so a
+// LoanNEX-only investor offered here produces an EMPTY BOARD."* Since 2026-09-03 the
+// general engine asks LoanNEX too (the immediate board is built from both sheets), so
+// a LoanNEX-switched investor offered here now genuinely populates — and a turned-off
+// investor offered here was the real defect: ticking it dropped the board to empty and
+// the strip blamed the VENDOR ("nothing populated for X") for a deliberate turn-off.
+// The board already white-labels investors from these same settings, so the second old
+// worry — "a second change to what this screen calls an investor" — is now the whole
+// point: the picker names investors exactly as the board does. The combined engine
+// keeps its own separate `/dscr/combined/investors` door, untouched.
 //
-//   · THIS LIST IS A FILTER, NOT A DISPLAY. An officer picks a name here and the
-//     search is narrowed to it. This engine asks Lender Price and nobody else, so
-//     a LoanNEX-only investor offered here produces an EMPTY BOARD with nothing
-//     on the screen to explain why.
-//   · AND IT IS A SECOND CHANGE TO WHAT THIS SCREEN CALLS AN INVESTOR, on a door
-//     that had only ever read the committed sheet.
-//
-// The combined engine reads the hand-added investors; this one does not. If that
-// should ever change it is the owner's call, not a side effect of a shared
-// module gaining an argument. `test-lt-dscr-routes.js` asserts that this handler
-// performs no settings read and answers identically whether or not somebody has
-// added an investor.
-function investorsRoster(req, res) {
-  res.json({ ok: true, investors: investorPrograms.fullRoster() });
+// Fails SAFE: an unreadable config falls back to the Lender Price sheet rather than an
+// empty picker. `test-lt-dscr-routes.js` asserts the on/named/switched/off contract.
+async function investorsRoster(req, res) {
+  try {
+    const cfg = await generalBoard.loadConfig({});
+    res.json({ ok: true, investors: generalBoard.pickerRoster(cfg) });
+  } catch (e) {
+    console.error('[lt-dscr] investors roster failed, falling back to Lender Price sheet:', (e && e.message) || e);
+    res.json({ ok: true, investors: investorPrograms.fullRoster() });
+  }
 }
 
 // A router with the endpoints wired. Auth is applied by the mount (staff at /api/lt, or the

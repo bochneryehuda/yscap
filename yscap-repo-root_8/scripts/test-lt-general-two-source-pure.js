@@ -216,6 +216,23 @@ const byInvestor = (programs) => {
   ok(dbg.rawSummary !== undefined && dbg.rawSummary !== null,
     'GEN-20b …but opts.debug returns the raw Lender Price summary, restoring the full-path parity the summary door has');
 
+  console.log('\n── THE PRE-SEARCH PICKER MATCHES THE BOARD (owner-directed 2026-09-03) ──');
+  const prKeys = (cfg) => gb.pickerRoster(cfg).map((x) => x.key);
+  const onAll = gb.pickerRoster({ settings: {}, custom: null });
+  const keysOn = onAll.map((x) => x.key);
+  ok(['nqm', 'acra', 'eresi', 'button_finance', 'clearedge'].every((k) => keysOn.includes(k)),
+    `GEN-21 the picker offers the LoanNEX-switched investors (${['nqm', 'acra', 'eresi', 'button_finance', 'clearedge'].filter((k) => keysOn.includes(k)).join(', ')})`);
+  ok(onAll.every((x) => x.key && x.whiteLabel && x.investorLabel && !('custom' in x)),
+    'GEN-22 …each entry is {key, whiteLabel, investorLabel} — the picker component is unchanged');
+  const offNqm = prKeys({ settings: { nqm: { enabled: false } }, custom: null });
+  ok(keysOn.includes('nqm') && !offNqm.includes('nqm'),
+    'GEN-23 turning an investor OFF removes it from the picker (default offers it, off does not) — the misleading "nothing populated" for a deliberate turn-off is gone');
+  const mkCustom = (wl) => new Map([['onyxco', { key: 'onyxco', label: 'Onyx Co', whiteLabel: wl, custom: true, seen: 0, aliases: [] }]]);
+  const named = prKeys({ settings: {}, custom: mkCustom('Onyx') });
+  const unnamed = prKeys({ settings: {}, custom: mkCustom(null) });
+  ok(named.includes('onyxco') && !unnamed.includes('onyxco'),
+    'GEN-24 a NAMED hand-added investor is offered (it reaches the board) and an UNNAMED one is not (it lands in `unmapped`) — the picker names investors exactly as the board does');
+
   console.log('\n\u2500\u2500 EVERY ROW CAN IDENTIFY ITSELF TO THE RATE SHEET \u2500\u2500');
   {
     /* ⛔ THE OWNER'S REPORT (2026-09-03), on a live NQM row: *"The rate sheet accepted the

@@ -315,4 +315,19 @@ async function boardForScenario(sc, deps, opts = {}) {
   };
 }
 
-module.exports = { boardForScenario, loadConfig, _internals: { reasonOf, expectedFromLoanNex, rosterFromRouted } };
+/* THE PRE-SEARCH INVESTOR PICKER — the investors that CAN appear on the routed board,
+   so the tick-boxes offered BEFORE a search match what a search actually shows
+   (owner-directed 2026-09-03). Derived from the SAME settings `loadConfig`/`boardForScenario`
+   route on, so the picker and the board can never drift: every investor that is ON
+   (`enabled`) and carries a client-facing white label — a LoanNEX-switched investor
+   INCLUDED (it now reaches this engine's board), a turned-off one EXCLUDED, and an unnamed
+   one EXCLUDED (it lands in `unmapped` on the board and cannot be ticked there either).
+   Shape matches `investorPrograms.fullRoster` so the picker component is unchanged. */
+function pickerRoster(cfg) {
+  return settingsOf.roster(cfg.settings, cfg.custom)
+    .filter((r) => r && r.enabled && r.whiteLabel)
+    .map((r) => ({ key: r.key, whiteLabel: r.whiteLabel, investorLabel: r.label }))
+    .sort((a, b) => String(a.whiteLabel).localeCompare(String(b.whiteLabel)));
+}
+
+module.exports = { boardForScenario, loadConfig, pickerRoster, _internals: { reasonOf, expectedFromLoanNex, rosterFromRouted } };

@@ -165,102 +165,47 @@ ok(g.nexted && g.code === null, 'gate passes through on correct token');
 }
 
 /**
- * GET /investors — THE GENERAL ENGINE'S ROSTER DOOR, AND IT READS NOTHING.
+ * GET /investors — THE SETTINGS-AWARE PRE-SEARCH PICKER (owner-directed 2026-09-03).
  *
- * ⛔ THE RULE THIS GUARDS is the owner's most-repeated one: *"don't touch our
- * current setup that we currently have: our General Pricing Engine."*
+ * The picker now offers the investors that CAN appear on the routed board — ON and
+ * named — so the tick-boxes match what a search actually shows: a LoanNEX-switched
+ * investor is offered, a turned-off one is not. This SUPERSEDES the old "stays Lender
+ * Price only, reads nothing" rule, and the supersession is the owner's own call (the
+ * note it replaces always said the change would be). The old rule rested on this engine
+ * asking Lender Price alone; it now asks LoanNEX too, so a switched investor genuinely
+ * populates and a turned-off one offered here was the real defect (ticking it dropped the
+ * board to empty and the strip blamed the vendor for a deliberate turn-off).
  *
- * This door briefly read the settings store, so that an investor somebody added
- * by hand on the COMBINED engine — and a white label typed on the combined
- * engine's settings screen — appeared here too. That was wrong twice over:
- *
- *   · THIS LIST IS A FILTER, NOT A DISPLAY. An officer picks a name and the
- *     search narrows to it. This engine asks Lender Price and nobody else, so a
- *     LoanNEX-only investor offered here yields an EMPTY BOARD with nothing on
- *     the screen to explain why.
- *   · AND IT CHANGED WHAT THIS SCREEN CALLS AN INVESTOR, on a door that had only
- *     ever read the committed sheet.
- *
- * So these are asserted by BEHAVIOUR, not by grepping the handler: a grep is
- * satisfied by the comment that explains it (this suite's siblings paid for that
- * lesson twice). The handler is called with a database that COUNTS queries and
- * with a settings store primed with a hand-added investor; it must answer the
- * same bytes either way, and must not read anything at all.
+ * The pickerRoster LOGIC is proven pure in test-lt-general-two-source-pure.js (GEN-21..24).
+ * Here we prove the DOOR: it delegates to loadConfig + pickerRoster and FAILS SAFE.
+ * loadConfig is the clean seam — stub it, and let the real pickerRoster run.
  */
-{
-  const path = require('path');
-  const DB_PATH = require.resolve(path.join(__dirname, '../src/longterm/db'));
-  const realDb = require.cache[DB_PATH];
-  let queries = 0;
-  const rows = [{
-    key: 'pricing.customInvestors',
-    value: {
-      // ⛔ FICTIONAL ON PURPOSE. A hand-added name that is already a recorded
-      // spelling of a REGISTRY investor is refused at the door, so this fixture
-      // must never be a real investor's name: ClearEdge Lending was used here
-      // until the owner put it in the registry (2026-09-02, as "Crystal"), at
-      // which point the CONTROL below silently had nothing in force and the
-      // suite went red. A name no roster can take is the only stable fixture.
-      meridian_trust: {
-        label: 'Meridian Trust Partners',
-        whiteLabel: 'Summit',
-        aliases: ['Meridian Trust Partners', 'Meridian Trust'],
-      },
-    },
-  }];
-  require.cache[DB_PATH] = {
-    id: DB_PATH,
-    filename: DB_PATH,
-    loaded: true,
-    exports: { query: async () => { queries += 1; return { rows }; } },
-  };
-  const store = require('../src/longterm/settings/store');
-  const audience = require('../src/longterm/audience');
-  store.bust();
+(async () => {
+  const gb = require('../src/longterm/pricing/general-board');
+  const origLoad = gb.loadConfig;
 
-  // The hand-added investor really IS in force in this process — otherwise the
-  // comparison below would prove nothing at all.
-  audience.useCustomInvestors(rows[0].value);
-  ok(audience.summary().customInvestors.count === 1,
-    'CONTROL: a hand-added investor is in force in this process, so the door has something to leak');
-
+  gb.loadConfig = async () => ({ settings: { nqm: { enabled: false } }, custom: null });
   let sent = null;
-  const returned = dp.handlers.investorsRoster({}, { json: (b) => { sent = b; } });
-  const withCustomInForce = JSON.stringify(sent);
+  await dp.handlers.investorsRoster({}, { json: (b) => { sent = b; } });
+  const keys = ((sent && sent.investors) || []).map((i) => i.key);
+  ok(sent && sent.ok === true && Array.isArray(sent.investors), 'GET /investors answers a roster');
+  ok(!keys.includes('nqm'),
+    'a turned-OFF investor is NOT offered — ticking one used to drop the board to empty and blame the vendor for a deliberate turn-off');
+  ok(['button_finance', 'clearedge', 'acra', 'eresi'].every((k) => keys.includes(k)),
+    'the LoanNEX-switched named investors ARE offered — the picker matches the routed board');
+  ok(sent.investors.every((i) => i.key && i.whiteLabel && i.investorLabel && !('custom' in i)),
+    'each entry is {key, whiteLabel, investorLabel} — the picker component is unchanged');
 
-  ok(returned === undefined && !(returned && typeof returned.then === 'function'),
-    'the roster handler is SYNCHRONOUS — it awaits nothing, because there is nothing to await');
-  ok(queries === 0,
-    `THE ONE THAT MATTERS: it read NOTHING — no settings, no database (${queries} queries) — so no combined-engine setting can reach the general screen`);
-  // DERIVED from the sheet, never a hand-typed count: the owner adds names to it
-  // (26 as of 2026-09-02, 24 before that) and a literal here turns every such
-  // addition into a red build that reads as a broken feature.
-  const sheetSize = require('../src/longterm/lenderprice/investor-programs').fullRoster().length;
-  ok(sent && sent.ok === true && Array.isArray(sent.investors) && sent.investors.length === sheetSize,
-    `it answers the whole ${sheetSize}-name sheet (${sent && sent.investors ? sent.investors.length : 0})`);
-  const keys = sent.investors.map((i) => i.key);
-  ok(new Set(keys).size === keys.length,
-    '…each investor exactly once — an overlay laid over a registry is how one comes to be listed twice');
-  ok(!keys.includes('meridian_trust')
-    && !sent.investors.some((i) => i.whiteLabel === 'Summit'),
-  'THE ONE THAT MATTERS: a hand-added investor is NOT on it — this engine prices Lender Price alone, and offering a LoanNEX-only name here is an empty board nobody can explain');
-  ok(!('degraded' in sent),
-    '…and the answer carries no `degraded` key, because nothing was read that could be degraded');
-  ok(sent.investors.every((i) => !('custom' in i)),
-    '…and no entry carries a `custom` flag: the shape is the one this screen has always been sent');
+  // Fails SAFE: an unreadable config falls back to the Lender Price sheet, never empty.
+  gb.loadConfig = async () => { throw new Error('config store down'); };
+  let safe = null;
+  await dp.handlers.investorsRoster({}, { json: (b) => { safe = b; } });
+  const fr = require('../src/longterm/lenderprice/investor-programs').fullRoster();
+  ok(safe && safe.ok === true && Array.isArray(safe.investors) && safe.investors.length === fr.length && safe.investors.length > 0,
+    'an unreadable config falls back to the Lender Price sheet — never an empty picker');
 
-  // The same door with NOTHING stored — byte for byte.
-  audience.useCustomInvestors(null);
-  store.bust();
-  rows.length = 0;
-  let bare = null;
-  dp.handlers.investorsRoster({}, { json: (b) => { bare = b; } });
-  ok(JSON.stringify(bare) === withCustomInForce,
-    'THE ONE THAT MATTERS: byte-identical whether or not somebody has added an investor — the only way to be sure this door does not move when the combined engine does');
+  gb.loadConfig = origLoad;
 
-  if (realDb) require.cache[DB_PATH] = realDb; else delete require.cache[DB_PATH];
-  store.bust();
-}
-
-console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
-process.exit(failures ? 1 : 0);
+  console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
+  process.exit(failures ? 1 : 0);
+})();
