@@ -1,10 +1,29 @@
 # The Speed Program — research and build design (RTL)
 
-**Status: RESEARCH ONLY (2026-09-03). Nothing is built.** Owner-directed: *"Before you start
-building, do a research engine on how exactly this is going to be built."* This document is that
-research. It ends with the decisions the owner has to make (§9) and the build order (§10). No
-frozen engine, route, screen, migration or test was changed while writing it. Every claim below
-was read out of the code or **measured** by running the real frozen engines (§4).
+**Status: APPROVED — PHASE 1 BUILT (2026-09-03).** Owner-directed: *"Before you start building, do a
+research engine on how exactly this is going to be built."* This document is that research; §9 lists
+the decisions and §10 the build order. Every claim below was read out of the code or **measured** by
+running the real frozen engines (§4).
+
+**Owner's answer, 2026-09-03, in their own words:** *"Approved on all nine decisions, start building
+phase 1. Main goal is not to rebuild anything, just share the code of the two programs. You also need
+to keep in mind the lower maximum loan amount for each tier. We also want to put a cap maximum for the
+speed program. It's an additional overlay on top of the more conservative programs. Maximum loan out
+for the speed program is $1 million. Go ahead."* Two things that adds to the rules in §1:
+
+- **R11 — a Speed-only ceiling of $1,000,000 on the total loan**, applied as one more MIN on top of
+  the combined ceiling (`capMin.maxLoan = min(Standard's tier max, Silver's tier max, 1,000,000)`),
+  pinned through the engines' existing `targetLoan` lever. It is an overlay of the composition, not a
+  number in either engine, and it is a constant of the composition module, `SPEED_MAX_LOAN`.
+- **The per-tier maximum loan is already the lesser of the two**: each engine reads its own tier row
+  for the deal (Standard `MATRIX`, Silver `TG`, with Silver's tier itself depending on loan size), and
+  R3 takes the min of the two `maxLoan` figures for THIS deal — scenario F in §4 shows both walls at
+  $2.5M for a 4-comp borrower even though Silver's Tier 1 wall is $4.5M. With R11 the Speed wall is
+  `min(those two, $1,000,000)`.
+
+**Phase 1 (this PR): the three engine levers of §5.2 are in both copies of both engines, proven
+byte-identical when unset by `scripts/test-speed-levers-pure.js` (in `npm test`); cache-busters
+bumped; CLAUDE.md carries the authorization record.** Phases 2–6 follow §10.
 
 **Product: RTL.** The Speed Program is a fourth registerable RTL pricing program beside Standard,
 Gold and Silver. It touches nothing on the Long-Term side.
@@ -199,7 +218,8 @@ speedQuote(input):
       return INELIGIBLE, reasons = both programs' non-ELIGIBLE reasons, each tagged "[Standard]" / "[Silver]"
   capS = evS.caps                     # Standard: the effective ceiling it sized on
   capV = evV.pricedCeiling            # Silver: what THIS deal was priced at (never `caps`, which is the program max)
-  capMin = { maxLoan: min, maxAcqLTV: min, maxARLTV: min, maxLTC: min }  # R3
+  capMin = { maxLoan: min(capS, capV, SPEED_MAX_LOAN = 1,000,000),        # R3 + R11 (owner 2026-09-03)
+             maxAcqLTV: min, maxARLTV: min, maxLTC: min }
 
   # Pass B — both engines under the SAME ceiling (fixed point: Silver may step down again)
   repeat ≤ 4 times:
@@ -384,6 +404,15 @@ accepted every Speed loan; the Speed rate was never below either program's rate 
 ---
 
 ## 5. What has to change in a frozen file, and the proof that goes with it
+
+**BUILT 2026-09-03 (phase 1).** The three levers below are in `web/tools/` and `web/v2/tools/` copies of
+`standard-program.js` and `silver-program.js`; the proof is `scripts/test-speed-levers-pure.js`
+(8,640 scenarios × 3 engines byte-identical when unset; 362,880 zero/blank checks; 76,260 non-binding
+no-op checks; ~24k/~22k pinned pairs per engine for the reduce/bite/ceiling properties; 4,320 assignment
+scenarios per engine for the 10% math). One measured nuance: under Silver's pre-existing after-repair
+lever the step-down lattice may re-allocate between reserve and initial while the loan still shrinks under
+the ceiling — reported as INFO, owned by `test-silver-arv-lever-pure.js`. The engine `?v=` busters carry
+`-speedlev1`.
 
 ### 5.1 The rule
 

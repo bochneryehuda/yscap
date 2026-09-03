@@ -89,16 +89,16 @@
     ]
   },
   "web/v2/tools/silver-program.js": {
-    "sha": "3c41b644d4cac594",
+    "sha": "61d7a033d0906678",
     "v": [
-      "silver9-bandeps-tiermk1-tsprog1-oopauto1"
+      "silver9-bandeps-tiermk1-tsprog1-oopauto1-speedlev1"
     ]
   },
   "web/v2/tools/standard-program.js": {
-    "sha": "44481a45d0f83fc6",
+    "sha": "8df87b2edf0ad896",
     "v": [
-      "asgseller18-asgelig-tiermk1-tsprog1-oopauto1-judsmall1",
-      "tsprog1-oopauto1-judsmall1"
+      "asgseller18-asgelig-tiermk1-tsprog1-oopauto1-judsmall1-speedlev1",
+      "tsprog1-oopauto1-judsmall1-speedlev1"
     ]
   },
   "web/v2/tools/termsheet.js": {

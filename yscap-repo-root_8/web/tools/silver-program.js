@@ -908,7 +908,14 @@
     var effPurchase = totalPP;
     if (isAssignment) {
       var rawFee = Math.max(0, totalPP - sellerPP);
-      var maxFee = 0.15 * sellerPP;
+      /* THE FINANCEABLE SHARE IS A LEVER THAT CAN ONLY TIGHTEN (owner-authorized 2026-09-03,
+         the Speed Program build — D1). A program composed ON TOP of this one may finance a
+         SMALLER share of the fee (Speed: 10%). A MIN against the company's 15%, so it can
+         never loosen the rule; unset / 0 / above 15% → exactly 0.15 and every figure below
+         is byte-identical (scripts/test-speed-levers-pure.js). The label prints the share
+         actually applied, which for the default is the same "15%" it always printed. */
+      var maxPct = (input.assignmentMaxPct > 0) ? Math.min(0.15, input.assignmentMaxPct) : 0.15;
+      var maxFee = maxPct * sellerPP;
       var financeableFee = Math.min(rawFee, maxFee);
       var excessFee = Math.max(0, rawFee - financeableFee);
       effPurchase = sellerPP + financeableFee;
@@ -921,7 +928,7 @@
       assignment = {
         sellerPrice: round2(sellerPP), totalPrice: round2(totalPP), fee: round2(rawFee),
         maxFee: round2(maxFee), financeableFee: round2(financeableFee), excessOOP: round2(excessFee),
-        recognizedPrice: round2(effPurchase), overLimit: excessFee > 0.5, maxPct: 0.15,
+        recognizedPrice: round2(effPurchase), overLimit: excessFee > 0.5, maxPct: maxPct,
         overridden: ovrEff > 0
       };
     }
@@ -1065,6 +1072,14 @@
        standard-program.js (whose sizeLoan this engine reuses). Inert when unset;
        raising a loan still requires the admin basis below. */
     if (input.targetLoan && input.targetLoan > 0) capsEff.maxLoan = Math.min(capsEff.maxLoan, input.targetLoan);
+    /* THE ACQUISITION WALL GETS THE SAME VOLUNTARY LEVER (owner-authorized 2026-09-03, the
+       Speed Program build — D1): the Speed Program runs this engine and the Standard engine
+       under ONE combined ceiling, the lesser of the two on every axis, and the acquisition
+       wall was the one axis with no lever on either engine. A MIN like the three above — it
+       can only REDUCE, the admin basis (ovrAcqLTV, next line) still wins, and unset it is
+       inert (scripts/test-speed-levers-pure.js). The step-down lattice below builds every
+       candidate from capsEff, so a pinned acquisition wall survives it. */
+    if (input.targetAcqLTV && input.targetAcqLTV > 0) capsEff.maxAcqLTV = Math.min(capsEff.maxAcqLTV, input.targetAcqLTV);
     if (input.ovrAcqLTV > 0) capsEff.maxAcqLTV = input.ovrAcqLTV;
     if (input.ovrARLTV > 0) capsEff.maxARLTV = input.ovrARLTV;
     if (input.ovrLTC > 0) capsEff.maxLTC = input.ovrLTC;
@@ -1445,8 +1460,8 @@
         usd(assignment.financeableFee) + " of the " + usd(assignment.fee) + " assignment fee is financed" +
         (assignment.excessOOP > 0.5 ? ("; " + usd(assignment.excessOOP) + " is brought out of pocket at closing") : "") + ".");
     } else if (assignment && assignment.overLimit) {
-      add("ELIGIBLE", usd(assignment.financeableFee) + " of the " + usd(assignment.fee) + " assignment fee is financed (the 15% cap is " + usd(assignment.maxFee) +
-        ", 15% of the " + usd(assignment.sellerPrice) + " contract price); the loan is sized on the " + usd(assignment.recognizedPrice) + " effective price and the remaining " +
+      add("ELIGIBLE", usd(assignment.financeableFee) + " of the " + usd(assignment.fee) + " assignment fee is financed (the " + pct(assignment.maxPct) + " cap is " + usd(assignment.maxFee) +
+        ", " + pct(assignment.maxPct) + " of the " + usd(assignment.sellerPrice) + " contract price); the loan is sized on the " + usd(assignment.recognizedPrice) + " effective price and the remaining " +
         usd(assignment.excessOOP) + " is brought to closing as extra cash to close. To finance more of the assignment fee, request an exception.");
     }
     if (sizing) sizing.assignmentExcessOOP = assignment ? assignment.excessOOP : 0;
