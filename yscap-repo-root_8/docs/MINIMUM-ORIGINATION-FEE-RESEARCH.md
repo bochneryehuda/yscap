@@ -592,6 +592,33 @@ its own owner call**, not a drive-by.
 * **No CEMA-style tax interaction, no engine number, no V1 change.** `/v1` is parked and registers
   no files.
 
+### 9.7b A MEASURED CONSEQUENCE ON THE WHOLESALE CHANNEL, found by CI
+
+**A discounted TPO channel origination cannot go below the minimum either.** The minimum is a floor
+on OUR origination and applies on a wholesale file exactly as it does on a retail one — the owner's
+D2 exemption is the BROKER's own fee, a separate key, which is untouched.
+
+MEASURED on the scenario `test-tpo-pricing-layer-pure` prices ($315,000, NJ): retail at 1.25% is
+$3,937.50, a channel cut to 0.5% computes $1,575, and the floor charges **$2,500**. The channel
+discount still bites — $3,937.50 → $2,500 — it simply cannot go below the floor. **So every
+wholesale loan under about $500,000 at a 0.5% channel rate pays the $2,500**, which is what the
+owner asked for and is worth stating before a broker asks.
+
+**This was found by CI, not by the 42-suite sweep — that sweep did not include this suite, and
+reporting green off a selection of suites was the mistake.** The fix for the class is to run the
+FULL chain before claiming green, not a larger selection.
+
+**The assertion was re-pointed, and the re-point is strictly stronger than the line it replaced.**
+Section C's subject is *"does the channel's origination percentage reach the quote?"*, and
+`origination === totalLoan × 0.5%` could no longer see it. Asserting the dollars through
+`min-origination` **alone** would have been WEAKER: below the crossover every sub-minimum
+percentage charges $2,500, so 0.5% and 0.75% would be indistinguishable and a channel cut that
+never reached the engine would still pass. The figures that still tell them apart are the ones the
+rule REPORTS — `pct` and `pctAmount` — so the channel percentage is pinned there and the dollars
+against the one rule beside it. Two mutations were proven to fail it: **M23** (the channel
+percentage never reaches the engine) and **M24** (the minimum neutralised), each with a green
+control.
+
 ### 9.8 The proof
 
 | Suite | Checks | What it holds |

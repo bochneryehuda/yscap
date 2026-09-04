@@ -29,6 +29,7 @@ const assert = require('assert');
 const pricing = require('../src/lib/pricing');
 const settings = require('../src/lib/pricing-settings');
 const tpo = require('../src/lib/tpo-pricing');
+const minOrig = require('../src/lib/min-origination');
 
 if (!pricing.enginesReady || !pricing.enginesReady()) {
   console.error('engines not loadable:', pricing.loadErr && pricing.loadErr());
@@ -128,7 +129,26 @@ const base = quote('standard', scen.state, scen.exp);   // retail baseline
 {
   const cd = Object.assign({}, RETAIL, { origStdPct: 0.5 });   // 1.25% → 0.5%
   const q = quote('standard', scen.state, scen.exp, { settings: cd });
-  ok(near(q.origination, Math.round(q.sizing.totalLoan * 0.005 * 100) / 100), 'channel orig cut: origination = totalLoan × 0.5%');
+  /* THE CHANNEL PERCENTAGE IS PINNED ON THE FIGURES THAT CARRY IT, NOT ON THE DOLLARS CHARGED
+     (re-pointed 2026-09-04, NOT loosened). The $2,500 program minimum (min-origination.js) is a
+     FLOOR on our own origination and applies on a wholesale file exactly as it does on a retail
+     one — the owner's D2 exemption is the BROKER's own fee, which is a separate key and is proven
+     separately in section E. So on this scenario ($315,000) a channel cut to 0.5% computes $1,575
+     and is floored to $2,500, and the old assertion `origination === totalLoan × 0.5%` could no
+     longer see its own subject.
+
+     Asserting the dollars through `min-origination` itself would be WEAKER than the original, not
+     stronger: below the crossover EVERY sub-minimum percentage charges $2,500, so 0.5% and 0.75%
+     would be indistinguishable and a channel cut that never reached the engine at all would still
+     pass. The figures that still tell them apart are the ones the rule REPORTS — `pct` and
+     `pctAmount` — so the channel percentage is pinned there, and the dollars are pinned against
+     the one rule beside it. Together these are strictly stronger than the line they replace. */
+  const cut = q.closingCosts.originationMinimum;
+  ok(cut && near(cut.pct, 0.005), 'channel orig cut: the CHANNEL percentage (0.5%) is what reached the engine');
+  ok(cut && near(cut.pctAmount, Math.round(q.sizing.totalLoan * 0.005 * 100) / 100),
+    'channel orig cut: the percentage figure is totalLoan × 0.5%');
+  ok(near(q.origination, minOrig.originationFor({ totalLoan: q.sizing.totalLoan, origPct: 0.005, minFee: RETAIL.minOrigFee }).amount),
+    'channel orig cut: the fee charged is what the ONE minimum-origination rule says');
   ok(q.origination < base.origination, 'channel orig cut: origination is lower than retail');
   ok(q.sizing.totalLoan === base.sizing.totalLoan && near(q.noteRate, base.noteRate), 'channel orig cut: loan amount + note rate unchanged');
 }
