@@ -100,6 +100,7 @@ function buildOurValues(app, quote, llcName) {
   const a = app || {};
   const q = quote || {};
   const sizing = q.sizing || {};
+  const cc = q.closingCosts || {};
   const caps = (q.guidelines && q.guidelines.caps) || {};
   const nz = (v) => (v === null || v === undefined || v === '' ? undefined : v);
   // ROOT CAUSE FIX (owner-reported 2026-07-26: "our system says 0.67425 and
@@ -223,6 +224,11 @@ function buildOurValues(app, quote, llcName) {
     // rate / origination / term
     note_rate: nz(a.rate_pct),
     origination_pct: (q.origPct === null || q.origPct === undefined) ? undefined : Number(q.origPct) * 100,
+    /* The same fee as DOLLARS (field 454) — compared instead of the percentage on a file where the
+       program minimum bound (owner-directed 2026-09-04, db/695). `closingCosts.origination` has
+       always been the dollars CHARGED, so this is the figure the borrower actually pays either way;
+       which of the two rows is compared is decided in markNotApplicable. */
+    origination_amount: (cc.origination === null || cc.origination === undefined) ? undefined : Number(cc.origination),
     term_months: a.term != null && String(a.term).trim() !== '' ? parseInt(String(a.term), 10) : undefined,
     maturity_date: nz(a.maturity_date),
     funded_date: nz(a.funded_date),
@@ -349,6 +355,25 @@ function markNotApplicable(fields, facts) {
     // A/B-piece facts) is not in the registry at all, so a key lookup would silently
     // never reach one. The row carries the flag compareField put on it.
     if (f.naOnDealShape) reason = map.notApplicableReason(f, facts);
+    /* THE ORIGINATION FEE IS COMPARED AS A RATE OR AS AN AMOUNT, NEVER BOTH (owner-directed
+       2026-09-04, db/695: *"any time that you are hitting your minimum, instead of mapping to field
+       ID 388 Map it to 454"*). On a minimum-bound loan the STATED rate is not the rate charged, so
+       comparing the percentage would false-mismatch every small file and hold its term sheet with
+       no fix anybody could perform; on every other loan the amount row is the one with nothing
+       meaningful to say. Exactly one of the pair is live on any file, which is also why NO EXISTING
+       FILE'S VERDICT MOVES: the floor binds on none of them, so 454 reads not-applicable and 388 is
+       compared exactly as it is today. A file we cannot judge keeps the percentage — never silence
+       a compared field on a fact we could not establish (the `notApplicableReason` rule). */
+    /* THE FACT HAS TO BE KNOWN BEFORE EITHER ROW IS SILENCED, and that is the module's own
+       doctrine rather than caution: *"an unknown/absent fact reads as 'it applies': never silence a
+       compared field on a shape we could not establish."* It is also load-bearing here, because
+       this marker is idempotent BY SKIPPING a row it has already decided — so a first pass with no
+       facts (compareAll's own) that guessed "not applicable" would poison the row for the second
+       pass that does know. MEASURED before this guard: the amount row came back not-applicable on a
+       minimum-bound file, i.e. neither half of the pair was compared at all. */
+    const minKnown = !!(facts && typeof facts.minOrigApplied === 'boolean');
+    if (!reason && minKnown && f.key === 'origination_pct' && facts.minOrigApplied === true) reason = map.ORIG_NA_PCT;
+    if (!reason && minKnown && f.key === 'origination_amount' && facts.minOrigApplied === false) reason = map.ORIG_NA_AMOUNT;
     if (!reason && f.naWhenOursMissing && f.status === 'incomparable'
         && (f.oursNorm === null || f.oursNorm === undefined || f.oursNorm === '')) {
       reason = "Doesn't apply to this kind of loan — nothing to compare.";
@@ -1213,7 +1238,20 @@ async function computeFindings(appId, dbc, opts) {
   }
   const theirs = loan ? map.extractFields(loan) : {};
   const ours = buildOurValues(row, quote ? quote.quote : null, row.llc_name);
-  const { fields: econFields } = compareAll(ours, theirs, resolutions);
+  /* WHICH FIELDS DO NOT APPLY TO THIS DEAL — built ONCE and handed to BOTH passes of the marker
+     (compareAll runs it over the economics family, computeFindings again over every family), so the
+     first pass can never decide a row on facts it has not been given and then block the second. */
+  const naFacts = {
+    refinance: dealBasis.sizesOnAsIsValue(row.loan_type),
+    /* Did the program minimum origination fee bind on THIS file? Read from the registered quote's
+       own explain block — the same block every printed surface reads — so the sync panel can never
+       disagree with the term sheet about which fee this loan carries. Absent on every quote the
+       floor never reached, and on every quote stored before db/695, which is what makes the switch
+       inert on the whole back book. */
+    minOrigApplied: !!(quote && quote.quote && quote.quote.closingCosts
+      && quote.quote.closingCosts.originationMinimum),
+  };
+  const { fields: econFields } = compareAll(ours, theirs, resolutions, naFacts);
   // Effective SSN hash for each of our parties — prefer the stored
   // borrowers.ssn_hash; if it is missing (a write path that filled ssn_encrypted
   // but not the hash column) derive it from the encrypted SSN so an on-file SSN
@@ -1242,7 +1280,7 @@ async function computeFindings(appId, dbc, opts) {
   // and the same one that decided the file may not store a purchase price in the
   // first place — so "is this a refinance?" has ONE answer across the system and
   // the sync panel can never disagree with the door that cleared the column.
-  markNotApplicable(fields, { refinance: dealBasis.sizesOnAsIsValue(row.loan_type) });
+  markNotApplicable(fields, naFacts);
   // Super-admin FIELD EXCEPTIONS (owner-directed 2026-08-02): a not-matching / "no
   // data to compare" field can be escalated to a super admin, who GRANTS an exception
   // (resolution 'excepted') so it no longer blocks the term sheet — or a staffer has

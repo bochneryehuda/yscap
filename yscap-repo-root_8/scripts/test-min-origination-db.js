@@ -232,6 +232,56 @@ const SMALL = {
     assert(Number(tpoCd.minOrigFee) === 4000, `E3 a TPO file inherits the company minimum (got ${tpoCd.minOrigFee})`);
     await call(server, 'PUT', '/api/admin/pricing', adminTok, { minOrigFee: null });
 
+    // ═══ G. ENCOMPASS — THE FEE IS COMPARED ONE WAY OR THE OTHER, NEVER BOTH ═════════════════
+    /* Owner-directed 2026-09-04: *"Encompass has a different field, 454, which is the flat amount
+       of the origination, so any time that you are hitting your minimum, instead of mapping to
+       field ID 388 Map it to 454."* The point of this section is NOT that 454 is pulled — it is
+       that the reconcile row PASSES there. That section holds the DocuSign term sheet and the data
+       tape unless every compared field matches exactly, so a percentage row left live on a
+       minimum-bound file would false-mismatch every small loan with no fix anybody could perform. */
+    const reconcile = require('../src/encompass/reconcile');
+    const origRows = async (appId) => {
+      const f = await reconcile.computeFindings(appId, db);
+      const pick = (k) => (f.fields || []).find((x) => x.key === k) || null;
+      return { pct: pick('origination_pct'), amt: pick('origination_amount') };
+    };
+    // A minimum-bound file whose Encompass copy holds BOTH attributes of the same fee object:
+    // 388 = the entered rate (1.25), 454 = the dollars actually charged (2,500).
+    await db.query(
+      `UPDATE applications SET encompass_loan_guid=$2, encompass_extra=$3::jsonb WHERE id=$1`,
+      [appA, `guid-${sfx}`, JSON.stringify({ _fieldValues: { 388: '1.250', 454: '2500.00' } })]);
+    const gA = await origRows(appA);
+    assert(gA.pct && gA.pct.status === 'not_applicable',
+      `G1 on a minimum-bound file the PERCENTAGE row does not apply (got ${gA.pct && gA.pct.status})`);
+    assert(gA.pct && /dollar amount \(field 454\)/.test(String(gA.pct.naReason)),
+      'G2 …and it says what is compared instead, rather than only "does not apply"');
+    assert(gA.amt && gA.amt.status === 'match',
+      `G3 …and the AMOUNT row is compared and PASSES — which is the whole point (got ${gA.amt && gA.amt.status}, ours=${gA.amt && gA.amt.ours}, theirs=${gA.amt && gA.amt.theirs})`);
+    assert(gA.amt && gA.amt.open === false, 'G4 …so it holds nothing');
+    /* A REAL disagreement on the dollars still bites — otherwise the switch would have replaced a
+       false mismatch with no check at all. */
+    await db.query(
+      `UPDATE applications SET encompass_extra=$2::jsonb WHERE id=$1`,
+      [appA, JSON.stringify({ _fieldValues: { 388: '1.250', 454: '9999.00' } })]);
+    const gAbad = await origRows(appA);
+    assert(gAbad.amt && gAbad.amt.status === 'mismatch', `G5 …and a real disagreement on the dollars still bites (got ${gAbad.amt && gAbad.amt.status})`);
+
+    /* AND NO EXISTING FILE MOVES. On a loan the floor never reached — which is every file that
+       exists today, and every quote stored before db/695 — the percentage is compared exactly as
+       it is now and the amount row is the one that does not apply. */
+    const appH = await mkApp();
+    await call(server, 'POST', reg(appH), adminTok, { program: 'standard', overrides: { ...SMALL, minOrigFee: 0 } });
+    await db.query(
+      `UPDATE applications SET encompass_loan_guid=$2, encompass_extra=$3::jsonb WHERE id=$1`,
+      [appH, `guid-h-${sfx}`, JSON.stringify({ _fieldValues: { 388: '1.250', 454: '1800.00' } })]);
+    const gH = await origRows(appH);
+    assert(gH.pct && gH.pct.status === 'match',
+      `G6 on an ordinary loan the PERCENTAGE row is compared and passes, exactly as today (got ${gH.pct && gH.pct.status})`);
+    assert(gH.amt && gH.amt.status === 'not_applicable',
+      `G7 …and the AMOUNT row is the one that does not apply (got ${gH.amt && gH.amt.status})`);
+    assert(require('../src/lib/integrations/encompass-field-map').allFieldIds().includes('454'),
+      'G8 field 454 is asked for by number, so the fieldReader actually reads it');
+
     // ═══ THE EXCEPTION PAD ═══════════════════════════════════════════════════════════════════
     const excMaps = await call(server, 'GET', `/api/staff/applications/${appA}/exceptions`, adminTok);
     const codes = excMaps.body && (excMaps.body.reasonCodesByType || {}).pricing_exception;

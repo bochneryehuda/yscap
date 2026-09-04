@@ -201,8 +201,20 @@ console.log('\nE. the panel is told WHY a row is grey');
 console.log('\nF. source guards');
 {
   const rec = stripComments(SRC('src/encompass/reconcile.js'));
-  yes(/markNotApplicable\(fields,\s*\{\s*refinance:\s*dealBasis\.sizesOnAsIsValue\(row\.loan_type\)\s*\}\)/.test(rec),
+  /* RE-POINTED 2026-09-04, never loosened. The facts moved into a named `naFacts` object when the
+     minimum-origination switch joined them (db/695) — this guard's SUBJECT is unchanged: that the
+     refinance verdict comes from `deal-basis` asking about the FILE's own loan type, which is the
+     ONE definition the frozen engine sizes on. */
+  yes(/refinance:\s*dealBasis\.sizesOnAsIsValue\(row\.loan_type\)/.test(rec),
     'F1 computeFindings asks deal-basis about the FILE\'s own loan_type — the ONE definition of a refinance');
+  /* AND THE FACTS REACH BOTH PASSES OF THE MARKER. It runs once inside compareAll (over the
+     economics family) and again over every family, and it is idempotent BY SKIPPING a row it has
+     already decided — so a first pass handed no facts can decide a row wrongly and then block the
+     second pass that knows better. MEASURED when the origination switch was added: both halves of
+     that pair came back not-applicable, i.e. the fee was compared neither way. */
+  yes(/const naFacts = \{/.test(rec) && /compareAll\(ours, theirs, resolutions, naFacts\)/.test(rec)
+      && /markNotApplicable\(fields, naFacts\)/.test(rec),
+    'F1b …and BOTH passes of the marker are handed the same facts');
   yes(!/\/refi\/i?\.test|includes\(['"]refi/.test(rec),
     'F2 reconcile never re-inlines a /refi/ test of its own — a second copy is how the panel ends up demanding a field the details door refuses to store');
   yes(/a\.loan_type/.test(rec), 'F3 the live SELECT actually reads loan_type (without it the rule silently never fires)');
