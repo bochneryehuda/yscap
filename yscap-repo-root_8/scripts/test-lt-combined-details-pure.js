@@ -408,8 +408,14 @@ const nexRowOf = (out) => (out.programs || []).find((p) => p.program === 'DSCR 3
        asserted — the guard, and the adoption of `r.option` itself. */
     ok(/if \(r && r\.option\)/.test(pricer) && /setFetched\(r\.option\);/.test(pricer),
       'WIRE-6 …and merges the OPTION the door hands back, not a translated breakdown');
-    ok(/ts\.noteExplained\(quote && quote\.key, r\.option\)/.test(pricer),
+    ok(/ts\.noteExplained\([^;]*, r\.option\)/.test(pricer),
       'WIRE-6b …and hands that same option up to the board, so a row collected into a comparison carries the build the panel was shown');
+    /* ⛔ UNDER THE QUOTE'S OWN IDENTITY, never its slot on the board — a memory keyed
+       `programIndex:optionIndex` outlives a search and lends one board's answer to the
+       row that merely replaces it. Post-merge audit of #1450; the whole rule and its
+       own mutation proof live in `test-lt-termsheet-price-lands-pure` E10b. */
+    ok(/ts\.noteExplained\(explainMemoryKey\(oProp\), r\.option\)/.test(pricer),
+      'WIRE-6c …keyed on the quote itself, so a later search cannot lend it an answer');
     ok(/\{askErr && \(/.test(pricer) && /setAskErr\(/.test(pricer),
       'WIRE-7 …and a refusal is SAID where the empty table would be — a blank space reads as "this quote has no adjustments", a claim no rate sheet made');
     ok(/<ExplainProvider value=\{explainRow\}>/.test(pricer) && /<\/ExplainProvider>/.test(pricer),

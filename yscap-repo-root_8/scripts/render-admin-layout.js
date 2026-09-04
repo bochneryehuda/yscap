@@ -21,7 +21,7 @@
  * ALL GREEN. A layout test that measures nothing is a tautology, so it now asserts it found real
  * boxes before it asserts anything about them.
  *
- * Browser-dependent, so NOT in `npm test` (the `render-fee-audit` convention); it SKIPs cleanly
+ * Browser-dependent, and IN `npm test` since 2026-09-04 — it SKIPs cleanly
  * without Playwright. The two source-level causes are additionally pinned by H8a/H8b in
  * `test-lender-fees-pure`, which DOES run in CI.
  */

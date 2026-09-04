@@ -33,18 +33,33 @@ import { api } from '../lib/api.js';
 export default function StaffViewBanner({ inFlow = false, hint = '' }) {
   const { exitStaffView } = useAuth();
   const [viewing, setViewing] = useState(null);
+  const [unknown, setUnknown] = useState(false);
 
   /* Probed once per mount: the answer cannot change without the token changing,
-     and a token change remounts the app. */
+     and a token change remounts the app.
+
+     ⛔ A FAILED PROBE IS A THIRD STATE, NOT A "NO". The first cut swallowed the
+     error and rendered nothing, so a blip or a 502 read as "you are not in a staff
+     view" — fail-OPEN on the one rule this component exists for, which is that a
+     session belonging to somebody else says so unmissably on every screen. On the
+     console that was survivable; on the engine shell this bar is the ONLY thing
+     that says it. It is retried once (a single blip should not put a notice on
+     anybody's screen) and, if it still cannot tell, it SAYS it cannot tell. */
   useEffect(() => {
     let alive = true;
-    api.staffViewSession().then((s) => {
-      if (alive && s && s.active) setViewing(s.viewing || {});
-    }).catch(() => {});
+    const ask = (retriesLeft) => api.staffViewSession().then((s) => {
+      if (!alive) return;
+      if (s && s.active) setViewing(s.viewing || {});
+    }).catch(() => {
+      if (!alive) return;
+      if (retriesLeft > 0) { setTimeout(() => { if (alive) ask(retriesLeft - 1); }, 1500); return; }
+      setUnknown(true);
+    });
+    ask(1);
     return () => { alive = false; };
   }, []);
 
-  if (!viewing) return null;
+  if (!viewing && !unknown) return null;
 
   const leave = async () => {
     const restored = await exitStaffView();
@@ -87,7 +102,10 @@ export default function StaffViewBanner({ inFlow = false, hint = '' }) {
       ...(inFlow
         ? { position: 'static', flexWrap: 'wrap' }
         : { position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1001 }),
-      background: '#1F3864', color: '#fff', padding: '8px 14px', display: 'flex',
+      /* The unsure bar is a QUIETER colour on purpose: it reports that PILOT could
+         not check, which is a different fact from "this is somebody else's screen"
+         and must not read as the same alarm. */
+      background: viewing ? '#1F3864' : '#4B585C', color: '#fff', padding: '8px 14px', display: 'flex',
       alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14,
     }}>
       {/* THE HINT IS THE CALLER'S, because it is only true where the caller is.
@@ -96,9 +114,19 @@ export default function StaffViewBanner({ inFlow = false, hint = '' }) {
           it — a re-audit caught that. It is right for the console (the product
           switch is in its sidebar) and would be a lie in the engine, which has
           no such switch. So the console passes it and the engine does not. */}
-      <span>You are seeing <strong>{viewing.name || 'a team member'}</strong>’s screen — read-only.{hint ? ` ${hint}` : ''}</span>
-      <button className="btn small" style={{ background: '#fff', color: '#141B22', border: 'none' }}
-        onClick={leave}>Back to my own screen</button>
+      {viewing ? (
+        <>
+          <span>You are seeing <strong>{viewing.name || 'a team member'}</strong>’s screen — read-only.{hint ? ` ${hint}` : ''}</span>
+          <button className="btn small" style={{ background: '#fff', color: '#141B22', border: 'none' }}
+            onClick={leave}>Back to my own screen</button>
+        </>
+      ) : (
+        /* No way out is offered here, deliberately: we do not know that there is
+           anything to leave, and calling the exit handoff when nobody is in a view
+           would take a working session apart to fix a question mark. Reloading is
+           the honest advice, and it re-asks. */
+        <span>PILOT could not check whose screen this is — if you opened a team member’s screen, treat this as theirs. Reload to check again.</span>
+      )}
     </div>
   );
 }

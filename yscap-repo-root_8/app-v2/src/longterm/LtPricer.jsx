@@ -1025,15 +1025,57 @@ function askedLine(a) {
  * place instead of three.
  */
 export function landingOf(option, rememberedBuild) {
-  const pb = (option && option.priceBuild) || rememberedBuild || null;
-  if (!pb) return null;
   const ok = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
-  if (!ok(pb.basePoints) || !ok(pb.adjustmentPoints) || !ok(pb.adjustedPoints)) return null;
+  /**
+   * ⛔ THE TEST IS WHETHER THE BUILD SAYS ANYTHING, NOT WHETHER THE FIELD EXISTS — and that
+   * distinction is the whole difference between this guard working and this guard being
+   * decoration. `programsFromLoanNex` writes a priceBuild on EVERY row it publishes, carrying
+   * the rate, the price and the derived points with `basePoints: null, adjustmentPoints: null`
+   * (quote-shape.js, "LoanNEX quotes PRICE"). So the row always has a TRUTHY priceBuild and a
+   * `||` on the object short-circuits on it, never reads the remembered build, and then fails
+   * the three-figure test — returning null on exactly the vendor this exists for, while the
+   * board had the itemisation in hand. The first cut of this shipped that way.
+   */
+  const whole = (pb) => !!pb && ok(pb.basePoints) && ok(pb.adjustmentPoints) && ok(pb.adjustedPoints);
+  const own = option && option.priceBuild;
+  const pb = whole(own) ? own : (whole(rememberedBuild) ? rememberedBuild : null);
+  if (!pb) return null;
   return {
     basePoints: Number(pb.basePoints),
     adjustmentPoints: Number(pb.adjustmentPoints),
     adjustedPoints: Number(pb.adjustedPoints),
   };
+}
+
+/**
+ * ⛔ THE MEMORY IS KEYED ON THE QUOTE, NEVER ON ITS SLOT ON THE BOARD.
+ *
+ * The first cut keyed it `programIndex:optionIndex` and never cleared it, which is
+ * two failures wearing one bug. A build explained for row `0:0` of one search sat in
+ * the map and was offered to row `0:0` of the NEXT search — a different investor,
+ * program and rate. Its three figures are internally consistent with each other, so
+ * `landingGap` answers `overstated:false` and the guard PASSES: a row nobody checked
+ * is recorded and issued as one that was. That is a wrong price looking right, which
+ * is the one failure this whole change exists to end.
+ *
+ * ⛔ AND THE HASH KEY ALONE IS NOT AN IDENTITY. `loannex/README` states it plainly:
+ * "a `priceHashKey` is a handle INTO a transaction, not a global name for a quote."
+ * So the transaction is part of the key, and the row's own priced content behind it —
+ * a collision then needs the same product, lender, rate AND price, at which point the
+ * remembered itemisation genuinely describes that quote.
+ *
+ * Returns null when there is no handle, which is not a gap: the panel only ever asks
+ * a sheet to explain a row that HAS one, so a row with no handle has nothing to
+ * remember and nothing to look up.
+ */
+export function explainMemoryKey(option) {
+  const h = option && option.explain;
+  if (!h || h.priceHashKey == null || h.priceHashKey === '') return null;
+  const part = (v) => (v === null || v === undefined ? '' : String(v));
+  return [
+    part(h.transactionId), part(h.priceHashKey), part(h.productId),
+    part(h.lenderId), part(h.rate), part(h.price),
+  ].join('|');
 }
 
 export function PriceBuild({ o: oProp, comp, ts, quote }) {
@@ -1100,7 +1142,7 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
              can send what was actually explained. Without this the price-landing
              refusal is reachable only from inside this panel, and every option
              collected into a comparison goes to the document unchecked. */
-          if (ts && ts.noteExplained) ts.noteExplained(quote && quote.key, r.option);
+          if (ts && ts.noteExplained) ts.noteExplained(explainMemoryKey(oProp), r.option);
         } else if (r && r.ok === false) setAskErr(r.message || 'This rate sheet could not be asked to explain this price.');
       })
       .catch((e) => { if (!dead) setAskErr((e && e.message) || 'This rate sheet could not be asked to explain this price.'); })
@@ -2265,8 +2307,9 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
      abstained under its own "absent is not a failure" rule and the exact 0.875
      incident row could be collected and issued unchecked.
 
-     Keyed on the quote's own key, so re-opening a panel, collecting the row and
-     issuing it an hour later all describe the same build. Nothing here computes
+     Keyed on the quote's own identity (`explainMemoryKey`), so re-opening a panel,
+     collecting the row and issuing it all describe the same build — and a later
+     search can never lend its answer to a row that merely sits in the same slot. Nothing here computes
      a landing: it stores the option the server explained and `selectionFor`
      reads the three figures off it, exactly as the panel does. */
   const [explained, setExplained] = useState({});
@@ -2545,7 +2588,7 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
          monthly payment. Sent ONLY when the breakdown has actually been fetched — a row nobody
          opened sends nothing and is issued exactly as before, because refusing those would stop
          the desk working over a check nobody asked for. */
-      priceLanding: landingOf(o, explained[String(q && q.key)]),
+      priceLanding: landingOf(o, explained[explainMemoryKey(o)]),
       pricedAt: (o && o.rateSheet && o.rateSheet.effectiveAt) || (res && res.pricedAt) || null,
       /* ⛔ THE RATIO THIS OPTION WAS PRICED AT — the bracket board's own stamp on the
          option (`o.dscr`), never the form's figure. On a banded board the form's DSCR
@@ -2788,6 +2831,10 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
     const problem = searchProblem(f, zip.status);
     if (problem) { setGateMsg(problem); return; }
     setGateMsg(null);
+    /* ⛔ AND A NEW SEARCH FORGETS. The key above already makes a stale hit need the same
+       transaction, product, lender, rate and price — but a board that is gone cannot be
+       the source of a landing on the board that replaced it, and saying so costs a line. */
+    setExplained({});
     setBusy(true); setErr(null); setRes(null); setElapsed(0);
     // A new scenario means new bands. Leaving the last deal's banding on screen
     // beside a fresh board is one search's answer under another's question.
