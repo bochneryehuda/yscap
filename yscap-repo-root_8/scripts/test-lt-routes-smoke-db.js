@@ -323,6 +323,17 @@ async function main() {
       // is asserted separately below, from a loan officer's token.)
       // Both of these are pure config reads that reach no vendor.
       '/api/lt/dscr/combined/health',
+      // THE PRICING RULE CENTER — our own overlay on top of every engine. All four
+      // GET doors are opened here rather than exempted, because there is nothing to
+      // exempt: they read one small table and the field registry and reach NOBODY.
+      // The smoke session is not a super admin, so each answers 404 (the gate, which
+      // is the point — a control the rest of the team may not use should not
+      // announce itself); a 404 is not a 500, and a door that started throwing
+      // would surface here instead of on the one screen a super admin opens.
+      '/api/lt/dscr/pricing-rules',
+      '/api/lt/dscr/pricing-rules/catalog',
+      '/api/lt/dscr/pricing-rules/events',
+      `/api/lt/dscr/pricing-rules/${NO_LOAN}`,
       '/api/lt/dscr/combined/loannex/login-check',
       // The INVESTOR SETTINGS roster — every investor, its white-label name, and
       // which of the two pricing programs its products are fetched from. Another

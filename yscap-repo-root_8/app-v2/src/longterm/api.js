@@ -205,6 +205,19 @@ export const ltApi = {
   // committed Census table on our own server — no vendor call, no session, no billing — which is
   // why this one MAY be fired as somebody types, unlike the two above.
   dscrZip: (zip) => ltGet(lt(`/dscr/zip/${encodeURIComponent(String(zip || '').trim())}`)),
+  /* THE PRICING RULE CENTER (owner-directed 2026-09-04) — our own overlay on top
+     of every engine. Super-admin only: every one of these answers 404 to anybody
+     else, which is what lets the screen render nothing rather than an error. */
+  pricingRules: (archived) => ltGet(lt(`/dscr/pricing-rules${archived ? '?archived=1' : ''}`)),
+  pricingRuleCatalog: () => ltGet(lt('/dscr/pricing-rules/catalog')),
+  pricingRule: (id) => ltGet(lt(`/dscr/pricing-rules/${encodeURIComponent(id)}`)),
+  pricingRuleCreate: (body) => ltPost(lt('/dscr/pricing-rules'), body),
+  pricingRuleSave: (id, body) => ltPut(lt(`/dscr/pricing-rules/${encodeURIComponent(id)}`), body),
+  pricingRuleArchive: (id) => ltDel(lt(`/dscr/pricing-rules/${encodeURIComponent(id)}`)),
+  pricingRuleRestore: (id) => ltPost(lt(`/dscr/pricing-rules/${encodeURIComponent(id)}/restore`), {}),
+  pricingRuleTest: (body) => ltPost(lt('/dscr/pricing-rules/test'), body),
+  pricingRuleEvents: (ruleId) => ltGet(lt(`/dscr/pricing-rules/events${ruleId ? `?ruleId=${encodeURIComponent(ruleId)}` : ''}`)),
+
   // The signed-in person's COMPENSATION PLAN — what the pricing engine's three-way switch
   // (borrower-paid / raw / lender-paid) overlays on the displayed numbers. Display only:
   // the Lender Price search itself never changes (owner-directed 2026-08-23).

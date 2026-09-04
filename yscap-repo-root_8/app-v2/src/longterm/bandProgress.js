@@ -146,9 +146,16 @@ export function progressView(state) {
   // the run stopped short of.
   const searched = answered + empty + failed;
   const raw = s.total > 0 ? Math.floor((settled / s.total) * 100) : 0;
-  const pct = s.done ? 100 : Math.min(99, raw);
+  /* ⛔ THE LOCAL IS `percent`, NOT `pct`, AND THE NAME IS THE POINT. `pct` is a
+     FORMATTER exported by `format.js` — it takes a whole percent and prints it —
+     and `test-lt-pipeline-columns-pure.js` fails the build for any file in this
+     folder that declares a `const pct`, precisely so a screen never reaches for
+     a local number when it meant the shared formatter (or the other way round:
+     `pct` and `rate` take different units, and swapping them prints 0.97% or
+     7250.0%). The RETURNED key stays `pct`, so nothing that reads this changes. */
+  const percent = s.done ? 100 : Math.min(99, raw);
   return {
-    total: s.total, settled, searching, searched, answered, empty, failed, done: !!s.done, pct, chips,
+    total: s.total, settled, searching, searched, answered, empty, failed, done: !!s.done, pct: percent, chips,
     /* ⛔ THE SENTENCE SAYS WHAT IS HAPPENING, NOT WHAT A PERCENTAGE IS. "72%" answers
        nothing an officer can act on. Three states, because they are three different
        moments and one wording covering them is what made the old single sentence read the

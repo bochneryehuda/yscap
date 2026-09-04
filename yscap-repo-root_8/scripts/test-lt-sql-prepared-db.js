@@ -164,6 +164,16 @@ async function main() {
     // back as an ARRAY, which the swallowed failure (null) fails.
     'pipeline.js': 'GET /api/lt/pipeline in the route smoke test, which asserts the officers list is an ARRAY — the call site swallows failure into null, so the assertion is what makes the execution provable',
     'ppe/rule-store.js': 'test-lt-ppe-rule-store-db.js drives it',
+    // The Pricing Rule Center's store. Every statement is `${SELECT} WHERE …` off
+    // one shared column list, so none of them is a statement until it is assembled.
+    // Section B of that suite writes a rule and reads it back, C exercises all four
+    // change verbs and the log they each write, and D runs the board read, the
+    // archived filter and the restore — so every assembled form is executed against
+    // a real table, and each is ASSERTED on the value that comes back rather than on
+    // the call returning. `liveRules` in particular swallows its own failure by
+    // design (a board must keep its price when the centre cannot be read), so mere
+    // execution could not prove it: D11 asserts the rules ARRIVE.
+    'pricing/rules/store.js': 'test-lt-pricing-rules-db.js drives every verb and asserts what comes back — liveRules swallows failure by design, so the assertion is what makes the execution provable',
     'ppe/run-store.js': 'test-lt-ppe-run-store-db.js drives it',
     'product-book.js': 'GET /api/lt/book, in the route smoke test',
     'routes/stages.js': 'GET /api/lt/stages, in the route smoke test',
