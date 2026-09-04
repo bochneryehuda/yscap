@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**975 objects**, and a database rebuilt from the Prisma
+**976 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 693 numbered migrations in `db/` (highest `db/696`) remain the only thing that builds this database.
+rebuild a database from them.** The 694 numbered migrations in `db/` (highest `db/697`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 414 |
-| Columns | 6644 |
+| Tables | 415 |
+| Columns | 6657 |
 | Triggers | 39 |
 | Functions | 144 |
-| CHECK constraints | 359 |
+| CHECK constraints | 360 |
 | Generated columns | 12 |
 | Partial indexes | 421 |
-| Primary keys | 414 |
+| Primary keys | 415 |
 | Foreign keys | 833 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1437 |
+| Indexes (all kinds) | 1440 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -661,7 +661,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (359)
+## CHECK constraints (360)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -932,6 +932,7 @@ the live database.
 - **lt_ppe_rule_suggestion_status_chk** on `lt_ppe_rule_suggestion`
 - **lt_pricing_rule_engine_chk** on `lt_pricing_rule`
 - **lt_pricing_rule_event_action_chk** on `lt_pricing_rule_event`
+- **lt_pricing_rule_firing_engine_chk** on `lt_pricing_rule_firing`
 - **lt_pricing_rule_name_chk** on `lt_pricing_rule`
 - **lt_properties_flood_zone_source_chk** on `lt_properties`
 - **lt_report_definitions_visibility_check** on `lt_report_definitions`
@@ -1933,7 +1934,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 414 primary keys and 1437 indexes is
+Every one of the 415 primary keys and 1440 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person
