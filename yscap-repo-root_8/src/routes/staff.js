@@ -3751,6 +3751,20 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
          will notice. */
       if (Object.prototype.hasOwnProperty.call(overrides, 'feasibilityFee'))
         await client.query(`UPDATE applications SET file_feasibility_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.feasibilityFee)]);
+      /* THE PER-FILE MINIMUM ORIGINATION FEE sticks the same way (owner-directed 2026-09-04,
+         db/695) — an APPROVED EXCEPTION on one file, never a copy of the company number. A blank
+         box writes NULL, which is what makes the owner's own rule true: *"any file, even if it's
+         already in the system, by the next registration, it should follow the rules of the new
+         registration if it gets re-registered again. Shouldn't be locked in where the fee was
+         already locked in."* A typed 0 is a deliberate WAIVER of the minimum and is stored as 0.
+
+         THIS IS THE ONLY WRITER OF THIS COLUMN, and that is load-bearing for the same reason as
+         the feasibility fee above: db/695 does not widen the economics-reopen trigger for it
+         precisely because it can only be written as part of a REGISTRATION, so there is never a
+         stale registration for the trigger to catch. Adding another door means widening that
+         trigger — section F of `test-min-origination-pure.js` is what will notice. */
+      if (Object.prototype.hasOwnProperty.call(overrides, 'minOrigFee'))
+        await client.query(`UPDATE applications SET file_min_orig_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.minOrigFee)]);
       /* OUR FEE'S TWO PARTS AND THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE stick the same way
          (owner-directed 2026-08-26, db/632: "it should just be pre-filled in the manual section.
          Everything can be changeable"). A blank clears the column → the company number, this

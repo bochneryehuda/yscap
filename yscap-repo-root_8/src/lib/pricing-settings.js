@@ -64,6 +64,17 @@ const SYSTEM_DEFAULTS = Object.freeze({
   // The owner's own numbers; `src/lib/feasibility-fee.js` is the ONE definition of what the fee
   // is, which deals attract it and what it is called — this file only stores and cleans it.
   feasibilityFees: { groundUp: 1250, heavyRehab: 750 },
+  /* THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695) — the floor under our own
+     origination on EVERY RTL program. `src/lib/min-origination.js` is the ONE definition of the
+     number, the resolution chain and the wording; this file only stores and reads it, exactly as
+     it does the feasibility fees above.
+
+     RESTATED HERE, NOT REQUIRED FROM THAT MODULE, for the reason every other literal in this
+     object is restated: SYSTEM_DEFAULTS is the COLD-CACHE FALLBACK — the numbers an unwarmed
+     process prices with — and it must be a plain frozen literal that loads with nothing else in
+     reach. The two are held equal by section G of `test-min-origination-pure.js`, so they can
+     never drift. */
+  minOrigFee: 2500,
 });
 
 // Normalize an extra-fees value (from a jsonb column or an API body) into a clean
@@ -105,6 +116,13 @@ function shape(row) {
     // Cleaned through feasibility-fee's own normalizer, so an unreadable stored value falls back
     // to the owner's number rather than silently making a real fee vanish from a term sheet.
     feasibilityFees: require('./feasibility-fee').cleanFeasibilityFees(row.feasibility_fees),
+    /* The company-wide minimum origination fee (db/695). A NULL column means "use the system
+       default" and NEVER a stored copy of it — that distinction is the whole design of db/695
+       (a stamped copy is an explicit choice that outlives every later change to the number).
+       An unreadable or out-of-range value falls through to the system default rather than
+       pricing a loan on it; `resolveMinFee` is the one place that judges a candidate, so the
+       admin route, the studio and this reader cannot disagree about what is acceptable. */
+    minOrigFee: require('./min-origination').resolveMinFee(null, row.min_orig_fee),
     extraFees:     cleanExtraFees(row.extra_fees),
     // Cleaned through lender-fees' own normalizer, so an unreadable stored value falls back to the
     // owner's numbers rather than silently changing what a real borrower is charged.
@@ -175,7 +193,7 @@ async function load() {
     const r = await db.query(
       `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, markup_speed_pct, orig_std_pct, orig_gold_pct, orig_silver_pct, orig_speed_pct,
               lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability,
-              feasibility_fees, lender_fees
+              feasibility_fees, lender_fees, min_orig_fee
          FROM company_pricing_settings WHERE is_current LIMIT 1`);
     _cache = { at: Date.now(), val: withDerivedTotals(shape(r.rows[0]), r.rows[0]) };
   } catch (e) {
@@ -230,7 +248,7 @@ async function asOf(when, client = db) {
          later one is the one in force at that instant, which is what this returns. */
       `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, markup_speed_pct, orig_std_pct, orig_gold_pct, orig_silver_pct, orig_speed_pct,
               lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability,
-              feasibility_fees, lender_fees
+              feasibility_fees, lender_fees, min_orig_fee
          FROM company_pricing_settings
         WHERE created_at < $1::timestamptz + interval '1 millisecond'
         ORDER BY created_at DESC LIMIT 1`, [when]);

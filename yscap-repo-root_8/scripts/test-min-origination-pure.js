@@ -216,5 +216,266 @@ t('E3 it never throws, on anything', () => {
   for (const j of junk) assert.doesNotThrow(() => R(j), `threw on ${JSON.stringify(j)}`);
 });
 
+/* ── F. THE SERVER WIRING — the claims other files rest on ───────────────────────────────────────
+   These are SOURCE guards and they are TRIPWIRES, not proofs (the 2026-09-02 lesson): a regex over
+   a caller can only ever pin a spelling. What they hold up are three claims made in comments
+   elsewhere, each of which is invisible to any behavioural test and expensive if it quietly stops
+   being true. */
+const FS = require('fs'), PATH = require('path');
+const read = (rel) => FS.readFileSync(PATH.join(__dirname, '..', rel), 'utf8');
+const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1 ');
+
+t('F1 the per-file minimum has exactly ONE writer — which is what lets db/695 leave the economics-reopen trigger alone', () => {
+  let writers = 0;
+  for (const f of ['src/routes/staff.js', 'src/routes/borrower.js', 'src/routes/tpo.js',
+                   'src/lib/product-registration.js', 'src/lib/term-sheet-offer.js',
+                   'src/lib/intake-auto-register.js', 'src/routes/admin-manual-programs.js']) {
+    let src; try { src = stripComments(read(f)); } catch (_) { continue; }
+    writers += (src.match(/file_min_orig_fee\s*=/g) || []).length;
+  }
+  assert.strictEqual(writers, 1,
+    'db/695 declines to widen the economics-reopen trigger because this column can only be written '
+    + 'as part of a REGISTRATION. A second writer means a change to it can go stale against the '
+    + 'registration that priced the file — widen the trigger, or route the new door through register.');
+});
+
+t('F2 a BLANK box clears the sticky, which is what makes the owner\'s re-registration rule true', () => {
+  const src = stripComments(read('src/routes/staff.js'));
+  assert.ok(/hasOwnProperty\.call\(overrides,\s*'minOrigFee'\)/.test(src),
+    'the write must be guarded on the key being SENT, not on it being truthy — a blank sends "" and '
+    + 'must write NULL over any stale value, or a re-registered file stays locked in at yesterday\'s number');
+  assert.ok(/file_min_orig_fee=\$2[\s\S]{0,120}stickyMk\(overrides\.minOrigFee\)/.test(src),
+    'the sticky helper maps "" to NULL and keeps a typed 0 (the waiver)');
+});
+
+t('F3 a BORROWER and a TPO broker can never send it', () => {
+  const ov = require('../src/lib/pricing-overrides');
+  const out = ov.borrowerPricingOverrides({ minOrigFee: 0, targetLTC: 0.8 });
+  assert.ok(!('minOrigFee' in out), 'the non-lender allowlist builds its output from scratch and must never carry this');
+  assert.strictEqual(out.targetLTC, 0.8, 'and the control proves the allowlist still passes what it should');
+});
+
+t('F4 it routes to an admin as a DEFAULTED knob: a discount and a waiver ask, charging more does not', () => {
+  const ov = require('../src/lib/pricing-overrides');
+  const cd = { minOrigFee: 2500 };
+  const keys = (raw) => ov.pricingOverridesEngaged(raw, cd).map((c) => c.key);
+  assert.deepStrictEqual(keys({ minOrigFee: 2500 }), [], 'typing the company number back is not a change');
+  assert.deepStrictEqual(keys({ minOrigFee: '' }), [], 'an explicitly blanked box is not a change');
+  assert.deepStrictEqual(keys({ minOrigFee: 4000 }), [], 'RAISING the floor can only raise the fee — revenueUp, no approval');
+  assert.deepStrictEqual(keys({ minOrigFee: 1000 }), ['minOrigFee'], 'LOWERING it is a discount and needs approval');
+  assert.deepStrictEqual(keys({ minOrigFee: 0 }), ['minOrigFee'],
+    'a typed 0 WAIVES the minimum outright — the decision an admin most wants to see');
+});
+
+t('F5 restating the company number normalizes to the studio\'s explicit-blank contract', () => {
+  const ov = require('../src/lib/pricing-overrides');
+  assert.strictEqual(ov.normalizeCompanyDefaultKnobs({ minOrigFee: 2500 }, { minOrigFee: 2500 }).minOrigFee, '',
+    'the 2026-08-20 rule: a restated default must never freeze onto the file');
+  assert.strictEqual(ov.normalizeCompanyDefaultKnobs({ minOrigFee: 1000 }, { minOrigFee: 2500 }).minOrigFee, 1000,
+    'and a real exception is left completely alone');
+});
+
+t('F6 the staff file OVERVIEW states the EFFECTIVE percentage, or its own row contradicts itself', () => {
+  /* A TENTH SURFACE, outside the nine `scripts/lib/fee-roster.js` tracks, found by grepping for a
+     second server-side origination derivation while wiring this. `file-overview.js` prints the
+     percentage and the dollars TOGETHER — "1.25% · $2,500.00" on a $60,000 loan, where 1.25% is
+     $750 — so on a minimum-bound file the row states two figures that cannot both be true. It is a
+     TRIPWIRE (a source check cannot prove a render); the printed surfaces are proven by the render
+     harness in the surfaces pass. */
+  const src = stripComments(read('src/lib/file-overview.js'));
+  assert.ok(/originationMinimum/.test(src),
+    'the overview must read the quote\'s own explain block rather than deciding again');
+  assert.ok(/effectivePct/.test(src) && /program minimum applied/.test(src),
+    'and it must show the effective percentage AND say why, or the two figures on the row disagree');
+});
+
+/* ── G. ONE NUMBER, TWO PLACES ───────────────────────────────────────────────────────────────── */
+t('G1 the cold-cache fallback in pricing-settings equals this module\'s own number', () => {
+  const D = require('../src/lib/pricing-settings').SYSTEM_DEFAULTS;
+  assert.strictEqual(D.minOrigFee, M.MIN_ORIGINATION_FEE,
+    'SYSTEM_DEFAULTS restates the literal on purpose (it is the unwarmed-process fallback and must '
+    + 'load with nothing else in reach) — so it is held equal HERE, or the two drift and an unwarmed '
+    + 'process charges a different minimum than a warm one');
+});
+
+t('G2 a NULL company column reads as the system default, never as a stored copy of it', () => {
+  assert.strictEqual(M.resolveMinFee(null, null), M.MIN_ORIGINATION_FEE);
+  assert.strictEqual(M.resolveMinFee(null, undefined), M.MIN_ORIGINATION_FEE);
+  assert.strictEqual(M.resolveMinFee(null, ''), M.MIN_ORIGINATION_FEE);
+});
+
+/* ── H. RUNTIME EQUIVALENCE, THROUGH THE REAL PRICING PATH ───────────────────────────────────────
+   The frozen-pricing proof. The baseline is the module NEUTRALIZED — the system without a minimum —
+   swapped into the require cache, deliberately NOT read out of git: a git baseline proves inertness
+   only until the change is committed, after which it degenerates into "the engine equals itself"
+   and passes forever while proving nothing. */
+const pricing = require('../src/lib/pricing');
+if (!pricing.enginesReady || !pricing.enginesReady()) {
+  console.log('SKIP section H (runtime equivalence): engines not loadable', pricing.loadErr && pricing.loadErr());
+} else {
+  const exp = { flips: 5, holds: 2, ground: 3 };
+  const quote = (app, ov) => pricing.quoteProgram(app.__program || 'standard', pricing.buildInputs(app, exp, ov || {}));
+
+  /* The battery deliberately straddles the crossover ($200,000 at 1.25%): the small prices size
+     loans the floor BINDS on, the large ones size loans it can never reach. Both halves have to be
+     non-empty or the comparison is half a proof. */
+  const APPS = [];
+  for (const eng of ['standard', 'gold', 'silver', 'speed']) {
+    for (const state of ['TX', 'NY', 'NJ', 'FL']) {
+      for (const price of [60000, 90000, 140000, 300000, 700000]) {
+        /* THREE DEAL SHAPES, because the fee reaches the borrower's pocket by two different routes
+           (see the H2 loop). A cash-out refinance funds more than the payoff plus closing, so the
+           fee comes out of the PROCEEDS and cash-to-close is legitimately 0; a heavy-payoff
+           refinance and every purchase make the borrower BRING it. Both branches have to be in
+           the battery or half the property is untested. */
+        for (const [loanType, payoffPct] of [['Purchase', 0], ['Refinance — Cash-Out', 0.55], ['Refinance — Rate & Term', 1.45]]) {
+          APPS.push({
+            __program: eng,
+            purchase_price: price, as_is_value: price, arv: Math.round(price * 1.6),
+            rehab_budget: Math.round(price * 0.3), fico: 730, term: 12,
+            program: 'Fix & Flip', rehab_type: 'Light rehab', loan_type: loanType,
+            property_type: 'Single Family', units: 1, property_address: { state },
+            requested_exp_flips: 5, requested_exp_holds: 2, requested_exp_ground: 3,
+            /* A REFINANCE FIXTURE CARRIES A REAL PAYOFF. Without one `cashToClose` is
+               `max(0, 0 + closing − initial advance)` = 0 on every row, so the whole refinance half
+               of the battery would be testing a deal that does not exist (the 2026-08-26 `<select>`
+               lesson: set a fixture to a REAL value, or you indict the product for the fixture's
+               own mistake). */
+            ...(payoffPct ? { payoff_amount: Math.round(price * payoffPct) } : {}),
+          });
+        }
+      }
+    }
+  }
+
+  /* NEUTRALIZED = "there is no minimum": the fee is the percentage figure, always. Everything else
+     about the shape is kept, so the only thing the comparison can see is the floor itself.
+
+     IT IS DONE BY REPLACING THE FUNCTION ON THE EXPORTS OBJECT, **NOT** BY SWAPPING
+     `require.cache[...].exports` — and that is not a style choice. `pricing.js` requires this
+     module at the TOP and captures the reference ONCE at load, so a cache swap is a complete
+     no-op there and every "identical" would have been a tautology. MEASURED while writing this:
+     the cache swap left the fee at $2,500 on a loan the floor binds on, exactly as the real
+     module does; the property replacement gives $900. (The feasibility-fee suite's cache swap
+     works only because `pricing.js` requires THAT module lazily, inside the function.) The
+     standing rule this belongs to: prove the baseline genuinely differs — H1 below is what caught
+     it, and it is the reason that assertion exists at all. */
+  const realFn = M.originationFor;
+  const neutralFn = (i) => realFn({ ...(i || {}), minFee: 0 });
+
+  const run = (fn) => {
+    M.originationFor = fn;
+    const out = APPS.map((a) => { try { return quote(a); } catch (e) { return { __err: String(e && e.message) }; } });
+    M.originationFor = realFn;
+    return out;
+  };
+  const off = run(neutralFn), on = run(realFn);
+
+  t('H1 the baseline genuinely differs somewhere, so the comparison is not vacuous', () => {
+    const moved = on.filter((q, i) => JSON.stringify(q) !== JSON.stringify(off[i]));
+    assert.ok(moved.length > 0, 'neutralizing the minimum changed nothing — this section would prove nothing');
+  });
+
+  let drift = 0, bound = 0, unbound = 0, brings = 0, fromProceeds = 0;
+  for (let i = 0; i < APPS.length; i++) {
+    const b = on[i], c = off[i];
+    if (b.__err || c.__err) continue;
+    const detail = b.closingCosts && b.closingCosts.originationMinimum;
+    if (!detail) {
+      unbound++;
+      if (JSON.stringify(b) !== JSON.stringify(c)) {
+        drift++;
+        if (drift < 3) console.log('   …drift on a loan the minimum never reaches:', APPS[i].__program, APPS[i].purchase_price);
+      }
+      continue;
+    }
+    bound++;
+    const want = detail.shortfall;
+    const d = (f) => Math.round((f(b) - f(c)) * 100) / 100;
+    /* WHAT THE BORROWER NETS OUT OF POCKET. `pricing.js` states the invariant itself: exactly one
+       of {cash the borrower brings, cash the borrower receives} is above zero. So a fee reaches a
+       real person's pocket by ONE of two routes — it is added to what they bring on a purchase or
+       a heavy-payoff refinance, and it is taken out of the PROCEEDS on a cash-out refinance, where
+       `cashToClose` is legitimately clamped at 0 and moves by nothing. Asserting only on
+       cash-to-close reported 60 false failures on exactly the cash-out rows, and "fix" it by
+       loosening the assertion would have stopped proving the fee reaches the borrower at all. */
+    const pocket = (q) => Number(q.cashToClose || 0) - Number((q.refi && q.refi.cashOut) || 0);
+    if (JSON.stringify(b.sizing) !== JSON.stringify(c.sizing)) { drift++; console.log('   …SIZING MOVED — the thing that must never happen:', APPS[i].__program); }
+    if (b.noteRate !== c.noteRate) { drift++; console.log('   …the RATE moved:', APPS[i].__program); }
+    if (d((q) => q.closingCosts.origination) !== want) { drift++; console.log('   …the fee did not rise by exactly the shortfall'); }
+    if (d((q) => q.closingCosts.dueAtClosing) !== want) { drift++; console.log('   …closing costs did not rise by exactly the shortfall'); }
+    if (d(pocket) !== want) { drift++; console.log('   …the borrower\'s own money did not move by exactly the shortfall:', APPS[i].loan_type, APPS[i].purchase_price); }
+    /* The liquidity to show is `cashToClose + reserves + out-of-pocket rehab + the 1% buffer`, so
+       it moves with the fee exactly when the borrower is the one bringing it. On a deal funding
+       its own closing costs there is nothing extra to show, which is the honest answer, so the
+       assertion is keyed on cash-to-close having moved rather than being dropped. */
+    if (d((q) => q.cashToClose) !== 0 && d((q) => q.liquidityRequired) !== want) {
+      drift++; console.log('   …the liquidity to show did not rise by exactly the shortfall');
+    }
+    if (d((q) => q.cashToClose) === 0 && d((q) => q.liquidityRequired) !== 0) {
+      drift++; console.log('   …the liquidity to show moved on a deal that brings no cash to the table');
+    }
+    if (b.cashToClose > 0) brings++; else fromProceeds++;
+  }
+  t('H2 every loan the minimum never reaches is BYTE-IDENTICAL, and every loan it binds on moves ONLY the fee', () => {
+    assert.strictEqual(drift, 0);
+  });
+  t('H3 the battery reached loans the minimum binds on', () => assert.ok(bound > 20, `only ${bound}`));
+  t('H4 …and loans it never reaches, so the equivalence half is not empty', () => assert.ok(unbound > 20, `only ${unbound}`));
+  t('H4b …and BOTH ways the fee reaches a borrower\'s pocket', () => {
+    assert.ok(brings > 10, `only ${brings} deals where the borrower brings it`);
+    assert.ok(fromProceeds > 10, `only ${fromProceeds} deals funding it out of the proceeds`);
+  });
+
+  t('H5 the explain block is present ONLY when the floor bound, and says what it did', () => {
+    const small = APPS.find((a) => a.purchase_price === 60000 && a.__program === 'standard');
+    const big = APPS.find((a) => a.purchase_price === 700000 && a.__program === 'standard');
+    const qs = quote(small), qb = quote(big);
+    const m = qs.closingCosts.originationMinimum;
+    assert.ok(m, 'a small loan must carry it');
+    assert.strictEqual(m.amount, qs.closingCosts.origination, 'and it must agree with the fee beside it');
+    assert.ok(m.amount > m.pctAmount && m.shortfall > 0);
+    assert.ok(/minimum/i.test(m.label) && /minimum/i.test(m.note));
+    assert.ok(!/penalty/i.test(m.note), 'never a penalty');
+    assert.ok(!qb.closingCosts.originationMinimum, 'a large loan must carry nothing at all');
+  });
+
+  t('H6 an approved per-file WAIVER (a typed 0) prices exactly as the system did before the minimum', () => {
+    const small = APPS.find((a) => a.purchase_price === 60000 && a.__program === 'standard');
+    const waived = quote(small, { minOrigFee: 0 });
+    M.originationFor = neutralFn;
+    const none = quote(small);
+    M.originationFor = realFn;
+    assert.strictEqual(JSON.stringify(waived), JSON.stringify(none),
+      'an approved waiver must be byte-identical to there being no minimum at all');
+  });
+
+  t('H7 a per-file exception RAISES the floor, and only the fee moves', () => {
+    const small = APPS.find((a) => a.purchase_price === 140000 && a.__program === 'standard');
+    const plain = quote(small), raised = quote(small, { minOrigFee: 5000 });
+    assert.strictEqual(raised.closingCosts.origination, 5000);
+    assert.strictEqual(JSON.stringify(raised.sizing), JSON.stringify(plain.sizing), 'the loan is untouched');
+    assert.strictEqual(raised.noteRate, plain.noteRate, 'the rate is untouched');
+    assert.strictEqual(
+      Math.round((raised.liquidityRequired - plain.liquidityRequired) * 100) / 100,
+      Math.round((raised.closingCosts.origination - plain.closingCosts.origination) * 100) / 100,
+      'and the liquidity to show rose by exactly the difference');
+  });
+
+  t('H8 a re-registered file with a BLANK box follows today\'s company minimum, never yesterday\'s', () => {
+    /* The owner's own rule, as a property of buildInputs: a NULL column contributes NO key, so the
+       resolution falls through to the company default every single time it is priced. A file that
+       was registered when the company minimum was $2,500 and is re-registered after it moves to
+       $3,000 is charged $3,000 — it is not "locked in where the fee was already locked in". */
+    const app = { ...APPS.find((a) => a.purchase_price === 60000 && a.__program === 'standard'), file_min_orig_fee: null };
+    const inp = pricing.buildInputs(app, exp, {});
+    assert.ok(!('minOrigFee' in inp), 'a NULL column must contribute no key at all');
+    const locked = pricing.buildInputs({ ...app, file_min_orig_fee: 2500 }, exp, {});
+    assert.strictEqual(locked.minOrigFee, 2500, 'and a real exception on the file IS carried');
+    const waived = pricing.buildInputs({ ...app, file_min_orig_fee: 0 }, exp, {});
+    assert.strictEqual(waived.minOrigFee, 0, 'and a stored 0 survives — dropping it would un-waive an approved waiver');
+  });
+}
+
 console.log(`\nmin-origination: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
