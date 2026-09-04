@@ -360,10 +360,8 @@ function markNotApplicable(fields, facts) {
        ID 388 Map it to 454"*). On a minimum-bound loan the STATED rate is not the rate charged, so
        comparing the percentage would false-mismatch every small file and hold its term sheet with
        no fix anybody could perform; on every other loan the amount row is the one with nothing
-       meaningful to say. Exactly one of the pair is live on any file, which is also why NO EXISTING
-       FILE'S VERDICT MOVES: the floor binds on none of them, so 454 reads not-applicable and 388 is
-       compared exactly as it is today. A file we cannot judge keeps the percentage — never silence
-       a compared field on a fact we could not establish (the `notApplicableReason` rule). */
+       meaningful to say. WHICH of the pair is live, and why the answer is asymmetric, is the next
+       block. */
     /* THE FACT HAS TO BE KNOWN BEFORE EITHER ROW IS SILENCED, and that is the module's own
        doctrine rather than caution: *"an unknown/absent fact reads as 'it applies': never silence a
        compared field on a shape we could not establish."* It is also load-bearing here, because
@@ -371,9 +369,35 @@ function markNotApplicable(fields, facts) {
        facts (compareAll's own) that guessed "not applicable" would poison the row for the second
        pass that does know. MEASURED before this guard: the amount row came back not-applicable on a
        minimum-bound file, i.e. neither half of the pair was compared at all. */
-    const minKnown = !!(facts && typeof facts.minOrigApplied === 'boolean');
-    if (!reason && minKnown && f.key === 'origination_pct' && facts.minOrigApplied === true) reason = map.ORIG_NA_PCT;
-    if (!reason && minKnown && f.key === 'origination_amount' && facts.minOrigApplied === false) reason = map.ORIG_NA_AMOUNT;
+    /* THE PAIR IS ASYMMETRIC, AND AN EARLIER CUT OF THIS GUARD HAD IT WRONG IN A WAY THAT COULD
+       DEAD-END A FILE (found by `test-encompass-reconcile-pure`, 2026-09-04).
+
+       388 (the percentage) is a field this system ALREADY COMPARES, so the doctrine applies to it
+       verbatim: silence it only on a fact we POSITIVELY established. Unknown → keep comparing,
+       exactly as today.
+
+       454 (the amount) is a field this change ADDS, and for a new row "leave it as it is today"
+       means SILENT, not compared. That is not caution, it is the same doctrine read from the other
+       end: never let a fact we could not establish switch a field ON. And the cost of getting it
+       backwards is concrete — `summarize()` counts "no data to compare" as NOT PASSING, so an
+       always-live amount row on a tenant whose Encompass does not populate 454 would hold the
+       DocuSign term sheet and the data-tape export on every file, with no fix anybody at the desk
+       could perform. That is the dead-end class `funding_channel` was made `reference` to avoid.
+
+       So: the amount row is live ONLY on `minOrigApplied === true`; false, unknown, and a caller
+       that passes no facts at all all read as not-applicable. So exactly one of the pair is
+       compared on any file, and NO EXISTING FILE'S VERDICT MOVES: the floor binds on none of them,
+       so 454 reads not-applicable and 388 is compared exactly as it is today.
+
+       THE FACT MUST STILL BE ESTABLISHED BEFORE 388 IS SILENCED, and that is also load-bearing
+       because this marker is idempotent BY SKIPPING a row it has already decided: a first pass
+       that guessed would poison the pass that knows. MEASURED before that guard existed: the
+       amount row came back not-applicable on a minimum-bound file, i.e. neither half of the pair
+       was compared at all. The production path therefore builds its facts ONCE and hands the same
+       object to `compareAll` AND to this marker. */
+    const minApplied = facts && facts.minOrigApplied === true;
+    if (!reason && f.key === 'origination_pct' && minApplied) reason = map.ORIG_NA_PCT;
+    if (!reason && f.key === 'origination_amount' && !minApplied) reason = map.ORIG_NA_AMOUNT;
     if (!reason && f.naWhenOursMissing && f.status === 'incomparable'
         && (f.oursNorm === null || f.oursNorm === undefined || f.oursNorm === '')) {
       reason = "Doesn't apply to this kind of loan — nothing to compare.";
