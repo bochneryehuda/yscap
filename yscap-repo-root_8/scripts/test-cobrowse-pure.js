@@ -474,17 +474,55 @@ ok(/const bannerRef = useRef\(null\)/.test(hostNow) && /document\.body\.style\.p
    second copy), and Pilot Engine's own sticky header needs the offset too. The
    subject is unchanged: nothing fixed to the top may sit BEHIND the co-browse
    bar, or the way out of a session stops being clickable. */
+/* ⛔ AND THE LIST IS DERIVED, NEVER TYPED OUT. The version this replaces named
+   four files and asked whether EACH CONTAINED at least one offset — which a
+   file already carrying one satisfies forever, so a THIRD un-offset fixed
+   banner added to any of them passed green (demonstrated by an audit), and a
+   fifth file drawing one was not looked at at all. It also went stale the
+   moment the console's hand-written stale-build bar was replaced by the shared
+   component: `StaffLayout` stopped containing the offset because it stopped
+   drawing a bar, and a guard that fails when the thing it guards is FIXED is a
+   guard that gets deleted.
+
+   So EVERY inline `position: 'fixed'` in the whole front end is found and its
+   OWN `top` is read. A LITERAL top (a number, a quoted or backticked value) is
+   a bar pinned to the viewport and must clear the co-browse bar; a top that is
+   an EXPRESSION (`pos.top`) is a dropdown anchored to an input, not a top bar,
+   and is counted rather than judged. The one exemption is named: CobrowseHost
+   draws the co-browse bar ITSELF, so it is what everything else offsets from. */
 {
-  const OFFSET = /top: 'var\(--cobrowse-bar, 0px\)'/;
-  const wants = [
-    'app-v2/src/lib/useStaleBuild.jsx',
-    'app-v2/src/components/StaffLayout.jsx',
-    'app-v2/src/components/StaffViewBanner.jsx',
-    'app-v2/src/components/EngineLayout.jsx',
-  ];
-  const missing = wants.filter((f) => !OFFSET.test(read(f)));
-  ok(missing.length === 0,
-    `the other fixed top banners stack under it rather than behind it (the Refresh button stays clickable)${missing.length ? ` — missing in ${missing.join(', ')}` : ''}`);
+  const SELF = 'app-v2/src/components/CobrowseHost.jsx';
+  const files = [];
+  (function walk(d) {
+    for (const e of fs.readdirSync(path.join(root, d), { withFileTypes: true })) {
+      const rel = `${d}/${e.name}`;
+      if (e.isDirectory()) walk(rel);
+      else if (/\.(jsx?|mjs)$/.test(e.name)) files.push(rel);
+    }
+  })('app-v2/src');
+
+  const offenders = [];
+  let anchored = 0;
+  let pinned = 0;
+  for (const f of files) {
+    const src = read(f);
+    const re = /position:\s*'fixed'/g;
+    let m;
+    while ((m = re.exec(src))) {
+      const win = src.slice(m.index, m.index + 300);
+      const t = (win.match(/top:\s*(`[^`]*`|'[^']*'|"[^"]*"|[^,\n}]+)/) || [])[1];
+      if (t == null) continue;                       // pinned to the bottom, or carrying no top at all
+      const lit = t.trim();
+      const isLiteral = /^['"`]/.test(lit) || /^-?[\d.]+$/.test(lit);
+      if (!isLiteral) { anchored++; continue; }      // `pos.top` — anchored to an element
+      pinned++;
+      if (f === SELF) continue;                      // the co-browse bar itself
+      if (!/--cobrowse-bar/.test(lit)) offenders.push(`${f} (top: ${lit})`);
+    }
+  }
+  ok(pinned >= 4, `every top-pinned fixed element in the front end was found (${pinned}; ${anchored} more anchored to an element)`);
+  ok(offenders.length === 0,
+    `and every one of them stacks UNDER the co-browse bar rather than behind it — the Stop button stays clickable${offenders.length ? ` — ${offenders.join(', ')}` : ''}`);
 }
 ok(!/autoFocus/.test(hostNow) && /askRef/.test(hostNow) && /e\.key === 'Enter' \|\| e\.key === ' '/.test(hostNow),
   'a prompt focuses the DIALOG, never an answer — a stray Enter can never share somebody\'s screen, and their sentence keeps its letters');

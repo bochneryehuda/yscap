@@ -224,7 +224,15 @@ const shinglesOf = (src) => {
    ships, was never opened. A re-audit demonstrated a routed, byte-identical
    copy of the pricer living there and passing green. Only the real build
    outputs are skipped now. */
-const SKIP_DIR = /(^|\/)(node_modules|coverage)(\/|$)|^(web\/portal|web\/v2\/portal|app-v2\/dist|app\/dist)(\/|$)/;
+/* ⛔ AND `node_modules|coverage` WERE STILL UNANCHORED, which is the same
+   defect one clause to the left. `(^|/)` matches a segment boundary at ANY
+   depth, so `app-v2/src/coverage/` — a directory Vite bundles like any other —
+   was never opened, and a third audit demonstrated a routed, byte-identical
+   copy of the pricer living there with the whole suite green. Both are now
+   pinned to the ROOT of a scanned tree, where a real dependency install and a
+   real coverage report actually sit; anything by those names under `src/` is
+   not one of those and gets read like everything else. */
+const SKIP_DIR = /^(app-v2|app|web)\/(node_modules|coverage)(\/|$)|^(web\/portal|web\/v2\/portal|app-v2\/dist|app\/dist)(\/|$)/;
 const allFront = [];
 for (const root of ['app-v2', 'app', 'web']) {
   if (!existsSync(join(ROOT, root))) continue;
@@ -310,12 +318,44 @@ ok(/bannersRef/.test(LAYOUT_CODE) && /getBoundingClientRect\(\)\.height/.test(LA
   'C7b the shell MEASURES its banner stack rather than assuming a height');
 ok(/MutationObserver/.test(LAYOUT_CODE),
   'C7c …and re-measures when a banner arrives late (the staff-view bar appears only after the server answers)');
+/* ⛔ THE RESIZE OBSERVER IS NAMED TOO, and it is not the redundant sibling it
+   looks like. The stated reason for measuring at all is that these bars WRAP —
+   to two and three lines on a phone, and again when the web fonts land — and
+   a MutationObserver never fires for any of that: nothing is added or removed,
+   an existing bar simply gets taller. A re-audit set `const ro = null` and every
+   suite stayed green while the header sat under a bar that had grown. */
+ok(/new ResizeObserver\(/.test(LAYOUT_CODE),
+  'C7c2 …and when a banner merely GROWS (wrapping, late fonts) — which no MutationObserver ever sees');
 ok(/paddingTop: bannerH/.test(LAYOUT_CODE),
   'C7d …and pushes its own content below them');
-/* And the banners are FIXED at the top, so a sticky header must start below
-   them or it covers the only way out of a staff view. */
-ok(/top:\s*'var\(--cobrowse-bar/.test(LAYOUT_CODE),
-  'C8 …and its sticky header starts below them rather than on top of them');
+
+/* ── C8: THE STICKY HEADER'S OWN OFFSET ────────────────────────────────
+   The banners are FIXED at the top, so the sticky header must start BELOW the
+   measured stack or it is covered by it — and this shell's header IS its
+   navigation, so covering it is a dead end rather than a cosmetic fault.
+
+   ⛔ THE FIRST CUT MATCHED THE WRONG ELEMENT. It looked for the single-quoted
+   `top: 'var(--cobrowse-bar` — which is the BANNER CONTAINER'S offset, one
+   element up; the header's own is a TEMPLATE literal carrying the measured
+   height. So the assertion's label said "its sticky header starts below them"
+   while nothing about the header was read: a re-audit set the header to
+   `top: 0` and every suite passed, and measured in Chromium at scroll 600 it
+   reproduced the exact buried-navigation incident this check was written after
+   — the tab row and the way out, both unclickable.
+
+   So the HEADER TAG is found and its OWN `top:` is read. */
+const headerAt = LAYOUT_CODE.search(/<header\s+style=\{\{/);
+const headerTag = headerAt < 0 ? '' : LAYOUT_CODE.slice(headerAt, LAYOUT_CODE.indexOf('}}', headerAt) + 2);
+ok(headerAt >= 0, 'C8a the sticky header was found at all — a check that reads nothing proves nothing');
+/* A TEMPLATE LITERAL CARRIES A COMMA (`calc(var(--cobrowse-bar, 0px) + …)`),
+   so `[^,]+` reads half of it and the check then fails on a header that is
+   perfectly correct — which is how a guard gets "fixed" by being loosened.
+   Each quoting style is matched whole. */
+const headerTop = (headerTag.match(/top:\s*(`[^`]*`|'[^']*'|"[^"]*"|[^,\n]+)/) || [])[1] || '';
+ok(/position:\s*'sticky'/.test(headerTag),
+  'C8b …it is the sticky header (a static one could not be covered)');
+ok(/--cobrowse-bar/.test(headerTop) && /bannerH/.test(headerTop),
+  `C8 …and ITS OWN top clears BOTH the co-browse bar and the measured banner stack (top: ${headerTop.trim() || 'NOT FOUND'})`);
 
 /* THE BANNER IS SHARED, NEVER A SECOND COPY. It was inline in StaffLayout; two
    banners drift, and the one that drifts is the one that stops saying whose
@@ -329,6 +369,62 @@ ok(/hint="Switch Long-term \/ Short-term above/.test(STAFFLAYOUT),
   'C9b …and the console still tells a viewer how to see everything they see');
 ok(!/hint=/.test(LAYOUT_CODE),
   'C9c …which the engine does NOT claim, because it has no such switch');
+
+/* ── C10: THE SHARED BAR MUST STILL BE A BAR ───────────────────────────────
+   C7/C9 prove the two shells MOUNT one component and keep no copy of it. That
+   is a statement about the shells and says nothing about the component: a
+   re-audit made `StaffViewBanner` `return null` unconditionally and every gate
+   stayed green — both shells still mounted it, neither kept a copy, and a
+   super admin standing inside a teammate's console had no notice and no way
+   out, on both surfaces at once. Extracting a thing into one place makes that
+   one place worth guarding.
+
+   The real proof is a render (`scripts/render-pilot-engine.mjs` stubs an active
+   session and asserts the bar is on screen and its button is clickable); these
+   are the source half, for a box with no browser. */
+const SVB = stripComments(read('app-v2/src/components/StaffViewBanner.jsx'));
+ok(/if \(!viewing\) return null;/.test(SVB) && !/^\s*return null;/m.test(SVB.replace(/if \(!viewing\) return null;/, '')),
+  'C10a the bar hides only when there is no staff view to report — never unconditionally');
+ok(/api\.staffViewSession\(\)/.test(SVB) && /setViewing\(/.test(SVB),
+  'C10b …it asks the server whose screen this is, so a shell holds no state and cannot wire it wrong');
+ok(/You are seeing/.test(SVB) && /viewing\.name/.test(SVB),
+  'C10c …and says whose screen it is, by name');
+ok(/exitStaffView/.test(SVB) && /Back to my own screen/.test(SVB),
+  'C10d …and carries the way out, through the shared handoff rather than a fourth copy of it');
+/* THE CONSOLE'S BAR RENDERS EXACTLY AS IT DID BEFORE THE EXTRACTION, which is
+   what the comment two lines above it in that file promises. `flexWrap: 'wrap'`
+   was written OUTSIDE the inFlow ternary, so it reached the console too and a
+   re-audit MEASURED the bar growing 65px -> 86px at 900 and 115px -> 137px at
+   390 — the button dropped onto its own line on a bar the console has drawn
+   unwrapped for months. The engine needs the wrap; the console never had it. */
+ok(/position: 'static', flexWrap: 'wrap'/.test(SVB),
+  'C10e the wrap belongs to the engine\u2019s in-flow bar…');
+ok(!/fontSize: 14, flexWrap/.test(SVB),
+  'C10f …and not to the console\u2019s, which must render exactly as it did before the extraction');
+
+/* ── C11: THE STALE-BUILD BANNER IS SHARED TOO ─────────────────────────────
+   Same rule as C9, one file later and one audit later. `StaffLayout` kept the
+   banner WRITTEN OUT BY HAND while `Layout`, `TpoLayout` and `EngineLayout`
+   all rendered the shared `StaleBuildBanner` — and it had already drifted: the
+   shared one grew `data-top-banner="1"` (what a render harness finds the bars
+   by) and an `inFlow` prop, and the hand-written copy had neither, so the
+   console was the one shell a banner check could not see.
+
+   The sentence lives in ONE file. Every shell renders the component. */
+{
+  const SHELLS = [
+    'app-v2/src/components/StaffLayout.jsx',
+    'app-v2/src/components/EngineLayout.jsx',
+    'app-v2/src/components/Layout.jsx',
+    'app-v2/src/components/TpoLayout.jsx',
+  ];
+  const forked = SHELLS.filter((f) => /PILOT was updated/.test(stripComments(read(f))));
+  ok(forked.length === 0,
+    `C11a no shell writes the stale-build bar out by hand${forked.length ? ` — found in ${forked.join(', ')}` : ''}`);
+  const noRender = SHELLS.filter((f) => !/<StaleBuildBanner\s+stale=\{/.test(stripComments(read(f))));
+  ok(noRender.length === 0,
+    `C11b …and every shell RENDERS the shared one${noRender.length ? ` — missing in ${noRender.join(', ')}` : ''}`);
+}
 
 // ---------------------------------------------------------------------------
 // D. THERE IS ONE DOOR, AND THE ENGINE RESTATES NONE OF IT.
@@ -377,6 +473,53 @@ const CHECKS = ['isAuthed', 'isStaff', 'isTpo', '/internal/login', '/dashboard',
 for (const c of CHECKS) {
   ok(!!staffBody && staffBody.includes(c), `D3 the door still asks about ${c}`);
 }
+
+/* ⛔ …AND `includes` IS NOT A DOOR CHECK. The six assertions above ask whether
+   six strings are SOMEWHERE in the body; they say nothing about what else is,
+   or about what runs FIRST. A third audit walked past them twice, each
+   demonstrated with the whole suite green:
+
+     · `if (new URLSearchParams(window.location.search).get('preview'))
+        return <Shell>{children}</Shell>;` inserted ABOVE every check — the
+       pricing engine and ~40 console screens open to anybody with `?preview=1`,
+       no session at all. Every one of the six strings was still present below.
+     · `if (!isStaff && !loc.pathname.toLowerCase().startsWith('/engine'))` — a
+       signed-in BORROWER admitted to the engine. `isStaff` still "asked about".
+
+   So the door's BODY is pinned to exactly what it is, whitespace-insensitive
+   and nothing else: two reads, three refusals in order, one render. This is the
+   same discipline D4 applies to the delegate, and for the same reason — "it
+   restates nothing" and "it checks exactly this" are both statements about a
+   SHAPE, and only a shape can hold them. Reformatting is free; a seventh
+   statement is not, whatever it is called.
+
+   IF THIS FAILS ON A DELIBERATE CHANGE TO THE DOOR, read the diff and update
+   the expectation here in the same commit — never loosen it back to a
+   substring check. This is the one function that decides who is inside. */
+const normJs = (x) => String(x || '').replace(/\s+/g, ' ').trim();
+const DOOR_BODY = normJs(`{
+  const { isAuthed, isStaff, isTpo } = useAuth();
+  const loc = useLocation();
+  if (!isAuthed) return <Navigate to="/internal/login" state={{ from: loc.pathname + loc.search }} replace />;
+  if (isTpo) return <Navigate to="/tpo" replace />;
+  if (!isStaff) return <Navigate to="/dashboard" replace />;
+  return <Shell>{children}</Shell>;
+}`);
+ok(normJs(staffBody) === DOOR_BODY,
+  'D3b the door\u2019s body is EXACTLY two reads, three refusals in order, and one render'
+  + ' \u2014 no extra branch, no query-string escape, no per-path exemption'
+  + (normJs(staffBody) === DOOR_BODY ? '' : `\n     got: ${normJs(staffBody)}\n  wanted: ${DOOR_BODY}`));
+
+/* ⛔ AND THE DEFAULT SHELL, WHICH THE BODY CANNOT SEE. `Shell` is a parameter,
+   so its default lives in the SIGNATURE — and a re-audit changed it to
+   `Shell = EngineLayout`, which puts EVERY /internal screen in the menu-less
+   engine chrome: no sidebar, no global search, no product switch, no way to
+   reach any other part of the console. Green everywhere, because the body it
+   renders is byte-identical. The console's shell is the default; the engine is
+   the thing that has to ASK. */
+const doorSig = normJs((APP_CODE.match(/function\s+StaffPrivate\s*\([^)]*\)/) || [''])[0]);
+ok(doorSig === 'function StaffPrivate({ children, Shell = StaffLayout })',
+  `D3c the door's DEFAULT shell is the console's, so only the engine opts out (${doorSig || 'SIGNATURE NOT FOUND'})`);
 /* ⛔ THE DELEGATE'S SHAPE IS PINNED, NOT ITS VOCABULARY. Forbidding six names
    is a blacklist, and a re-audit walked straight past it: adding
    `new URLSearchParams(window.location.search).get('preview') ? <EngineLayout>…`
@@ -475,6 +618,32 @@ ok(/res\.redirect\(302,\s*engineRedirect\.engineRedirectTarget/.test(SERVER),
   ok(at >= 0, 'E8 the /engine route is registered');
   ok(at >= 0 && !/req\.(url|originalUrl|query|headers)/.test(handler),
     'E9 the handler never echoes the raw request back into the address');
+
+  /* ⛔ AND IT MATCHES THE CASE A BROWSER ACTUALLY SENDS. Every OTHER half of
+     this feature is case-insensitive on purpose — React Router's
+     `caseSensitive` defaults to false, so `/Engine/scenarios` is a real engine
+     route inside the app, and `isEngineDest` was made case-insensitive so a
+     bookmark typed with a capital still reads as the engine at sign-in — while
+     THIS regex was left case-SENSITIVE. So `/Engine` fell straight through to
+     the static site and answered the MARKETING HOMEPAGE with HTTP 200: not an
+     error anybody could act on, just the wrong page, on the one address the
+     owner asked to be bookmarkable.
+
+     THE REGEX IS LIFTED OUT AND RUN, not read. A source check could only pin
+     the spelling of a flag; this asks the pattern itself what it matches. */
+  const reSrc = (SERVER.match(/app\.get\((\/\^\\\/engine[^,]*?\/[a-z]*),/) || [])[1];
+  ok(!!reSrc, `E10 the /engine pattern was lifted out of server.js (${reSrc || 'NOT FOUND'})`);
+  let ENGINE_RE = null;
+  try { ENGINE_RE = reSrc ? (0, eval)(`(${reSrc})`) : null; } catch { ENGINE_RE = null; }
+  ok(!!ENGINE_RE && ENGINE_RE instanceof RegExp, 'E10b …and is a real expression this suite can execute');
+  if (ENGINE_RE) {
+    for (const good of ['/engine', '/Engine', '/ENGINE', '/engine/scenarios', '/Engine/Scenarios', '/eNgInE/ppe']) {
+      ok(ENGINE_RE.test(good), `E11 ${good} is served by the redirect, whatever case it was typed in`);
+    }
+    for (const bad of ['/engineering', '/engine-room', '/enginex', '/x/engine', '/Engineering/x']) {
+      ok(!ENGINE_RE.test(bad), `E12 ${bad} is NOT the engine — a looser pattern would hijack an unrelated address`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -536,6 +705,23 @@ const routePaths = new Set(engineRoutes.map((r) => r.path));
 ok(tabPaths.length >= 5, `G1 the engine's tab bar was read (${tabPaths.length} tabs)`);
 for (const t of tabPaths) ok(routePaths.has(t), `G2 the "${t}" tab has a route`);
 for (const p of routePaths) ok(tabPaths.includes(p), `G3 the ${p} route has a tab`);
+
+/* ⛔ AND THE ARRAY IS NOT THE NAVIGATION. G1–G3 read `ENGINE_TABS`, a
+   declaration; they say nothing about whether anything RENDERS it. A re-audit
+   deleted the whole `<nav>` — and separately the "Full system" button, this
+   shell's only way back into the console — and every suite stayed green over a
+   pricing engine with no navigation and no exit, which is precisely the
+   trapped-shortcut the owner's "same everything" ask rules out. It is the same
+   class the earlier audit fixed for the stale-build banner (`C7`: the RENDERED
+   form, never the import) and left standing here.
+
+   These read the JSX. Both are behavioural claims about a screen, so a browser
+   check owns the real proof (`scripts/render-pilot-engine.mjs` clicks the tabs
+   and the exit); this is the half CI can run with no browser in reach. */
+ok(/<nav\s/.test(LAYOUT_CODE) && /ENGINE_TABS\.map\(/.test(LAYOUT_CODE) && /<NavLink[\s\S]{0,220}to=\{t\.to\}/.test(LAYOUT_CODE),
+  'G4 the tab row is actually RENDERED from that array — a declared list nothing draws is not navigation');
+ok(/Full system/.test(LAYOUT_CODE) && /nav\('\/internal\/lt\/pricer'\)/.test(LAYOUT_CODE),
+  'G5 …and the way back into the full console is rendered too — a shortcut that traps you is not a shortcut');
 
 // ---------------------------------------------------------------------------
 // H. DARK TEXT ON WHITE. `--ink*` is a LIGHT paper colour in this palette — the

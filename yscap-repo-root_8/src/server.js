@@ -804,7 +804,15 @@ if (PILOT_LOGIN_HOSTS.size) {
  * 302, never 301: a permanent redirect is cached by the browser forever and
  * would outlive any future decision to serve this path directly.
  */
-app.get(/^\/engine(\/.*)?$/, (req, res) => {
+/* ⛔ CASE-INSENSITIVE, BECAUSE EVERY OTHER HALF OF THIS FEATURE IS. React
+   Router's `caseSensitive` defaults to false, so `/Engine` is a real engine
+   route inside the app, and `isEngineDest` was deliberately made
+   case-insensitive so a bookmark typed with a capital still reads as the
+   engine at sign-in. This regex was the one piece left case-SENSITIVE, so a
+   capitalised bookmark fell through to the static site and answered the
+   MARKETING HOMEPAGE with HTTP 200 — not an error anybody could act on, just
+   the wrong page. */
+app.get(/^\/engine(\/.*)?$/i, (req, res) => {
   /* THE TAIL IS REBUILT FROM THE MATCH, never echoed from the raw URL — an
      open redirect is a phishing primitive, and `req.url` carries whatever a
      visitor typed. The rebuilding lives in its own pure module so the rule can

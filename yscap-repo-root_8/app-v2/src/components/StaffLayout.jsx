@@ -12,7 +12,7 @@ import { Brand } from './Layout.jsx';
 // officer who has never heard of it is never shown a broken control.
 import ProductSwitch from '../longterm/ProductSwitch.jsx';
 import ChatBubble from './ChatBubble.jsx';
-import { useStaleBuild } from '../lib/useStaleBuild.jsx';
+import { useStaleBuild, StaleBuildBanner } from '../lib/useStaleBuild.jsx';
 import StaffViewBanner from './StaffViewBanner.jsx';
 import { RESEARCH_PAGES, inResearch as isResearchPath } from './ResearchNav.jsx';
 
@@ -457,15 +457,18 @@ export default function StaffLayout({ children }) {
   return (
     <div className="app">
       <StaffViewBanner hint="Switch Long-term / Short-term above to see everything they see." />
-      {staleBuild && (
-        <div role="alert" style={{ position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1000,
-          background: '#AE8746', color: '#fff', padding: '8px 14px', display: 'flex',
-          alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14 }}>
-          <span>PILOT was updated — refresh to get the latest screens and fixes.</span>
-          <button className="btn small" style={{ background: '#fff', color: '#141B22', border: 'none' }}
-            onClick={() => window.location.reload()}>Refresh now</button>
-        </div>
-      )}
+      {/* ⛔ THE SHARED BANNER, NOT A COPY OF IT. This block was written out here
+          by hand while `Layout`, `TpoLayout` and `EngineLayout` all rendered
+          `StaleBuildBanner` — the same fork the staff-view bar had, one file
+          later. It had already drifted: the shared one carries
+          `data-top-banner="1"` (what a render harness finds the bars by) and
+          takes `inFlow`, and this copy had neither, so the console was the one
+          shell a banner check could not see. Two copies of one bar drift, and
+          the one that drifts is the one that stops telling somebody their tab
+          is a day old. The rendering is otherwise identical, `inFlow` is not
+          passed here (the console pins it, exactly as this copy did), and the
+          hook above is unchanged. */}
+      <StaleBuildBanner stale={staleBuild} />
       <aside className={`app-sidebar ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(false)}>
         <div className="app-brandrow">
           <Brand to="/internal" ariaLabel="PILOT by YS Capital — Internal" console={consoleLabel} />

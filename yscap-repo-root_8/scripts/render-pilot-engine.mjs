@@ -33,7 +33,12 @@
  * up a fake one would prove the fake. The render risk that is NEW here is the
  * shell and the sign-in, which is what this drives.
  *
- * SKIPs (exit 0) without Chromium, so CI — which has no browser — stays green.
+ * ⛔ AND IT IS IN `npm test`. It was written, it passed, and it ran in NO npm
+ * script and no CI job — so the half of this feature only a browser can see was
+ * guarded by a file nobody executed, which is the "a browser-only harness is
+ * unwatched until it is run" trap CLAUDE.md already records. It SKIPs (exit 0)
+ * without Chromium, so CI — which has no browser — stays green, and it runs for
+ * real on any box that has one.
  */
 
 import { readFileSync, existsSync } from 'node:fs';
@@ -211,7 +216,20 @@ const visit = async (page, hash) => {
     status: 200, contentType: 'application/json',
     body: JSON.stringify({ active: true, viewing: { name: 'Dana Reed' } }),
   }));
-  await ctx.route('**/api/**', (route) => (route.request().url().includes('/staff-view/session')
+  /* ⛔ AND SO IS THE OTHER BANNER, which is the whole subject of this section.
+     `/api/health` was answered `{}` along with everything else, so
+     `useStaleBuild` never fired and exactly ONE bar rendered — which makes
+     "the banners stack rather than covering each other" a statement about a
+     list of one, i.e. true of any code at all. The stack this section exists
+     to measure only exists when BOTH are up, and that is the case the
+     incident happened in. A hash that is not the running bundle's is all it
+     takes. */
+  await ctx.route('**/api/health', (route) => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ bundle: 'not-the-running-one' }),
+  }));
+  const STUBBED = ['/staff-view/session', '/api/health'];
+  await ctx.route('**/api/**', (route) => (STUBBED.some((u) => route.request().url().includes(u))
     ? route.fallback()
     : route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })));
 
@@ -236,7 +254,22 @@ const visit = async (page, hash) => {
   });
 
   info(`A2a banners: ${geo.bars.map((b) => `${Math.round(b.h)}px@${Math.round(b.top)}`).join(', ') || 'none'}; header at ${geo.header ? Math.round(geo.header.top) : '?'}`);
-  ok(geo.bars.length >= 1, 'A2b the staff-view banner really renders in this shell for an impersonated session');
+  ok(geo.bars.length >= 2,
+    `A2b BOTH banners really render in this shell — the staff-view bar and the stale-build bar, which is the stack the incident happened in (${geo.bars.length} found)`);
+  /* ⛔ AND EACH IS THE BAR IT IS SUPPOSED TO BE. Counting two elements says
+     nothing about what they SAY: a re-audit made `StaffViewBanner` return null
+     unconditionally and every source gate stayed green, because both shells
+     still mounted it and neither kept a copy. A super admin standing inside a
+     teammate's console then had no notice and no way out, here and in the
+     console at once. This is the half only a render can hold. */
+  const barText = geo.bars.map((b) => b.text).join(' | ');
+  ok(/You are seeing/.test(barText),
+    `A2b1 …the staff-view bar SAYS whose screen this is (${JSON.stringify(barText)})`);
+  ok(/PILOT was updated/.test(barText),
+    'A2b2 …and the stale-build bar says the tab is running an old build');
+  const exitBtn = await page.locator('[data-top-banner] button', { hasText: 'Back to my own screen' }).first();
+  ok(await exitBtn.isVisible().catch(() => false),
+    'A2b3 …and the way out of somebody else\'s session is on screen, in this shell, not only in the console');
 
   /* THE BANNERS DO NOT OVERLAP EACH OTHER. Two fixed bars pinned to one top hide
      one another entirely — measured, the stale-build notice was invisible. */
@@ -250,6 +283,78 @@ const visit = async (page, hash) => {
     `A2d …and the header starts below them (header top ${geo.header ? Math.round(geo.header.top) : '?'}, banners end ${Math.round(lowestBar)})`);
   ok(geo.hitInsideHeader,
     'A2e …so the tab row and the "Full system" way out are actually clickable, not painted over');
+
+  /* ── AND ONCE THE PAGE HAS BEEN SCROLLED, WHICH IS THE ONLY STATE THAT
+        MATTERS FOR A STICKY HEADER ─────────────────────────────────────────
+     At scroll 0 the header sits below the banners because the SHELL pads by
+     their measured height — so A2d/A2e pass whatever the header's own `top`
+     says. It is only after scrolling that a sticky element pins to its `top`,
+     and a re-audit set that to 0 and reproduced the whole buried-navigation
+     incident at scroll 600 with every check above still green.
+
+     Two measurements, because they fail differently. The COMPUTED top is
+     available whatever the page's height and is what the header will pin to;
+     the SCROLLED hit test is the real thing and is only meaningful when the
+     document is actually taller than the window, so it is reported honestly
+     rather than passing vacuously when it is not. */
+  const pinned = await page.evaluate(async () => {
+    const header = document.querySelector('header');
+    if (!header) return { header: false };
+    const topCss = getComputedStyle(header).top;
+    const bars = [...document.querySelectorAll('[data-top-banner]')];
+    const barsBottom = bars.reduce((m, el) => Math.max(m, el.getBoundingClientRect().bottom), 0);
+    const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+    window.scrollTo(0, 600);
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const r = header.getBoundingClientRect();
+    const hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+    return {
+      header: true, topCss, barsBottom, scrollable, scrolled: window.scrollY,
+      top: r.top, hitInsideHeader: !!(hit && header.contains(hit)),
+    };
+  });
+  const topPx = parseFloat(pinned.topCss);
+  ok(pinned.header && Number.isFinite(topPx) && topPx >= pinned.barsBottom - 1,
+    `A2f the header's own sticky offset (${pinned.topCss}) clears the banner stack (${Math.round(pinned.barsBottom)}px)`
+    + ' — this is what it pins to once the page moves, and a `top: 0` here buries the engine\'s only navigation');
+  if (pinned.scrollable > 200) {
+    ok(pinned.hitInsideHeader,
+      `A2g …and after scrolling to ${Math.round(pinned.scrolled)} the header is still the thing painted at its own middle`);
+  } else {
+    info(`A2g the page is not tall enough to scroll here (${Math.round(pinned.scrollable)}px of overflow) — A2f is the measurement that holds`);
+  }
+
+  /* ── THE NAVIGATION IS ACTUALLY THERE, AND SO IS THE WAY OUT ────────────
+     `test-pilot-engine-pure.mjs` reads `ENGINE_TABS` and now also reads the
+     JSX; neither can tell you a browser DREW a tab. A re-audit deleted the
+     whole `<nav>` and, separately, the "Full system" button — the only route
+     back into the console from this shell — and every suite stayed green over
+     a pricing engine with no navigation and no exit. That is the trapped
+     shortcut the owner's "same everything" ask rules out, so it is measured
+     here, on the real bundle, hit-tested rather than merely queried. */
+  const navGeo = await page.evaluate(() => {
+    const header = document.querySelector('header');
+    const links = [...(header ? header.querySelectorAll('a[href*="#/engine"]') : [])];
+    const hitOf = (el) => {
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) return false;
+      const hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+      return !!(hit && (el === hit || el.contains(hit) || hit.contains(el)));
+    };
+    const exit = [...(header ? header.querySelectorAll('button') : [])]
+      .find((b) => /full system/i.test(b.textContent || ''));
+    return {
+      tabs: links.map((a) => ({ label: (a.textContent || '').trim(), href: a.getAttribute('href'), hit: hitOf(a) })),
+      exit: exit ? { hit: hitOf(exit) } : null,
+    };
+  });
+  info(`A2h tabs: ${navGeo.tabs.map((t) => t.label).join(', ') || 'NONE'}`);
+  ok(navGeo.tabs.length >= 5,
+    `A2h1 the engine's tab row is really drawn (${navGeo.tabs.length} tabs) — a declared array nothing renders is not navigation`);
+  ok(navGeo.tabs.length > 0 && navGeo.tabs.every((t) => t.hit),
+    `A2h2 …and every tab is the thing painted at its own middle, under both banners${navGeo.tabs.filter((t) => !t.hit).map((t) => ` — ${t.label} is covered`).join('')}`);
+  ok(!!navGeo.exit && navGeo.exit.hit,
+    'A2h3 …and the "Full system" way back into the console is on screen and clickable — a shortcut that traps you is not a shortcut');
 
   await ctx.close();
 }

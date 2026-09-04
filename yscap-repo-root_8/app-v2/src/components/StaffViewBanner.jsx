@@ -63,9 +63,21 @@ export default function StaffViewBanner({ inFlow = false, hint = '' }) {
          measured, the stale-build notice was entirely hidden behind this one —
          and together they covered the engine's only navigation. Default is
          unchanged, so the console renders exactly as before. */
-      ...(inFlow ? { position: 'static' } : { position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1001 }),
+      /* ⛔ `flexWrap` IS PART OF THE inFlow BRANCH, and that is not tidiness.
+         It was written OUTSIDE the ternary, so it applied to the console too —
+         and a re-audit MEASURED the console's own bar growing 65px -> 86px at
+         900 and 115px -> 137px at 390, because the button dropped onto its own
+         line. The extraction's whole promise, stated two lines up, is that the
+         console renders exactly as before; a promise the code does not keep is
+         worse than no promise. The engine needs the wrap (its bar sits in a
+         fixed full-width container the shell measures, so on a phone the
+         contents would otherwise run off the side), the console has never had
+         it, and now each gets what it had. */
+      ...(inFlow
+        ? { position: 'static', flexWrap: 'wrap' }
+        : { position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1001 }),
       background: '#1F3864', color: '#fff', padding: '8px 14px', display: 'flex',
-      alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14, flexWrap: 'wrap',
+      alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14,
     }}>
       {/* THE HINT IS THE CALLER'S, because it is only true where the caller is.
           The console's version said "Switch Long-term / Short-term above to see
