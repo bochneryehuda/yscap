@@ -27,6 +27,10 @@
 
 const CAPTURED = require('./capture/field-registry.json');
 
+const { singleFlight } = require('./single-flight');
+// In-flight registry fetches, one per portal — see `single-flight.js`.
+const flight = new Map();
+
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
 
 /** One cache entry per portal — portals are separate LoanNEX tenants. */
@@ -70,7 +74,26 @@ function capturedRegistry() {
 async function registryFor(portal, fetchLive, opts = {}) {
   const key = String(portal || 'default');
   const ttl = Number(opts.ttlMs) > 0 ? Number(opts.ttlMs) : DEFAULT_TTL_MS;
+  const hit = cache.get(key);
+  if (hit && hit.expiresAt > Date.now()) return hit.registry;
+  /* ⛔ ONE FETCH FOR THE CALLERS THAT MISS AT THE SAME MOMENT (owner-reported
+     2026-09-04: *"it's having crazy delays, much worse than it was before"*).
+
+     The general engine's press fires the immediate board AND the first round of
+     banded searches at once — measured: four callers, all cold, each fetching this
+     registry, so the first search of a deployment paid four identical round trips
+     for one answer. The SAME lock the login has carried since the concurrent-login
+     collision, from the one definition rather than a second copy.
+
+     The cache read stays OUTSIDE the lock: a warm hit must not queue behind
+     anything, and it is the overwhelmingly common case. */
+  return singleFlight(flight, key, () => fetchRegistry(key, fetchLive, ttl));
+}
+
+/** The cold path — reached by ONE caller per portal at a time. */
+async function fetchRegistry(key, fetchLive, ttl) {
   const now = Date.now();
+  // Re-read: a flight that settled while this one was queued has already filled it.
   const hit = cache.get(key);
   if (hit && hit.expiresAt > now) return hit.registry;
 

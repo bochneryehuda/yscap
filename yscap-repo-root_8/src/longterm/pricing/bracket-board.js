@@ -514,7 +514,24 @@ function buildBoard(figures, runs) {
         // The ratio this rate reaches rides ON the option, so every surface that
         // draws it — a row, a details panel, a term sheet built from it — states
         // the same figure without recomputing it.
-        inBand.push(Object.assign({}, o, { dscr: ratio, dscrText: ratioText(ratio), dscrTier: tier }));
+        /* ⛔ AND THE RATIO THIS BAND WAS *SEARCHED* AT RIDES ON IT TOO, which is a
+           different number and the one an explain call needs (owner-reported
+           2026-09-04: *"when you do this bracket search… when you click on details,
+           you don't see the adjustments"*).
+
+           `dscr` above is the ratio this rate REACHES. `searchDscr` is the ratio the
+           vendor was ASKED about for this band. On the immediate board they are the
+           officer's own scenario and nobody notices; on a banded board every band is
+           its own search at its own ratio, and one rate sheet itemises a quote only
+           when asked about the loan it priced. The panel bound its explain call to the
+           form's scenario, so a band row was asked about a DSCR its quote never came
+           from and the sheet had nothing to itemise — an empty adjustments table on
+           the one screen whose job is to explain the price, while the same row on the
+           unbanded board explained fine. Carried on the option because the option is
+           what reaches every surface; nothing here recomputes it. */
+        inBand.push(Object.assign({}, o, {
+          dscr: ratio, dscrText: ratioText(ratio), dscrTier: tier, searchDscr: num(run.sentRatio),
+        }));
         kept += 1;
         if (bestRate == null || rate < bestRate) bestRate = rate;
       }

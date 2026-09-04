@@ -428,15 +428,41 @@ const nexRows = (out) => (out.programs || []).filter((p) => NEX_PROGRAMS.some((n
        whole rather than assembled — "Neither rate sheet returned no priced rungs" is what splicing
        a subject into a shared sentence produces. */
     const eng = read('app-v2/src/longterm/pricerEngine.js');
-    ok(/key: 'general',[\s\S]{0,6000}?emptyBoardLine: 'Lender Price returned no priced rungs for this scenario\.',/.test(eng),
-      'SHORT-6 the GENERAL engine\'s empty-board sentence is unchanged, word for word');
-    ok(/key: 'combined',[\s\S]{0,6000}?emptyBoardLine: 'Neither rate sheet returned a priced rung for this scenario\.',/.test(eng),
+    /* ⛔ ASSERTED BY POSITION, NOT BY A CHARACTER BUDGET. These were `{0,6000}` windows between
+       an engine's `key:` and its sentence, which is really a guard on how much COMMENT happens to
+       sit between two lines: the 2026-09-04 engine-naming pass added a note there and SHORT-6 went
+       red on a sentence that had not moved a letter. The subject is that each engine says its OWN
+       thing, so what is pinned is that each sentence appears EXACTLY ONCE and falls inside its own
+       engine's block. Same repair as WIRE-13c in `test-lt-combined-details-pure`. */
+    const genLine = "emptyBoardLine: 'Lender Price returned no priced rungs for this scenario.',";
+    const combLine = "emptyBoardLine: 'Neither rate sheet returned a priced rung for this scenario.',";
+    const atGeneral = eng.indexOf("key: 'general',");
+    const atCombined = eng.indexOf("key: 'combined',");
+    ok((eng.split(genLine).length - 1) === 1 && atGeneral !== -1 && atCombined > atGeneral
+      && eng.indexOf(genLine) > atGeneral && eng.indexOf(genLine) < atCombined,
+    'SHORT-6 the GENERAL engine\'s empty-board sentence is unchanged, word for word — and sits in the general engine');
+    ok((eng.split(combLine).length - 1) === 1 && eng.indexOf(combLine) > atCombined,
       'SHORT-7 …and the COMBINED engine says NEITHER, because two rate sheets quote that board');
     const lt = read('app-v2/src/longterm/LtPricer.jsx');
     ok(/\$\{engine\.emptyBoardLine\} The Ineligible view/.test(lt),
       'SHORT-8 …and the shared screen draws the engine\'s own sentence rather than splicing a subject into one of its own');
-    ok((noComments(lt).match(/engine\.sheetSubject/g) || []).length === 3,
-      'SHORT-9 …while the three ONE-QUOTE messages still use `sheetSubject`, where the singular is correct — this forked the board sentence, not the word');
+    /* ⛔ RE-POINTED, NOT LOOSENED. The three ONE-QUOTE messages now read `buildSubject`, which the
+       2026-09-04 engine-naming pass defined as "the engine that priced THIS ROW, else the sheet's
+       own singular subject" — so the SINGULAR is still what a row with no named engine falls back
+       to, which is the whole of this guard's subject. Counting `engine.sheetSubject` counted a
+       SPELLING; what is pinned now is the RULE: the three messages take a per-quote subject, that
+       subject falls back to the singular, and none of them splices the board's plural sentence
+       into a message about one quote. */
+    const ltx = noComments(lt);
+    const oneQuote = ['margin or holdback', 'fee', 'comp']
+      .filter((w) => ltx.includes('${buildSubject} returned no ' + w + ' lines on this quote.'));
+    ok(oneQuote.length === 3,
+      `SHORT-9 the three ONE-QUOTE messages take the quote's own subject (${oneQuote.join(', ') || 'none'})`);
+    ok(/const buildSubject = engineName \|\| engine\.sheetSubject;/.test(ltx),
+      'SHORT-9b …and that subject falls back to `sheetSubject`, so the singular is still what an unnamed row says');
+    ok(!/buildSubject = [^;]*emptyBoardLine/.test(ltx)
+      && !ltx.includes('${engine.emptyBoardLine} returned no'),
+    'SHORT-9c …and the board\'s plural sentence is never spliced into a message about one quote');
   }
 
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);
