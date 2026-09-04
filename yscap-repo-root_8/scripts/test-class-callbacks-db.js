@@ -63,7 +63,7 @@ async function main() {
   const post = (body, headers) => fetch(CB, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(headers || {}) },
-    body: JSON.stringify(body),
+    body: typeof body === 'string' ? body : JSON.stringify(body),
   });
   const envelope = (eventName, orderId, referenceNumber, data) =>
     ({ orderId, referenceNumber, eventName, sent: new Date().toISOString(), created: new Date().toISOString(), data });
@@ -99,6 +99,22 @@ async function main() {
   ok(blankBasic.status === 401, 'and empty credentials never match empty config');
   liveCfg.callbackUser = keepUser; liveCfg.callbackPassword = keepPw;
 
+  // A ROTATION WINDOW. Their API has no update, so a new password is registered by
+  // delete-and-recreate and their guide asks the endpoint to accept BOTH the old and
+  // the new password during the swap. The previous password counts only while it is
+  // configured, and only with the right username.
+  liveCfg.callbackPasswordPrevious = 'old-' + tag;
+  const withOld = await post(envelope(`PrevPw-${tag}`, `prevpw-${tag}`, null, { note: 'rotation' }),
+    { Authorization: 'Basic ' + Buffer.from(`${process.env.CLASS_CALLBACK_USER}:old-${tag}`).toString('base64') });
+  ok(withOld.status === 200, 'during a rotation the previous password is still accepted');
+  const withOldWrongUser = await post(envelope(`PrevPw-${tag}`, `prevpw-${tag}`, null, { note: 'rotation' }),
+    { Authorization: 'Basic ' + Buffer.from(`someone-else:old-${tag}`).toString('base64') });
+  ok(withOldWrongUser.status === 401, 'but never with the wrong username');
+  liveCfg.callbackPasswordPrevious = null;
+  const afterRotation = await post(envelope(`PrevPw-${tag}`, `prevpw-${tag}`, null, { note: 'rotation over' }),
+    { Authorization: 'Basic ' + Buffer.from(`${process.env.CLASS_CALLBACK_USER}:old-${tag}`).toString('base64') });
+  ok(afterRotation.status === 401, 'and once the window is closed the old password is dead');
+
   // =========================================================================
   console.log('\n--- a delivery is stored, answered fast, and a retry collapses ---');
   const body1 = envelope('StatusChanged', `cls26-${tag}`, 'YSCAP' + tag, { StatusName: 'Active', Reason: 'Order accepted' });
@@ -109,6 +125,19 @@ async function main() {
   ok(again.status === 200, 'their retry is accepted too (never a non-2xx, or they stop retrying)');
   const n1 = await db.query('SELECT count(*)::int n FROM class_callback_events WHERE class_order_id = $1', [`cls26-${tag}`]);
   ok(n1.rows[0].n === 1, 'but the identical retry collapsed to ONE stored event');
+
+  // THEIR CONTRACT (self-registration guide, 2026-09-03): at-least-once delivery,
+  // "deduplicate on orderId + eventName + created". A retry is NOT byte-identical —
+  // the `sent` stamp moves — so a payload hash alone would file it twice.
+  const retryBody = { ...body1, sent: new Date(Date.now() + 5000).toISOString(), data: { ...body1.data, Reason: 'Order accepted' } };
+  const r1c = await post(retryBody, { Authorization: basic });
+  ok(r1c.status === 200, 'a redelivery whose sent stamp moved is accepted');
+  const n1b = await db.query('SELECT count(*)::int n FROM class_callback_events WHERE class_order_id = $1', [`cls26-${tag}`]);
+  ok(n1b.rows[0].n === 1, 'and collapses onto the first — orderId + eventName + created is the identity');
+  const laterCreated = new Date(Date.parse(body1.created) + 1000).toISOString();
+  await post({ ...body1, created: laterCreated, sent: laterCreated }, { Authorization: basic });
+  const n1c = await db.query('SELECT count(*)::int n FROM class_callback_events WHERE class_order_id = $1', [`cls26-${tag}`]);
+  ok(n1c.rows[0].n === 2, 'while the same event created one second later is a real second event');
 
   // The receiver drains on its own; give it a moment, then settle anything left.
   await new Promise((r) => setTimeout(r, 300));
@@ -380,6 +409,42 @@ async function main() {
   await post(big('a'), { Authorization: basic });
   ok(await countFor(`Oversize-${tag}`) === 2,
      'but a real retry of the same oversize body still collapses — dedupe is not lost to the fix');
+
+  // 4. THE SAME PROOF ON THEIR KEYED PATH. With `created` present the dedupe key is
+  //    orderId + eventName + created + a digest of the content. Two different oversize
+  //    bodies sharing all three of their fields must STILL be two rows — the digest is
+  //    what keeps them apart — and a retry with a moved `sent` must still collapse.
+  const kc = new Date().toISOString();
+  const bigK = (fill, sent) => ({ ...big(fill), eventName: `OversizeKeyed-${tag}`, created: kc, sent: sent || kc });
+  const k1 = await post(bigK('a'), { Authorization: basic });
+  const k2 = await post(bigK('b'), { Authorization: basic });
+  ok(k1.status === 200 && k2.status === 200, 'both keyed oversize deliveries are accepted');
+  ok(await countFor(`OversizeKeyed-${tag}`) === 2,
+     'two DIFFERENT oversize bodies sharing orderId + eventName + created stay two rows');
+  await post(bigK('a', new Date(Date.now() + 5000).toISOString()), { Authorization: basic });
+  ok(await countFor(`OversizeKeyed-${tag}`) === 2,
+     'a keyed retry of the same oversize body (moved sent) still collapses to the existing row');
+
+  // 5. A body too DEEP to store verbatim becomes a marker, and the marker's raw-body
+  //    digest moves with `sent` — so the dedupe must not lean on the stored bytes. The
+  //    digest is computed over the parsed body iteratively, whatever its depth, so a
+  //    retry of a very deep delivery still collapses to one row.
+  // Built as TEXT: the test's own JSON.stringify would overflow on it too, which is the
+  // very property the case is about (the server's serializer overflows into a marker).
+  const deepBody = (sent) => `{"eventName":"Deep-${tag}","orderId":"cls27-${tag}","created":"${kc}","sent":"${sent}","data":${'{"n":'.repeat(20000)}{}${'}'.repeat(20000)}}`;
+  const dp1 = await post(deepBody('A'), { Authorization: basic });
+  const dp2 = await post(deepBody('B'), { Authorization: basic });
+  ok(dp1.status === 200 && dp2.status === 200, 'a 20,000-deep body is accepted, twice');
+  const deepRow = (await db.query(`SELECT payload FROM class_callback_events WHERE event_name = $1`, [`Deep-${tag}`])).rows;
+  ok(deepRow.length === 1, 'and its retry with a moved sent collapses to ONE row even though the body was stored as a marker');
+  ok(deepRow[0] && deepRow[0].payload && deepRow[0].payload.truncated === true, '(stored as a marker — the storage path genuinely overflowed)');
+
+  // 6. A top-level "__proto__" key is content. JSON.parse yields it as an own key; the
+  //    NUL stripper used to assign it onto a plain object, which set the prototype and
+  //    dropped it from the stored document.
+  await post(JSON.parse(`{"eventName":"Proto-${tag}","orderId":"cls28-${tag}","created":"${kc}","__proto__":{"x":1},"k":2}`), { Authorization: basic });
+  const protoRow = (await db.query(`SELECT payload ? '__proto__' AS has FROM class_callback_events WHERE event_name = $1`, [`Proto-${tag}`])).rows[0];
+  ok(protoRow && protoRow.has === true, 'a top-level "__proto__" key reaches the stored document');
 
   await db.query('DELETE FROM class_callback_events WHERE event_name LIKE $1', [`%${tag}`]);
 
