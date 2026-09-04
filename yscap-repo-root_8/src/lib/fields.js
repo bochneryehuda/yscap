@@ -257,7 +257,11 @@ function stripNulDeep(v) {
   if (v && typeof v === 'object') {
     // A Date (or anything with its own serializer) must survive as itself.
     if (typeof v.toJSON === 'function') return v;
-    const out = {};
+    // A null prototype: JSON.parse hands us "__proto__" as an ordinary own key, and on
+    // a plain object the assignment below would set the prototype instead of a key -
+    // the stored document silently lost it. The result only ever goes to
+    // JSON.stringify, which serialises a null-prototype object like any other.
+    const out = Object.create(null);
     for (const [k, val] of Object.entries(v)) out[k.replace(/\u0000/g, '')] = stripNulDeep(val);
     return out;
   }
