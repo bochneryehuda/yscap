@@ -255,9 +255,29 @@ function settingFor(key, settings = {}, custom) {
     : (OWNER_SOURCE[key] ? 'owner_directed' : 'default');
 
   const disabledNote = OWNER_DISABLED[key] || null;
-  const enabled = saved.enabled !== undefined ? saved.enabled : !disabledNote;
+  /* ⛔ AN INVESTOR WITH NO CLIENT-SAFE NAME STARTS OFF (owner-directed 2026-09-04:
+     *"Something that is populating on LenderPric should automatically add to the
+     list, or even if it's populating on LoanPass, it should be automatically
+     turned off till I go and I put in the white label name and I turn it on."*).
+
+     ⛔ IT IS A DEAD END OTHERWISE, WHICH IS THE INDEPENDENT REASON. A programme
+     with no white label cannot go on a term sheet AT ALL — `termsheet/snapshot`
+     refuses it by name (`program_not_named`) — so quoting one on the board offers
+     an officer a price they can never issue, and the only way to find out is to
+     collect it and be refused at the document.
+
+     ⛔ A SAVED ANSWER STILL WINS, EITHER WAY. Somebody who deliberately turned an
+     unnamed investor on keeps it on: this is the DEFAULT for a row nobody has
+     answered, never an override of a decision. Naming the investor turns the
+     default back on by itself, which is the second half of the owner's sentence.
+
+     ⛔ AND IT IS SAID OUT LOUD. `enabledOrigin: 'unnamed'` is its own reason, so the
+     settings row can tell "off because the owner said so" from "off because nobody
+     has named it yet" — two different pieces of work for the same reader. */
+  const unnamed = !wl;
+  const enabled = saved.enabled !== undefined ? saved.enabled : !(disabledNote || unnamed);
   const enabledOrigin = saved.enabled !== undefined ? 'setting'
-    : (disabledNote ? 'owner_directed' : 'default');
+    : (disabledNote ? 'owner_directed' : (unnamed ? 'unnamed' : 'default'));
 
   return {
     key, label,
@@ -287,7 +307,11 @@ function settingFor(key, settings = {}, custom) {
     // what the row is about to become.
     prefill: {
       source: OWNER_SOURCE[key] || DEFAULT_SOURCE,
-      enabled: !OWNER_DISABLED[key],
+      /* THE SAME RULE the row itself starts from, or "use the pre-fill" would turn
+         an unnamed investor back on — a control that undoes the standing rule while
+         claiming to restore it. `wlSheet` and not `wl`: the pre-fill describes the
+         row with NO setting of its own, so it must not read the setting's name. */
+      enabled: !(OWNER_DISABLED[key] || !wlSheet),
       whiteLabel: wlSheet || null,
       // No investor carries an extra unless somebody puts one there — the
       // owner's rule is one standing holdback for the feed, and an extra is a

@@ -24,6 +24,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ltApi from './api.js';
 import AddressField from './AddressField.jsx';
 import { memberForQuote } from './cartMatch.js';
+// ⛔ THE BOARD STAYS WHERE IT IS WHEN A ROW'S CONTROL CHANGES ITS HEIGHT.
+import { keepPlaceOnClick } from './keepScroll.js';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, PAPER, CAUTION, segTrack, segBtn } from './ppeStyles.js';
 
 const NUM = { fontVariantNumeric: 'tabular-nums' };
@@ -860,14 +862,40 @@ export function CompareButton({ quote, comp, members, busy, onAdd, onRemove }) {
   const mine = memberForQuote(members, quote, comp);
   const on = !!mine;
   const next = on ? 'In the comparison — press to take it out' : 'Add this programme to the comparison';
+  /* ⛔ THE PRESS SAYS WHAT IT DID, ON THE ROW (owner-reported 2026-09-04: *"when you
+     click Add to Comparison, it just gives a blink and maybe adds it, but this gives
+     a blink and nothing happens. It doesn't sound like it works."*).
+
+     The option really was collected — the collection lives at the BOTTOM of the
+     board, and so did the only confirmation, so from a row near the top the whole
+     press read as a flicker. The outcome is now stated beside the control that
+     caused it. It is a WITNESS to what this button just did, never a second opinion
+     about what is in the comparison: the label above still answers that from the
+     cart alone (`memberForQuote`), so this can never claim a state the server does
+     not hold. It clears itself, and a new press replaces it. */
+  const [said, setSaid] = React.useState(null);
+  const wasBusy = React.useRef(false);
+  React.useEffect(() => {
+    // The press is FINISHED when busy falls back to false, which is the only moment
+    // the cart has actually answered — saying it on the click would announce an
+    // outcome the server has not agreed to yet.
+    if (wasBusy.current && !busy) setSaid(on ? 'Added to the comparison' : 'Taken out of the comparison');
+    wasBusy.current = !!busy;
+  }, [busy, on]);
+  React.useEffect(() => {
+    if (!said) return undefined;
+    const t = setTimeout(() => setSaid(null), 4000);
+    return () => clearTimeout(t);
+  }, [said]);
   return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
     <button
       type="button"
       aria-pressed={on}
       aria-label={next}
       title={busy ? 'One moment…' : next}
       disabled={!!busy}
-      onClick={() => (on ? onRemove(mine) : onAdd())}
+      onClick={(e) => keepPlaceOnClick(e, () => (on ? onRemove(mine) : onAdd()))}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap',
         font: 'inherit', fontSize: 12, fontWeight: 700, letterSpacing: '.01em', lineHeight: 1,
@@ -884,6 +912,13 @@ export function CompareButton({ quote, comp, members, busy, onAdd, onRemove }) {
       <span aria-hidden="true" style={{ fontSize: 14, lineHeight: 1 }}>{on ? '\u2713' : '+'}</span>
       {busy ? (on ? 'Removing\u2026' : 'Adding\u2026') : (on ? 'In comparison' : 'Add to comparison')}
     </button>
+    {said && !busy && (
+      /* Live, so a reader who never looks at the button hears the outcome too. */
+      <span role="status" style={{ fontSize: 11.5, fontWeight: 600, color: SLATE, whiteSpace: 'nowrap' }}>
+        {said}
+      </span>
+    )}
+    </span>
   );
 }
 

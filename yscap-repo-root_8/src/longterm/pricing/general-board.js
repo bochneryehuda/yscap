@@ -285,6 +285,10 @@ async function boardForScenario(sc, deps, opts = {}) {
   const nxSearch = { loanAmount: sc.loan, fico: sc.fico, ltv: sc.ltv, loanPurpose: sc.purpose };
   const programs = quoteShape.programsForBoard(routed, {
     reveal: false,
+    /* THIS BOARD NAMES ITS ENGINE. It is staff-only and the owner asked for the stamp
+       (2026-09-04). The COMBINED board passes nothing here and is withheld — see
+       `quote-shape.programsForBoard`, and its browser twin `engine.namesRowEngine`. */
+    stampEngine: true,
     transactionId: nxMeta ? nxMeta.transactionId : null,
     portal: nxMeta ? nxMeta.portal : null,
     ...nxSearch,

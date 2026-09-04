@@ -112,6 +112,21 @@ export const GENERAL_ENGINE = {
   sheetLabel: 'Lender Price',
   sheetSubject: 'Lender Price',
   sheetPossessive: "Lender Price's",
+  /* ⛔ A ROW MAY NAME THE ENGINE THAT PRICED IT (owner-directed 2026-09-04: *"I need
+     to understand from where it's coming and populate correctly"*, and *"we need to
+     have a stamp… it should say from where this scenario was priced exactly"*).
+
+     The three wordings above are ONE answer for the whole board, which was right
+     until 2026-09-03 when this engine gained a second sheet — so every line of a
+     LoanNEX row's price build described itself as Lender Price's. With this true the
+     panel prefers the ROW's own `pricedBy` (see `engineLabel.js`) and falls back to
+     the board-wide subject for a row nothing named.
+
+     It is an ENGINE'S decision, not the panel's, because the combined engine below
+     answers the opposite — see the note there. This engine is staff-only
+     (`/api/lt` is mounted requireAuth + requireStaff) and no client document can
+     carry it, so naming our own engine here breaks no client rule. */
+  namesRowEngine: true,
   /* A FOURTH POSITION, for the same reason there are three: "the 12 programmes X returned". The
      subject form reads "the 12 programmes This rate sheet returned" on a board quoted by two
      programs, which is why the combined engine answers with a clause of its own rather than a name
@@ -218,6 +233,13 @@ export const COMBINED_ENGINE = {
   sheetLabel: 'the rate sheet that quoted this loan',
   sheetSubject: 'This rate sheet',
   sheetPossessive: "The rate sheet's",
+  /* ⛔ AND HERE IT STAYS FALSE — the ONE SYSTEM rule above is this screen's, and it
+     is not the general engine's to relax. A source on THIS board is shown only when
+     an admin explicitly asks for it (`revealSource`), and a stamp that named the
+     vendor on every row would be that reveal granted to everyone, by a change made
+     about a different screen. The rows carry `pricedBy` either way — the same
+     builder produces both boards — so this is the one line that keeps them apart. */
+  namesRowEngine: false,
   sheetReturned: 'came back',
   /* FORK 11 — two rate sheets quote this board, so the singular was simply wrong (audit F2).
      A person reading "this rate sheet returned nothing" on a board quoted by two has been told
