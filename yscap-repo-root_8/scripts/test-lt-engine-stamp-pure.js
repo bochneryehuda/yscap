@@ -71,7 +71,13 @@ ok(engineLabel.ENGINE_KEYS.length === 2, 'A9 the registry carries exactly the tw
     'B4 the neutral subject is the same sentence on both sides');
 }
 
-/* ── C. THE BOARD STAMPS BOTH HALVES, AND STILL STRIPS THE VENDOR TRAIL ──── */
+/* ── C. THE BOARD STAMPS BOTH HALVES — ON THE SCREEN THAT NAMES ITS ENGINE ─
+   RE-POINTED after the combined board's own sweep (`test-lt-loannex-same-loan-pure` D14)
+   caught the first cut of this: BOTH boards come off `programsForBoard`, so stamping
+   unconditionally put `pricedBy: "loannex"` — the vendor's own name, on a priced row —
+   onto the ONE-SYSTEM screen, which is the exact thing that sweep exists to find. The
+   guard's subject has not moved (the stamp reaches both halves, the vendor trail still
+   leaves); what it now asserts is the RULE the caller carries. */
 {
   const merged = () => ({
     investors: [{
@@ -83,7 +89,7 @@ ok(engineLabel.ENGINE_KEYS.length === 2, 'A9 the registry carries exactly the tw
       ],
     }],
   });
-  const rows = quoteShape.programsForBoard(merged(), {});
+  const rows = quoteShape.programsForBoard(merged(), { stampEngine: true });
   ok(rows.length === 2, 'C1 both halves reach the board');
   ok(rows[0].pricedBy === 'lenderprice', 'C2 the Lender Price half says so');
   ok(rows[1].pricedBy === 'loannex', 'C3 the LoanNEX half says so');
@@ -95,15 +101,37 @@ ok(engineLabel.ENGINE_KEYS.length === 2, 'A9 the registry carries exactly the tw
   const revealed = quoteShape.programsForBoard(merged(), { reveal: true });
   ok(revealed[0].source === 'lenderprice' && revealed[0].lenderId === 'LP-9',
     'C6 an admin reveal is unchanged');
+  ok(rows[0].pricedBy === 'lenderprice' && rows[1].pricedBy === 'loannex'
+    && rows[0].source === undefined,
+  'C7 the stamp is NOT the reveal — the naming board carries it with the vendor trail stripped');
+
+  /* ⛔ AND THE HALF THAT WAS MISSING. A caller that does not say its screen names the
+     engine gets NOTHING on either half — this is the one-system property, asserted here
+     on the SAME two rows so "withheld" is proven against a control that plainly has it. */
+  const quiet = quoteShape.programsForBoard(merged(), {});
+  ok(quiet.length === 2 && quiet.every((r) => r.pricedBy === undefined),
+    `C7a a board that does not name its engine carries no stamp on either half (${quiet.filter((r) => r.pricedBy !== undefined).length} do)`);
+  ok(JSON.stringify(quiet).toLowerCase().indexOf('loannex') === -1,
+    'C7b …so the vendor\'s own name appears NOWHERE in that answer — the sweep D14 makes');
   ok(revealed[0].pricedBy === 'lenderprice' && revealed[1].pricedBy === 'loannex',
-    'C7 the stamp rides either way — it is not the reveal');
+    'C7c …and an admin who ASKS gets it back, so the withholding is a decision, not a gap');
+}
+{
+  /* THE TWO REAL CALLERS, PINNED. The rule above is worth nothing if the one-system board
+     opts in, and a unit test of the builder can never see which board asked. */
+  const gen = strip('src/longterm/pricing/general-board.js');
+  const comb = strip('src/longterm/routes/combined-pricer.js');
+  ok(/programsForBoard\(routed, \{[\s\S]{0,400}?stampEngine: true/.test(gen),
+    'C7d the GENERAL board — staff-only, owner asked for the stamp — opts in');
+  ok(!/stampEngine/.test(comb),
+    'C7e the COMBINED board does not, so the one-system screen is never stamped');
 }
 {
   // A row whose origin the merged board did not state is inferred from its SHAPE,
   // never left to whichever engine is first in the registry.
   const rows = quoteShape.programsForBoard({
     investors: [{ key: 'k', programs: [{ lender: 'X', options: [{}] }, { lender: 'Y', rungs: [{ rate: 7 }] }] }],
-  }, {});
+  }, { stampEngine: true });
   ok(rows[0].pricedBy === 'lenderprice' && rows[1].pricedBy === 'loannex',
     'C8 an unstated origin is read from the row shape');
 }
@@ -117,7 +145,7 @@ ok(engineLabel.ENGINE_KEYS.length === 2, 'A9 the registry carries exactly the tw
 /* ── D. THE PRICE BUILD READS THE ROW, NOT THE BOARD ─────────────────────── */
 {
   const src = strip('app-v2/src/longterm/LtPricer.jsx');
-  ok(/const rowEngine\s*=\s*\(quote && quote\.pricedBy\)/.test(src),
+  ok(/\(quote && quote\.pricedBy\) \|\| \(oProp && oProp\.pricedBy\)/.test(src),
     'D1 the panel takes the engine off the row it is describing');
   ok(/pricedBy:\s*p\.pricedBy\s*\|\|\s*null/.test(src),
     'D2 the row carries the server stamp — never derived in the browser');
@@ -146,6 +174,17 @@ ok(engineLabel.ENGINE_KEYS.length === 2, 'A9 the registry carries exactly the tw
   const src = strip('app-v2/src/longterm/LtPricer.jsx');
   ok(/Priced by \$\{engineName\}/.test(src), 'E1 the details panel stamps where the price came from');
   ok(/\{engineName && \(/.test(src), 'E2 a row we cannot name draws no stamp at all');
+  /* ⛔ AND WHETHER A ROW MAY NAME ITS ENGINE IS THE ENGINE'S DECISION. The general
+     board names it (the owner asked for it, and it is staff-only); the COMBINED board
+     is ONE SYSTEM and shows a source only when an admin asks, so it names none — both
+     boards come off the same builder and both carry `pricedBy`, so this flag is the
+     one thing keeping them apart. The combined half is pinned by WIRE-13c/d in
+     test-lt-combined-details-pure.js, which owns that screen's rule. */
+  ok(/const rowEngine = engine\.namesRowEngine/.test(src),
+    'E3 the panel READS that decision rather than making it');
+  const eng = strip('app-v2/src/longterm/pricerEngine.js');
+  ok(/key: 'general'[\s\S]*?namesRowEngine: true/.test(eng) || /namesRowEngine: true/.test(eng),
+    'E4 …and the general engine is the one that says yes');
 }
 
 /* ── F. THE BAND'S OWN SEARCH RATIO ──────────────────────────────────────── */

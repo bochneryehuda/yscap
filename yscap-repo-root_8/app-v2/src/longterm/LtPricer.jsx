@@ -906,7 +906,15 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
      one panel whose job is to say where a number came from. The row carries its own
      answer (`pricedBy`); an unnamed row keeps the engine's vendor-neutral subject
      rather than being attributed to whichever engine happens to be first. */
-  const rowEngine = (quote && quote.pricedBy) || (oProp && oProp.pricedBy) || null;
+  /* ⛔ WHETHER A ROW MAY NAME ITS ENGINE IS THE ENGINE'S DECISION (`namesRowEngine`),
+     never this panel's. The general board names it — the owner asked for it and the
+     board is staff-only; the COMBINED board is ONE SYSTEM and shows a source only
+     when an admin asks, so it names none and reads exactly as it did. Both boards
+     come off the same builder and both carry `pricedBy`, so this flag is the one
+     thing keeping them apart. */
+  const rowEngine = engine.namesRowEngine
+    ? ((quote && quote.pricedBy) || (oProp && oProp.pricedBy) || null)
+    : null;
   const engineName = engineLabelFor(rowEngine);
   const buildSubject = engineName || engine.sheetSubject;
   const handle = oProp && oProp.explain && oProp.explain.priceHashKey ? oProp.explain : null;

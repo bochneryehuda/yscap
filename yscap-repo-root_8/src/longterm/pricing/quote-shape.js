@@ -627,10 +627,11 @@ function programsFromLoanNex(board, opts = {}) {
       options,
     };
     if (opts.reveal) row.source = 'loannex';
-    /* WHICH ENGINE PRICED THIS ROW — carried WITHOUT a reveal, unlike `source`.
-       See `pricing/engine-label.js`: this is a key from a closed list of OUR
-       engines, never a vendor identifier, and `/api/lt` is a staff mount. */
-    row.pricedBy = engineLabel.ENGINES.loannex.key;
+    /* WHICH ENGINE PRICED THIS ROW — a DIFFERENT fact from `source`, and gated by
+       the CALLER rather than by the reveal. See `programsForBoard`'s `stampEngine`
+       note: the general board is staff-only and names its engine, the combined board
+       is the one-system screen and may not. A caller that says nothing gets nothing. */
+    if (opts.stampEngine === true) row.pricedBy = engineLabel.ENGINES.loannex.key;
     out.push(row);
   }
   return out;
@@ -647,6 +648,21 @@ function programsFromLoanNex(board, opts = {}) {
  */
 function programsForBoard(merged, opts = {}) {
   const reveal = opts.reveal === true;
+  /**
+   * ⛔ WHETHER THE ROW NAMES THE ENGINE THAT PRICED IT IS THE CALLER'S DECISION, NOT THIS
+   * FUNCTION'S — and this is the server half of the rule the browser's `namesRowEngine`
+   * carries (`app-v2/src/longterm/pricerEngine.js`). Both boards come off this ONE builder,
+   * so without a flag here the stamp lands on both.
+   *
+   * THE GENERAL board is staff-only and may say which engine quoted a row (owner-directed
+   * 2026-09-04: *"a stamp … it should say from where this scenario was priced exactly"*).
+   * THE COMBINED board is the ONE-SYSTEM screen — *"it should sound like one system"* — where
+   * `pricedBy: 'loannex'` is the vendor's own name sitting on a priced row, which is precisely
+   * what makes a quote tellable apart. It is therefore withheld there exactly like the vendor
+   * trail, and returns the moment an admin ASKS (`reveal`), so the withholding is a decision
+   * rather than a field that was never built.
+   */
+  const stampEngine = opts.stampEngine === true || reveal;
   const rows = [];
   for (const e of (merged && merged.investors) || []) {
     for (const p of e.programs || []) {
@@ -657,7 +673,8 @@ function programsForBoard(merged, opts = {}) {
          `source`/`lenderId`/`investorOrganizationGuid` are the vendor's own
          identifiers for an investor and still go without an admin reveal;
          `pricedBy` is one key from `engine-label`'s closed list of OUR engines and
-         carries no vendor identifier, so it rides on every staff board. A row whose
+         carries no vendor identifier, but its VALUE is still the vendor's name, so it
+         rides only where `stampEngine` says the screen names it. A row whose
          origin we cannot name carries NOTHING rather than a guess — the panel then
          prints no attribution, which beats printing the wrong one. */
       const pricedBy = engineLabel.engineKey(p.source)
@@ -665,13 +682,13 @@ function programsForBoard(merged, opts = {}) {
           ? engineLabel.ENGINES.loannex.key
           : engineLabel.ENGINES.lenderprice.key);
       if (!reveal) { delete base.source; delete base.lenderId; delete base.investorOrganizationGuid; }
-      if (pricedBy) base.pricedBy = pricedBy;
+      if (pricedBy && stampEngine) base.pricedBy = pricedBy;
       // A LoanNEX program carries `rungs`; a Lender Price one carries `options`.
       // Which it is decides how it is shaped, and NOT the row's `source`, which
       // the one-system view has already stripped by the time this runs.
       if (Array.isArray(p.rungs) && !Array.isArray(p.options)) {
         rows.push(...programsFromLoanNex({ programs: [p] }, {
-          investorKey: e.key, whiteLabel: e.whiteLabel || null, reveal,
+          investorKey: e.key, whiteLabel: e.whiteLabel || null, reveal, stampEngine,
           // The SEARCH this row came out of — see `explainHandle`. Forwarded rather than
           // re-derived, so every row on one board names the one transaction that produced it.
           transactionId: opts.transactionId != null ? opts.transactionId : null,
