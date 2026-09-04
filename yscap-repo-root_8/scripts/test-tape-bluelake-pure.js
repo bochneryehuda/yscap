@@ -149,6 +149,33 @@ ok(cellOf(noArv, 'AP').value.v == null, 'AP cached value omitted when ARV is mis
 ok(cellOf(loan, 'BA').value === '' && cellOf(loan, 'BB').value === '', 'Purchase Rate / Lender Spread left for Blue Lake');
 ok(cellOf(loan, 'BD').value === '', 'Borrower Liquidity left blank (owner-directed)');
 ok(cellOf(loan, 'BC').value === 0.025 && cellOf(loan, 'BC').type === 'n', 'BC Total Points = origination fee % (from quote.origPct)');
+
+/* THE PROGRAM MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696). Column BC is a
+   PERCENTAGE, so on a loan the floor binds on the stated rate is not what the borrower paid — the
+   owner, asked directly: *"Send them a higher percentage, according to how much this is the real
+   percentage for $2,500."* The effective figure comes from the quote's own explain block, never
+   recomputed here, so the tape and the term sheet can never disagree about one fee. */
+{
+  const minLoan = synthLoan();
+  minLoan.quote = {
+    noteRate: 0.1029, origPct: 0.0125,
+    sizing: { totalLoan: 144000, initialAdvance: 110000, rehabHoldback: 34000, financedReserve: 0 },
+    closingCosts: {
+      origination: 2500,
+      originationMinimum: { amount: 2500, pctAmount: 1800, pct: 0.0125, minimum: 2500, shortfall: 700, effectivePct: 2500 / 144000 },
+    },
+  };
+  ok(Math.abs(cellOf(minLoan, 'BC').value - 2500 / 144000) < 1e-12,
+    'BC sends the REAL percentage when the program minimum bound, not the stated 1.25%');
+  ok(cellOf(minLoan, 'BC').value > 0.0125, '  …and it is HIGHER than the stated rate, which is the point');
+
+  /* BYTE-IDENTICAL where the floor never reached — and asserted on a quote that CARRIES the block
+     unbound as well as on one that lacks it entirely, because those are two different code paths
+     and only one of them is exercised by every existing file. */
+  const plain = synthLoan();
+  plain.quote = { ...minLoan.quote, closingCosts: { origination: 1800 } };
+  ok(cellOf(plain, 'BC').value === 0.0125, 'BC is unchanged on a loan the minimum never reaches');
+}
 ok(cellOf(loan, 'E').value === 'YS Capital Group', 'E Seller = our company name');
 ok(cellOf(loan, 'C').value === 'Y', 'C Pre-Approval Flag always flagged (owner-directed)');
 ok(cellOf(loan, 'AI').value === null, 'AI Cost Incurred to Date blank for now (owner-directed)');

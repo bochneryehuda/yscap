@@ -81,6 +81,26 @@ const DEFAULTED_OVERRIDE_KEYS = Object.freeze({
      compare against; see `legalFee` in ENGAGED_OVERRIDE_KEYS. */
   underwritingFee: { label: 'Underwriting & processing fee',           unit: 'money', revenueUp: true },
   creditFee:     { label: 'Credit-report fee',                         unit: 'money', revenueUp: true },
+  /* THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696) — the floor under our own
+     origination, typed on ONE file as an approved exception ("You need to add to the general
+     exception pad an exception for the minimum and all the exception routes should have an added
+     option to make exceptions for the minimum fee").
+
+     IT BELONGS HERE, AMONG THE DEFAULTED KNOBS, AND NOT IN `ENGAGED_OVERRIDE_KEYS` — which is
+     where an earlier plan put it, and that would have reproduced the 2026-08-20 defect exactly.
+     It HAS one flat company default (the Pricing Admin Center's `min_orig_fee`, falling back to
+     the $2,500 system number), so an ENGAGED entry would read the studio's own pre-filled value
+     as a deviation and demand an admin approval on EVERY registration, and
+     `normalizeCompanyDefaultKnobs` — which only ever looks at this list — could not blank it back
+     to the studio's explicit-blank contract.
+
+     `revenueUp` IS ARITHMETICALLY EXACT HERE, not an analogy to its siblings: the fee charged is
+     `max(pctAmount, minimum)`, so RAISING the minimum can only ever raise the fee and never lower
+     it. Charging more needs no approval; LOWERING the floor is a discount and does. A typed 0 —
+     the outright waiver — is below the default by that same test, so it routes to an admin
+     without needing `zeroIsEngaged`, which is a property of the arithmetic rather than a flag
+     somebody has to remember. */
+  minOrigFee:    { label: 'Minimum origination fee',                   unit: 'money', revenueUp: true },
   appraisalFee:  { label: 'Appraisal fee (paid outside closing)',      unit: 'money', revenueUp: true },
   // The company default for title is NULL = "auto-estimate per state", so any
   // typed number is a deviation. NOT revenueUp — with no numeric baseline there is

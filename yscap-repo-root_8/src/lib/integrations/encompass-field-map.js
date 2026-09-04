@@ -203,6 +203,25 @@ const REGISTRY = Object.freeze([
   // to compare" rather than a confidently-wrong 2%. The two candidates kept below are
   // harmless (absent on this tenant) and never carry the wrong GFE number.
   pull({ key: 'origination_pct', encompassFieldId: '388', loanPath: ['originationFeePercent', 'closingCost.originationFeePercentage'], type: 'percent', category: 'cost', compare: 'percent', our: 'quote:origination % (e.g. 1.25)', note: 'Origination fee % — field 388. Read authoritatively BY FIELD NUMBER (fieldReader → 1.000 = 1%), the same scale as our origPct*100. The GFE loanOriginationPercentage path is deliberately NOT a fallback — it is a different fee (points/adjusted origination) and reads 2 where field 388 is 1' }),
+  /* THE ORIGINATION FEE AS A FLAT DOLLAR AMOUNT — field 454 (owner-directed 2026-09-04, db/696:
+     *"Encompass has a different field, 454, which is the flat amount of the origination, so any
+     time that you are hitting your minimum, instead of mapping to field ID 388 Map it to 454."*).
+
+     454 AND 388 ARE TWO ATTRIBUTES OF THE SAME FEE OBJECT, verified against the tenant's own
+     Encompass field export: `LoanOriginationFee.borPaidAmount` (DECIMAL_2) and
+     `LoanOriginationFee.percentage` (DECIMAL_3). That is what makes the switch a comparison of ONE
+     fee by its unambiguous attribute rather than a comparison against some other fee — the trap
+     the 388 note above records, where the GFE path holds a different figure entirely.
+
+     WHICH OF THE TWO IS COMPARED IS DECIDED PER FILE by `reconcile.markNotApplicable`: on a
+     minimum-bound loan the PERCENTAGE row does not apply (the stated rate is not the rate charged,
+     so it would false-mismatch every small file and hold its term sheet), and on every other loan
+     — which is the overwhelming majority, and every file that exists today — the AMOUNT row does
+     not apply and nothing about the section moves. Exactly one of the pair is ever compared.
+
+     STILL READ-ONLY: `pull()` forces direction/authoritative/blocks* onto every entry, so this is
+     one more field the fieldReader asks for by number. Nothing here writes to Encompass. */
+  pull({ key: 'origination_amount', encompassFieldId: '454', loanPath: ['closingCost.originationFeeAmount'], type: 'money', category: 'cost', compare: 'money', our: 'quote:closingCosts.origination (dollars)', note: 'Origination fee AMOUNT — field 454 (LoanOriginationFee.borPaidAmount). Compared INSTEAD of the percentage (388) on a file where the program minimum origination fee bound, because there the stated rate is not the rate charged' }),
   pull({ key: 'term_months', encompassFieldId: '4', loanPath: 'loanAmortizationTermMonths', type: 'int', category: 'loan', compare: 'int', our: 'column:term (text → int)', note: 'Term in months' }),
   pull({ key: 'maturity_date', encompassFieldId: '78', loanPath: 'maturityDate', type: 'date', category: 'loan', compare: 'date', our: 'column:maturity_date', note: 'Maturity date — read from full loan (maturityDate), not pipeline' }),
   // Funded date — the closing-workflow 3-system reconciliation reads this
@@ -880,6 +899,15 @@ const NA_REASON = Object.freeze({
   refinance: 'This is a refinance — there is no purchase and no contract, so this field does not apply.',
 });
 
+/* THE ORIGINATION FEE IS COMPARED ONE WAY OR THE OTHER, NEVER BOTH (owner-directed 2026-09-04).
+   The pair is a percentage (field 388) and a flat amount (field 454) — two attributes of the SAME
+   Encompass fee object — and which one is meaningful depends on the FILE, so the wording lives
+   here beside its sibling and `reconcile.markNotApplicable` asks the file. Both sentences say what
+   IS being compared instead, because a row that only says "does not apply" invites the question
+   this panel exists to answer. */
+const ORIG_NA_PCT = 'The program minimum origination fee applies on this loan, so the stated rate is not the rate charged — the fee is compared as a dollar amount (field 454) instead.';
+const ORIG_NA_AMOUNT = 'The origination fee is the ordinary percentage on this loan, so it is compared as a rate (field 388) instead.';
+
 /* Does `entry` apply to a loan with these facts? Returns the plain-language REASON
    it does not, or null when it does. An unknown/absent fact reads as "it applies":
    never silence a compared field on a shape we could not establish. */
@@ -1010,6 +1038,8 @@ module.exports = {
   mapValue,
   compareField,
   notApplicableReason,
+  ORIG_NA_PCT,
+  ORIG_NA_AMOUNT,
   NA_REASON,
   // The Encompass date normalizer — tolerant of the fieldReader's MM/DD/YYYY
   // display format AND ISO. closing.readEncompassFundedDate uses it so a funded

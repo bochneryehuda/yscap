@@ -169,6 +169,52 @@ assert.strictEqual(unf.status, 'match', 'units 2 vs 2 matches');
 assert.ok(!r.fields.find((f) => f.key === 'ref_pitia'), 'PITIA is removed from the comparison');
 ok('a fully-agreeing file passes; loan number + units are matched; PITIA is gone');
 
+/* ── THE ORIGINATION PAIR: 388 or 454, never both, and NEVER on a guess ──────
+   Added 2026-09-04 after CI caught the first cut of this switch. Two properties,
+   and the ASYMMETRY between them is the whole point:
+
+     * 454 (the AMOUNT) is a row this change ADDED, so it is live ONLY on a
+       POSITIVELY-established `minOrigApplied === true`. `summarize()` counts
+       "no data to compare" as NOT PASSING, so an always-live amount row would
+       hold the DocuSign term sheet and the tape export on every file whose
+       Encompass does not populate 454 — with no fix anybody at the desk could
+       perform. Unknown must therefore read as not-applicable.
+     * 388 (the PERCENTAGE) is a row this system already COMPARED, so the
+       module's own doctrine applies verbatim — *"never silence a compared
+       field on a shape we could not establish"*. Unknown must keep comparing.
+
+   Both directions are asserted because a single rule cannot satisfy them: a
+   mutation that silences 388 on an unknown fact leaves every money assertion
+   here passing, and one that keeps 454 live leaves the doctrine intact. */
+{
+  const noFacts = recon.compareAll(ours, theirs, {});                       // caller passed nothing
+  const amtNF = noFacts.fields.find((f) => f.key === 'origination_amount');
+  const pctNF = noFacts.fields.find((f) => f.key === 'origination_pct');
+  assert.ok(amtNF && amtNF.status === 'not_applicable', 'no facts → the AMOUNT row is silent (a new row may never block on a guess)');
+  assert.ok(pctNF && pctNF.status !== 'not_applicable', 'no facts → the PERCENTAGE row is still COMPARED (never silenced on a guess)');
+
+  const notBound = recon.compareAll(ours, theirs, {}, { minOrigApplied: false });
+  assert.strictEqual(notBound.fields.find((f) => f.key === 'origination_amount').status, 'not_applicable',
+    'minimum did not bind → the AMOUNT row is not applicable');
+  assert.ok(notBound.fields.find((f) => f.key === 'origination_pct').status !== 'not_applicable',
+    'minimum did not bind → the PERCENTAGE row is compared, exactly as before this change');
+
+  const bound = recon.compareAll(ours, theirs, {}, { minOrigApplied: true });
+  assert.strictEqual(bound.fields.find((f) => f.key === 'origination_pct').status, 'not_applicable',
+    'minimum bound → the PERCENTAGE row is not applicable (the stated rate is not the rate charged)');
+  assert.ok(bound.fields.find((f) => f.key === 'origination_amount').status !== 'not_applicable',
+    'minimum bound → the AMOUNT row (field 454) is the one compared');
+
+  // Exactly one of the pair is ever live — asserted as the INVARIANT, on all three states.
+  for (const [name, res] of [['no facts', noFacts], ['not bound', notBound], ['bound', bound]]) {
+    const live = ['origination_pct', 'origination_amount']
+      .map((k) => res.fields.find((f) => f.key === k))
+      .filter((f) => f && f.status !== 'not_applicable').length;
+    assert.strictEqual(live, 1, `exactly one of 388/454 is live (${name})`);
+  }
+}
+ok('the origination pair: 454 only on a proven minimum, 388 never silenced on a guess, exactly one live');
+
 // ── A money mismatch un-passes the section ──────────────────────────────────
 const ours2 = Object.assign({}, ours, { loan_amount: 525000, max_total_loan: 525000 }); // off by $450
 r = recon.compareAll(ours2, theirs, {});

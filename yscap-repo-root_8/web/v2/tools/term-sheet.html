@@ -877,6 +877,14 @@
                          that attracts none; a typed 0 WAIVES it. Any typed value — 0 included —
                          goes to an admin for approval like every other knob in this zone. -->
                     <div class="field"><label for="tsFeasFee">Construction feasibility review&nbsp;($) <span class="ts-admin-note">— 1250 ground-up · 750 heavy rehab</span></label><div class="input"><input id="tsFeasFee" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="by deal type"></div></div>
+                    <!-- THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696) — the floor
+                         under our own origination on EVERY program. PRE-FILLED, NOT PRE-SET: the
+                         company number is the PLACEHOLDER and a blank box means "use it", which is
+                         what makes a re-registered file follow today's rules rather than the ones
+                         in force the day it first registered. A typed amount is an approved
+                         exception on THIS file; a typed 0 WAIVES the minimum. Raising it charges
+                         more and needs no approval; lowering it (0 included) goes to an admin. -->
+                    <div class="field"><label for="tsMinOrigFee">Minimum origination fee&nbsp;($) <span class="ts-admin-note">— blank = the company minimum · 0 waives it</span></label><div class="input"><input id="tsMinOrigFee" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="2500"></div></div>
                 </div>
                 <!-- GOVERNMENT CHARGES — THE MANUAL SECTION (owner-directed 2026-08-23:
                      "All those line items should also be able to be added to the manual
@@ -1306,7 +1314,7 @@
 <script src="title-cost.js?v=admin8-tsprog1"></script>
 <script src="gov-charges.js?v=gov2"></script>
 <script src="address-autocomplete.js?v=admin9-tsprog1"></script>
-<script src="termsheet.js?v=feerows1-heavyrehab1-cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1-derivpage1-bizpurpose1-speed1-spknob1"></script>
+<script src="termsheet.js?v=feerows1-heavyrehab1-cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1-derivpage1-bizpurpose1-speed1-spknob1-minorig2"></script>
 <script src="../float-actions.js?v=admin10-applyfix-tsprog1"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

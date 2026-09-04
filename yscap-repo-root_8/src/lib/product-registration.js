@@ -711,9 +711,25 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
      out against a total rounded on its own, in the one table on the page whose
      whole job is to reconcile. Never move a row here back to money() on its own. */
   const feeRow = (label, amount) => { if (num(amount) > 0) feeRows.push([label, money2(amount)]); };
+  /* THE PROGRAM MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696). When the floor bound,
+     the STATED rate is not the rate charged — printing it beside the minimum dollars makes the row
+     contradict itself ("1.25% of the loan" next to $2,500.00 on a $60,000 loan). The wording comes
+     from the ONE definition in `src/lib/min-origination.js`, so this email, the term sheet, the
+     studio and the staff panel cannot describe one fee four ways. Never two competing percentages
+     on a borrower's row: the effective figure lives on the derivation page, where the reader is
+     reconciling. A quote the floor never reached carries no `originationMinimum` at all, so this
+     row is byte-identical on every loan above the crossover. */
+  const origMin = cc.originationMinimum || null;
   const origPctStr = quote.origPct != null
     ? `${Math.round(Number(quote.origPct) * 10000) / 100}%` : null;
-  feeRow(`Origination fee${origPctStr ? ` (${origPctStr} of the loan)` : ''}`, cc.origination);
+  feeRow(
+    origMin
+      /* ONE ROW, never two — the owner asked for a qualifier and not a new line. The label is the
+         module's own constant so the wording cannot drift, and it carries no second percentage: two
+         competing rates on a borrower's row invites "so which am I being charged?". */
+      ? require('./min-origination').LABEL_MINIMUM
+      : `Origination fee${origPctStr ? ` (${origPctStr} of the loan)` : ''}`,
+    cc.origination);
   /* THE TPO BROKER'S OWN ORIGINATION FEE — and this row was MISSING, found by the fee audit engine
      (owner-directed 2026-08-26). It is a real borrower closing cost the broker sets on their own
      firm's files and it has been inside `dueAtClosing` since 2026-08-06, named on the term sheet,
