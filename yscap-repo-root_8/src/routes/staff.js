@@ -3725,6 +3725,13 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         await client.query(`UPDATE applications SET file_markup_gold_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldPct)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupSilverPct'))
         await client.query(`UPDATE applications SET file_markup_silver_pct=$2 WHERE id=$1`, [appId, stickyMkSilver(overrides.markupSilverPct)]);
+      /* Speed's own sticky markup (db/694 — the owner's reversal of decision D5,
+         2026-09-03). NOT capped at 1.00 like Silver's: Speed charges the higher of the
+         two parents' rates with both run at this margin, and Silver's engine clamps
+         whatever it receives, so a margin above one point is real revenue on every deal
+         Standard prices. Same blank-clears contract as its three siblings. */
+      if (Object.prototype.hasOwnProperty.call(overrides, 'markupSpeedPct'))
+        await client.query(`UPDATE applications SET file_markup_speed_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupSpeedPct)]);
       // Item 15: the manual GOLD top-tier markup sticks the same way, so a future
       // quote (staff or borrower self-service) never drops it back to zero. A
       // blank clears it → the company per-tier default (or historic 0) governs.

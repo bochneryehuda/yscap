@@ -34,6 +34,7 @@ const PROGRAMS = Object.freeze([
   { key: 'std', col: 'file_markup_std_pct', def: 'markupStdPct', label: 'Standard' },
   { key: 'gold', col: 'file_markup_gold_pct', def: 'markupGoldPct', label: 'Gold' },
   { key: 'silver', col: 'file_markup_silver_pct', def: 'markupSilverPct', label: 'Silver' },
+  { key: 'speed', col: 'file_markup_speed_pct', def: 'markupSpeedPct', label: 'Speed' },
 ]);
 
 /* db/600's own spare rule, restated as a READ so the diagnosis can never

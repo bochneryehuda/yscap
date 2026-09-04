@@ -283,10 +283,10 @@ export function readSnapshot(win) {
       tsTargetLoan: moneyVal('tsTargetLoan'),
       tsLadderPick: val('tsLadderPick'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
-      tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'), tsYspSilver: val('tsYspSilver'),
+      tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'), tsYspSilver: val('tsYspSilver'), tsYspSpeed: val('tsYspSpeed'),
       // Manual GOLD top-tier markup (item 15) — the studio's "manual section for the top tier".
       tsYspGoldT1: val('tsYspGoldT1'),
-      tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'), tsOrigSilver: val('tsOrigSilver'),
+      tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'), tsOrigSilver: val('tsOrigSilver'), tsOrigSpeed: val('tsOrigSpeed'),
       tsOrigManual: val('tsOrigManual'),
       tsFeeUW: moneyVal('tsFeeUW'), tsFeeCredit: moneyVal('tsFeeCredit'),
       /* OUR FEE'S TWO PARTS + the optional New York settlement agent fee (owner-directed
@@ -319,7 +319,9 @@ export function readSnapshot(win) {
       payoff: moneyVal('payoff'), payoffLender: val('payoffLender'), payoffLoanNo: val('payoffLoanNo'),
       cashOutAmt: moneyVal('cashOutAmt'),
       tsAccrual: val('tsAccrual'), tsDeferredOrig: val('tsDeferredOrig'),
-      tsMinIntStd: chk('tsMinIntStd'), tsMinIntGold: chk('tsMinIntGold'), tsMinIntSilver: chk('tsMinIntSilver'), tsMinIntManual: chk('tsMinIntManual'),
+      // Speed's own knobs (owner reversal of D5, 2026-09-03) — read like Silver's, from the
+      // studio's own boxes (`tsYspSpeed` / `tsOrigSpeed` / `tsMinIntSpeed`).
+      tsMinIntStd: chk('tsMinIntStd'), tsMinIntGold: chk('tsMinIntGold'), tsMinIntSilver: chk('tsMinIntSilver'), tsMinIntSpeed: chk('tsMinIntSpeed'), tsMinIntManual: chk('tsMinIntManual'),
     },
   };
 }
@@ -362,9 +364,9 @@ export function adminStateFromEngineInputs(inp) {
   inp = inp || {};
   const v = {};
   const put = (id, val) => { if (val != null && val !== '') v[id] = String(val); };
-  put('tsYspStd', inp.markupStdPct); put('tsYspGold', inp.markupGoldPct); put('tsYspSilver', inp.markupSilverPct);
+  put('tsYspStd', inp.markupStdPct); put('tsYspGold', inp.markupGoldPct); put('tsYspSilver', inp.markupSilverPct); put('tsYspSpeed', inp.markupSpeedPct);
   put('tsYspGoldT1', inp.markupGoldT1Pct);   // manual Gold top-tier markup (item 15)
-  put('tsOrigStd', inp.origStdPct); put('tsOrigGold', inp.origGoldPct); put('tsOrigSilver', inp.origSilverPct);
+  put('tsOrigStd', inp.origStdPct); put('tsOrigGold', inp.origGoldPct); put('tsOrigSilver', inp.origSilverPct); put('tsOrigSpeed', inp.origSpeedPct);
   put('tsOrigManual', inp.origManualPct);
   put('tsFeeUW', inp.lenderFee); put('tsFeeCredit', inp.creditFee);
   put('tsFeeUwPart', inp.underwritingFee); put('tsFeeLegal', inp.legalFee);

@@ -125,7 +125,12 @@ const SCENARIO = {
     ok('(a) the Speed card is on the grid and selectable', !cards.speed.gone && !cards.speed.off);
     ok('(a) the Speed card shows a loan amount', spLoan > 0, cards.speed.loan);
     ok('(a) the Speed card shows a note rate', spRate > 0, cards.speed.rate);
-    ok('(a) the Speed card names the composition on its sub-line', /Lesser of Standard & Silver/.test(cards.speed.sub) && /\$1,000,000|\$1M/.test(cards.speed.sub) && /10%/.test(cards.speed.sub), cards.speed.sub);
+    /* THE CARD IS QUIET; THE DRILL-IN EXPLAINS (owner-directed 2026-09-03: "It doesn't
+       need to say this wording big on the outside box of the program. It's okay if it has
+       it inside only after you click it"). */
+    ok('(a) the Speed card does NOT carry the composition wording on its sub-line',
+      !/Lesser of Standard|assignment fee|maximum/i.test(cards.speed.sub || ''), cards.speed.sub);
+    ok('(a) the Speed card sub-line still says something useful', String(cards.speed.sub || '').trim().length > 0, cards.speed.sub);
     ok('the Standard and Silver cards both priced this scenario (the comparison means something)', stLoan > 0 && svLoan > 0 && stRate > 0 && svRate > 0, `std ${cards.std.loan}/${cards.std.rate} silver ${cards.silver.loan}/${cards.silver.rate}`);
 
     // ---- (b) lesser loan, (c) higher rate ----
@@ -198,10 +203,21 @@ const SCENARIO = {
     });
     console.log('  detail:', JSON.stringify({ head: detail.head, rows: detail.rows, levProg: detail.levProg, levShown: detail.levShown, pdfBtn: detail.pdfBtn }));
     ok('(d) clicking the card drills into the Speed Program detail', detail.chosenActive && detail.detailShown && /Speed Program/.test(detail.head), detail.head);
-    ok('(d) the composition table is visible with all four ceiling rows', !detail.compHidden && detail.rows.length === 4, JSON.stringify(detail.rows));
-    const labels = detail.rows.map((r) => r[0]);
-    ok('(d) the rows are max loan / acquisition LTV / after-repair LTV / loan-to-cost', JSON.stringify(labels) === JSON.stringify(['Maximum loan', 'Acquisition LTV', 'After-repair LTV', 'Loan-to-cost']), JSON.stringify(labels));
-    ok('(d) every row carries Standard\'s figure, Silver\'s, the enforced one and who set it', detail.rows.every((r) => r.length === 5 && r.slice(1, 4).every((v) => v && v !== '—') && /Standard|Silver|both|Speed/.test(r[4])), JSON.stringify(detail.rows));
+    /* TWO SECTIONS since the owner's 2026-09-03 report: the composition (four ceiling
+       rows, each with BOTH programs' own figures) and then this program's own overlays. */
+    const compRows = detail.rows.filter((r) => r.length >= 5);
+    const ovlRows = detail.rows.filter((r) => r.length === 3);
+    ok('(d) the composition table is visible with all four ceiling rows', !detail.compHidden && compRows.length === 4, JSON.stringify(compRows));
+    ok('(d) the overlays render as their OWN section, not mixed into the parents\' columns', ovlRows.length === 4, JSON.stringify(ovlRows));
+    ok('(d) no Speed overlay figure appears in a parent\'s own column',
+      !compRows.some((r) => r[1] === '$800,000' || r[2] === '$800,000'), JSON.stringify(compRows.map((r) => [r[0], r[1], r[2]])));
+    ok('(d) the overlays name the maximum loan, the loan-to-cost, the reserve and the assignment share',
+      /Maximum loan/.test(ovlRows.map((r) => r[0]).join('|')) && /Maximum loan-to-cost/.test(ovlRows.map((r) => r[0]).join('|'))
+      && /Financed interest reserve/.test(ovlRows.map((r) => r[0]).join('|')) && /Assignment fee/.test(ovlRows.map((r) => r[0]).join('|')),
+      JSON.stringify(ovlRows.map((r) => r[0])));
+    const labels = compRows.map((r) => r[0]);
+    ok('(d) the composition rows are max loan / acquisition LTV / after-repair LTV / loan-to-cost', JSON.stringify(labels) === JSON.stringify(['Maximum loan', 'Acquisition LTV', 'After-repair LTV', 'Loan-to-cost']), JSON.stringify(labels));
+    ok('(d) every composition row carries Standard\'s figure, Silver\'s, the lesser and who set it', compRows.every((r) => r.length === 5 && r.slice(1, 4).every((v) => v && v !== '—') && /Standard|Silver|both/.test(r[4])), JSON.stringify(compRows));
     ok('(d) the block states both rates and which one Speed charges', /Standard \d/.test(detail.compText) && /Silver \d/.test(detail.compText) && /charges the higher/.test(detail.compText), detail.compText.slice(0, 200));
     ok('the leverage ladder is drawn for Speed', detail.levShown && /Speed/.test(detail.levProg), detail.levProg);
     ok('the PDF button names the Speed term sheet', /Speed/.test(detail.pdfBtn), detail.pdfBtn);

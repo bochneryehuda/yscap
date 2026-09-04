@@ -411,14 +411,20 @@ function CreditAccountCard({ firmId, firmName, canSet }) {
    default (which uses retail). The broker never sets the rate; the firm's OWN
    broker fee is set by the firm in their portal and shown here read-only.
    platform_setup to change. Dark text on white per the HARD RULE. */
-const FP_KEYS = ['markupStdPct', 'markupGoldPct', 'markupSilverPct', 'origStdPct', 'origGoldPct', 'origSilverPct'];
-const FP_ROWS = [
+const FP_KEYS = ['markupStdPct', 'markupGoldPct', 'markupSilverPct', 'markupSpeedPct', 'origStdPct', 'origGoldPct', 'origSilverPct', 'origSpeedPct'];
+// Speed (owner reversal of D5, 2026-09-03) has knobs of its own, per firm like Silver's.
+// It charges the higher of the two parents' rates with both run at the Speed margin;
+// Silver's engine caps a margin at 1.00%, so above that it is earned only when
+// Standard sets the rate — the label says so where the hint would not fit.
+export const FP_ROWS = [
   { k: 'markupStdPct', label: 'Standard markup (%)' },
   { k: 'markupGoldPct', label: 'Gold markup (%)' },
   { k: 'markupSilverPct', label: 'Silver markup (%, max 1)' },
+  { k: 'markupSpeedPct', label: 'Speed markup (%; above 1 earned only when Standard sets the rate)' },
   { k: 'origStdPct', label: 'Standard origination (%)' },
   { k: 'origGoldPct', label: 'Gold origination (%)' },
   { k: 'origSilverPct', label: 'Silver origination (%)' },
+  { k: 'origSpeedPct', label: 'Speed origination (%)' },
 ];
 const fpToForm = (o) => { const f = {}; for (const k of FP_KEYS) f[k] = (o && o[k] != null) ? String(o[k]) : ''; return f; };
 

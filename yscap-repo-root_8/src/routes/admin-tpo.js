@@ -225,8 +225,8 @@ function shapeFirmPricing(row) {
   row = row || {};
   const n = (v) => (v == null || v === '' ? null : Number(v));
   return {
-    markupStdPct: n(row.markup_std_pct), markupGoldPct: n(row.markup_gold_pct), markupSilverPct: n(row.markup_silver_pct),
-    origStdPct: n(row.orig_std_pct), origGoldPct: n(row.orig_gold_pct), origSilverPct: n(row.orig_silver_pct),
+    markupStdPct: n(row.markup_std_pct), markupGoldPct: n(row.markup_gold_pct), markupSilverPct: n(row.markup_silver_pct), markupSpeedPct: n(row.markup_speed_pct),
+    origStdPct: n(row.orig_std_pct), origGoldPct: n(row.orig_gold_pct), origSilverPct: n(row.orig_silver_pct), origSpeedPct: n(row.orig_speed_pct),
     markupTiers: pricingSettings.cleanMarkupTiers(row.markup_tiers),
     brokerFeePct: n(row.broker_orig_pct),   // read-only here (the broker owns it)
   };
@@ -234,12 +234,12 @@ function shapeFirmPricing(row) {
 // Pull the resolver-shaped fields out of a merged cd (retail<-channel<-firm).
 function pickPct(cd) {
   return {
-    markupStdPct: cd.markupStdPct, markupGoldPct: cd.markupGoldPct, markupSilverPct: cd.markupSilverPct,
-    origStdPct: cd.origStdPct, origGoldPct: cd.origGoldPct, origSilverPct: cd.origSilverPct,
+    markupStdPct: cd.markupStdPct, markupGoldPct: cd.markupGoldPct, markupSilverPct: cd.markupSilverPct, markupSpeedPct: cd.markupSpeedPct,
+    origStdPct: cd.origStdPct, origGoldPct: cd.origGoldPct, origSilverPct: cd.origSilverPct, origSpeedPct: cd.origSpeedPct,
     markupTiers: cd.markupTiers || null, brokerFeePct: cd.brokerFeePct != null ? cd.brokerFeePct : null,
   };
 }
-const FIRM_PRICING_COLS = 'markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct, markup_tiers';
+const FIRM_PRICING_COLS = 'markup_std_pct, markup_gold_pct, markup_silver_pct, markup_speed_pct, orig_std_pct, orig_gold_pct, orig_silver_pct, orig_speed_pct, markup_tiers';
 
 // View a firm's pricing overrides + the value each blank field falls back to +
 // what the firm actually prices at right now.
@@ -265,8 +265,8 @@ router.put('/firms/:id/pricing', requirePermission('platform_setup'), async (req
     if (!(await firmOr404(req, res))) return;
     const b = req.body || {};
     const cols = {
-      markup_std_pct: numOrNull(b.markupStdPct), markup_gold_pct: numOrNull(b.markupGoldPct), markup_silver_pct: numOrNull(b.markupSilverPct),
-      orig_std_pct: numOrNull(b.origStdPct), orig_gold_pct: numOrNull(b.origGoldPct), orig_silver_pct: numOrNull(b.origSilverPct),
+      markup_std_pct: numOrNull(b.markupStdPct), markup_gold_pct: numOrNull(b.markupGoldPct), markup_silver_pct: numOrNull(b.markupSilverPct), markup_speed_pct: numOrNull(b.markupSpeedPct),
+      orig_std_pct: numOrNull(b.origStdPct), orig_gold_pct: numOrNull(b.origGoldPct), orig_silver_pct: numOrNull(b.origSilverPct), orig_speed_pct: numOrNull(b.origSpeedPct),
     };
     for (const [k, v] of Object.entries(cols)) {
       if (v == null) continue;

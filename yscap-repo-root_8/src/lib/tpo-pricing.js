@@ -25,7 +25,9 @@ const pricingSettings = require('./pricing-settings');
 // and broker_orig_pct are handled separately below.
 const PCT_FIELDS = [
   ['markupStdPct', 'markup_std_pct'], ['markupGoldPct', 'markup_gold_pct'], ['markupSilverPct', 'markup_silver_pct'],
+  ['markupSpeedPct', 'markup_speed_pct'],   // db/694 — the Speed Program's own knobs (D5 reversed)
   ['origStdPct', 'orig_std_pct'], ['origGoldPct', 'orig_gold_pct'], ['origSilverPct', 'orig_silver_pct'],
+  ['origSpeedPct', 'orig_speed_pct'],
 ];
 
 function numOrNull(v) { return (v == null || v === '' || isNaN(Number(v))) ? null : Number(v); }
@@ -51,8 +53,8 @@ let _chan = { at: 0, val: null };
 async function loadChannel() {
   try {
     const r = await db.query(
-      `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct,
-              orig_std_pct, orig_gold_pct, orig_silver_pct, markup_tiers
+      `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, markup_speed_pct,
+              orig_std_pct, orig_gold_pct, orig_silver_pct, orig_speed_pct, markup_tiers
          FROM tpo_pricing_settings WHERE id = 1 LIMIT 1`);
     _chan = { at: Date.now(), val: r.rows[0] || {} };
   } catch (e) {
@@ -72,8 +74,8 @@ let _firms = { at: 0, val: null };
 async function loadFirms() {
   try {
     const r = await db.query(
-      `SELECT tpo_firm_id, markup_std_pct, markup_gold_pct, markup_silver_pct,
-              orig_std_pct, orig_gold_pct, orig_silver_pct, markup_tiers, broker_orig_pct
+      `SELECT tpo_firm_id, markup_std_pct, markup_gold_pct, markup_silver_pct, markup_speed_pct,
+              orig_std_pct, orig_gold_pct, orig_silver_pct, orig_speed_pct, markup_tiers, broker_orig_pct
          FROM tpo_firm_pricing`);
     const map = {};
     for (const row of r.rows) map[String(row.tpo_firm_id)] = row;
