@@ -20,6 +20,7 @@
 const express = require('express');
 const store = require('../pricing/rules/store');
 const fields = require('../pricing/rules/fields');
+const sampleRow = require('../pricing/rules/sample-row');
 const ruleActions = require('../pricing/rules/actions');
 const logic = require('../pricing/rules/logic');
 const overlay = require('../pricing/rules/overlay');
@@ -54,6 +55,13 @@ function attach(router) {
       listOperators: require('../../lib/conditions/rules').LIST_OPS,
       actions: ruleActions.KEYS.map((k) => ruleActions.ACTIONS[k]),
       maxPoints: ruleActions.MAX_POINTS,
+      /* WHICH BOX FILLS WHICH FACT, so the builder's "try it" panel can offer a
+         box for the fields the rule actually reads instead of a fixed four.
+         Published rather than re-typed in the browser: a second copy drifts,
+         and a drifted copy tests a different loan than the screen says. */
+      scenarioInput: facts.SCENARIO_INPUT,
+      quoteInput: sampleRow.QUOTE_INPUT,
+      derivedFacts: facts.DERIVED_SCENARIO_FACTS,
       engines: [
         { v: 'all', label: 'Both engines' },
         { v: 'general', label: 'General Pricing Engine' },
@@ -131,32 +139,7 @@ function attach(router) {
          run against a hand-made bag would answer about a loan the engine never
          sees, which is worse than no drill at all. */
       const bag = facts.factsFor(
-        facts.scenarioFacts(scenario),
-        {
-          investorKey: quote.investorKey || 'sample',
-          whiteLabel: quote.whiteLabel || 'Sample program',
-          lender: quote.lender || null,
-          investor: quote.investor || null,
-          program: quote.program || 'Sample',
-          product: quote.product || null,
-          pricedBy: quote.source || null,
-          priceBuild: {
-            noteRate: quote.noteRate == null ? null : Number(quote.noteRate),
-            price: quote.price == null ? 100 : Number(quote.price),
-            borrowerPaidPoints: quote.points == null ? 0 : Number(quote.points),
-          },
-          terms: {
-            ltv: quote.quotedLtv == null ? null : Number(quote.quotedLtv),
-            dscr: quote.quotedDscr == null ? null : Number(quote.quotedDscr),
-            termYears: quote.quotedTermYears == null ? null : Number(quote.quotedTermYears),
-            dayLock: quote.quotedLockDays == null ? null : Number(quote.quotedLockDays),
-            amortizationType: quote.amortization || null,
-          },
-          marginHoldback: quote.marginHoldback == null ? null : Number(quote.marginHoldback),
-        },
-        null,
-        {},
-      );
+        facts.scenarioFacts(scenario), sampleRow.sampleRow(quote), null, {});
 
       const rules = await store.listRules({ includeArchived: true });
       const engine = b.engine === 'combined' ? 'combined' : b.engine === 'general' ? 'general' : null;
@@ -219,30 +202,10 @@ function attach(router) {
     if (problems.length) return refuse(res, problems);
 
     const quote = b.quote || {};
-    /* A SAMPLE ROW IN THE BOARD'S OWN SHAPE, so the same code path the board
-       takes is the one the preview takes. */
-    const row = {
-      investorKey: quote.investorKey || 'sample',
-      whiteLabel: quote.whiteLabel || 'Sample program',
-      lender: quote.lender || null,
-      investor: quote.investor || null,
-      program: quote.program || 'Sample',
-      product: quote.product || null,
-      pricedBy: quote.source || null,
-      priceBuild: {
-        noteRate: quote.noteRate == null ? null : Number(quote.noteRate),
-        price: quote.price == null ? 100 : Number(quote.price),
-        borrowerPaidPoints: quote.points == null ? 0 : Number(quote.points),
-      },
-      terms: {
-        ltv: quote.quotedLtv == null ? null : Number(quote.quotedLtv),
-        dscr: quote.quotedDscr == null ? null : Number(quote.quotedDscr),
-        termYears: quote.quotedTermYears == null ? null : Number(quote.quotedTermYears),
-        dayLock: quote.quotedLockDays == null ? null : Number(quote.quotedLockDays),
-        amortizationType: quote.amortization || null,
-      },
-      marginHoldback: quote.marginHoldback == null ? null : Number(quote.marginHoldback),
-    };
+    /* THE SAMPLE ROW IS BUILT BY THE MODULE THAT ALSO PUBLISHES WHICH BOX
+       FILLS WHICH FIELD, so the preview can never test a row that is not the
+       one the builder's own boxes describe. */
+    const row = sampleRow.sampleRow(quote);
 
     const engine = b.engine === 'combined' ? 'combined' : 'general';
     const out = overlay.apply([row], {
