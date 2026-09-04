@@ -613,6 +613,102 @@ const INHERITED = ['constructor', 'toString', 'valueOf', '__proto__', 'hasOwnPro
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+console.log('\nI. WHAT THE SECOND POST-MERGE AUDIT FOUND');
+// ═══════════════════════════════════════════════════════════════════════════
+
+{
+  /* THE EXPLAIN REBUILD DROPPED OUR OWN MOVE. `handlePatch` re-establishes price
+     and adjusted points from the rung handle — minted BEFORE the overlay runs,
+     and it has to win them, because `evidenceCoversRate` judges the vendor's
+     answer against this option's rate and lock. But the row it is laid on may
+     have been moved by a house rule, and `houseAdjustPoints` survived while the
+     two figures it moved did not: the panel drew "Our own rules +0.500" over a
+     total of 0.500 and a Final price contradicting the row above it. LoanNEX
+     rows only — Lender Price rows carry no `explain`. */
+  const quoteShape = require('../src/longterm/pricing/quote-shape');
+  const flatBoard = () => ([{
+    investorKey: 'x', program: 'P', terms: { dayLock: 30 },
+    priceBuild: { noteRate: 7.5, price: 99.5, adjustedPoints: 0.5, borrowerPaidPoints: 0.5, basePoints: 2, vendorPrice: 99.5 },
+    explain: { priceHashKey: 'K', vendor: 'loannex', rate: 7.5, price: 99.5, lockDays: 30 },
+  }]);
+  const row = overlay.apply(flatBoard(), { rules: [holdbackRule], scenario: { loan: 150000 }, engine: 'general' }).programs[0];
+  const rebuilt = quoteShape.optionForExplain(row.explain, row).priceBuild;
+  eq('I1  the explain rebuild agrees with the board on price', rebuilt.price, row.priceBuild.price);
+  eq('I2  …and on adjusted points', rebuilt.adjustedPoints, row.priceBuild.adjustedPoints);
+  const round3 = (n) => Math.round(Number(n) * 1000) / 1000;
+  const r3n = round3;
+  ok('I3  …so the ladder adds up', round3(0.5 + -Number(rebuilt.houseAdjustPoints)) === Number(rebuilt.adjustedPoints),
+    `0.5 + ${-Number(rebuilt.houseAdjustPoints)} vs ${rebuilt.adjustedPoints}`);
+  eq('I4  …and the points it already moved are not moved twice',
+    rebuilt.borrowerPaidPoints, row.priceBuild.borrowerPaidPoints);
+  const twice = quoteShape.optionForExplain(row.explain, row).priceBuild;
+  ok('I5  …laying it on again changes nothing', JSON.stringify(twice) === JSON.stringify(rebuilt));
+
+  /* THE RE-ANCHOR ONLY BITES ON A RE-QUOTE, so it has to be tested on one. When
+     the handle comes back at the SAME price the board was built from, anchoring
+     on the row's stale `housePrice` and on the handle's own price give the same
+     answer — so a fixture that does not move the price cannot tell a working
+     re-anchor from a missing one. Here the vendor answers 98.5 rather than 99.5:
+     the handle must win the base and our own move ride on top of THAT. */
+  const requoted = { ...row.explain, price: 98.5 };
+  const rq = quoteShape.optionForExplain(requoted, row).priceBuild;
+  eq('I5a a re-quote wins the base the house move rides on', rq.price, r3n(98.5 + Number(rq.houseAdjustPoints)));
+  ok('I5b …so the board\'s older price is not shown instead', rq.price !== row.priceBuild.price);
+
+  const clean = overlay.apply(flatBoard(), { rules: [], scenario: {}, engine: 'general' }).programs[0];
+  const untouched = quoteShape.optionForExplain(clean.explain, clean).priceBuild;
+  eq('I6  a board no rule touched rebuilds exactly as before', untouched.price, 99.5);
+  eq('I7  …points included', untouched.adjustedPoints, 0.5);
+}
+
+{
+  /* AN ADJUSTMENT IS ONLY REPORTED WHERE IT LANDED. `appliedRules` counts every
+     quote a rule REACHED; a quote a higher-priority rule then refused is not on
+     the board, so a plain holdback whose every quote was refused by a DIFFERENT
+     rule was still printed as "Priced with our own adjustment", over a board
+     with no rows. */
+  const when = { combinator: 'and', rules: [{ field: 'loan_amount', operator: 'lt', value: 200000 }] };
+  const stopRule = { id: 's', name: 'Not licensed', enabled: true, engine: 'all', priority: 1, when, then: [{ type: 'ineligible', reason: 'No.' }] };
+  const holdRule = { id: 'h2', name: 'Margin holdback', enabled: true, engine: 'all', priority: 2, when, then: [{ type: 'add_holdback', points: 0.5 }] };
+  const onScreen = (o) => (o.applied || []).filter((a) => a && a.points && !a.stops && a.adjustedQuotes !== 0).map((a) => a.name);
+
+  const both = overlay.apply(boardOf(), { rules: [stopRule, holdRule], scenario: { loan: 150000 }, engine: 'general' });
+  eq('I8  every quote refused leaves no row on the board', both.programs.length, 0);
+  eq('I9  …and no rule is reported as having priced one', onScreen(both).length, 0);
+
+  const alone = overlay.apply(boardOf(), { rules: [holdRule], scenario: { loan: 150000 }, engine: 'general' });
+  ok('I10 CONTROL: the same holdback alone IS reported', onScreen(alone).join() === 'Margin holdback');
+  eq('I11 …and says how many quotes it actually moved', (alone.applied[0] || {}).adjustedQuotes, 3);
+}
+
+{
+  /* `Number(null)` IS 0, WHICH IS FINITE — so the sort tested `a && a.priority`
+     and then dereferenced `a.priority`, throwing one line ahead of the `r && …`
+     guard that exists because a rule may be null. */
+  let boom = null;
+  try { overlay.apply(boardOf(), { rules: [holdbackRule, null], scenario: { loan: 150000 }, engine: 'general' }); } catch (e) { boom = e; }
+  ok('I12 a null rule beside a good one cannot take the board down', !boom, boom && boom.message);
+  /* TOTAL AGAINST A THROW, not just against a wrong answer: a crash also "fails"
+     and looks like proof while stopping the battery where it stands. */
+  let orderedOk = false;
+  let orderErr = null;
+  try {
+    orderedOk = overlay.ordered([{ id: 'b', priority: 9 }, null, { id: 'a', priority: 1 }])[0].id === 'a';
+  } catch (e) { orderErr = e; }
+  ok('I13 …and ordering still puts the lower priority first', orderedOk, orderErr && `threw: ${orderErr.message}`);
+}
+
+{
+  const explains = stripComments(src('app-v2/src/longterm/BoardExplains.jsx'));
+  ok('I14 the board only lists an adjustment that reached a quote on it',
+    /a\.adjustedQuotes\s*!==\s*0/.test(explains));
+  const qs = stripComments(src('src/longterm/pricing/quote-shape.js'));
+  ok('I15 the explain rebuild re-applies our own move', /reapplyHouseMove\(/.test(qs));
+  ok('I16 …through the overlay\'s own definition, never a second copy',
+    /houseRules\.movePriceBuild\(/.test(qs) && !/houseAdjustPoints\s*\*/.test(qs));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 const total = pass + failures.length;
 console.log(`\n${failures.length ? 'FAILED' : 'ALL PASSED'} (${pass} passed, ${failures.length} failed of ${total})`);
 if (failures.length) { failures.forEach((f) => console.log(`  · ${f}`)); process.exit(1); }

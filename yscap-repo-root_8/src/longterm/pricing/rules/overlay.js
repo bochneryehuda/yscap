@@ -56,8 +56,12 @@ const nn = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(N
 /** The order rules run in: priority, then when they were made, then id. */
 function ordered(rules) {
   return [...(Array.isArray(rules) ? rules : [])].sort((a, b) => {
-    const pa = Number.isFinite(Number(a && a.priority)) ? Number(a.priority) : 100;
-    const pb = Number.isFinite(Number(b && b.priority)) ? Number(b.priority) : 100;
+    /* ⛔ `Number(null)` IS 0, WHICH IS FINITE — so testing `a && a.priority`
+       and then dereferencing `a.priority` threw on a null rule, one line ahead
+       of the `r && …` guard in `apply` that exists precisely because a rule may
+       be null. Ask about the RULE first. */
+    const pa = a && Number.isFinite(Number(a.priority)) ? Number(a.priority) : 100;
+    const pb = b && Number.isFinite(Number(b.priority)) ? Number(b.priority) : 100;
     if (pa !== pb) return pa - pb;
     const ca = String((a && a.createdAt) || '');
     const cb = String((b && b.createdAt) || '');
@@ -343,6 +347,24 @@ function apply(programs, opts) {
     }
   });
 
+  /* WHERE AN ADJUSTMENT ACTUALLY LANDED, counted off the FINISHED BOARD rather
+     than off what matched in pass one. `appliedRules` counts every quote a rule
+     REACHED, and a quote a higher-priority rule then refused is not on the board
+     — so a plain holdback whose every quote was refused by a different rule was
+     still reported as "Priced with our own adjustment", over a board with no
+     rows. Reading the board's own trace is the one source that cannot say a rule
+     priced something the officer cannot see. */
+  const landed = new Map();
+  for (const row of out) {
+    for (const option of optionsOf(row)) {
+      const trace = (option && option.houseRules && option.houseRules.applied) || [];
+      for (const t of trace) {
+        if (!t || !t.points) continue;
+        landed.set(t.ruleId, (landed.get(t.ruleId) || 0) + 1);
+      }
+    }
+  }
+
   const applied = rules
     .filter((r) => appliedRules.has(r.id))
     .map((r) => {
@@ -351,6 +373,7 @@ function apply(programs, opts) {
         ruleId: r.id,
         name: r.name,
         quotes: appliedRules.get(r.id),
+        adjustedQuotes: landed.get(r.id) || 0,
         did: actions.summarize(r.then),
         /* THE FACTS, so a screen never has to read the SENTENCE to work out what
            a rule did. The board decided "is this a price adjustment?" by testing
