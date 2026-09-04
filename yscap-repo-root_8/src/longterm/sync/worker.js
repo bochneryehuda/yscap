@@ -392,7 +392,7 @@ async function tickOnce({ trigger = 'worker' } = {}) {
   if (ps.ok === false || Number(ps.stored) > 0) {
     console.log('[lt-sync] price snapshot: %s',
       ps.ok === false ? `failed — ${ps.reason}`
-        : `${ps.stored} programme(s) recorded for ${ps.day}${ps.unusable ? `, ${ps.unusable} unreadable` : ''}`);
+        : `${ps.stored} program(s) recorded for ${ps.day}${ps.unusable ? `, ${ps.unusable} unreadable` : ''}`);
   }
 
   // The rules pass speaks only when it evaluated something or could not: a

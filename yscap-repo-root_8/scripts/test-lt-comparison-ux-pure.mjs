@@ -378,9 +378,15 @@ ok((Bsrc.match(/\{ts && ts\.enabled && (g\.best && )?\(\s*<CompareButton/g) || [
 const Psrc = P.replace(/\/\*[\s\S]*?\*\//g, ' ');
 ok(/export function CompareButton/.test(Psrc) && !/export function PickBox/.test(Psrc),
   'I4 the tick-box is gone and the button has taken its place');
-ok(/'Add to comparison'/.test(Psrc) && /'In comparison'/.test(Psrc),
-  'I5 it says what it does in words — "Add to comparison", then "In comparison"');
-ok(/aria-pressed=\{on\}/.test(Psrc) && /press to take it out/.test(Psrc),
+/* ⛔ TWO FACES, BOTH NAMING AN ACTION — owner-directed 2026-09-04: *"you should have a
+   button. The button should toggle between 'Add' and 'Remove' so you can play around with
+   adding and removing."* The second face used to be "In comparison", which states the STATE
+   and leaves the reader to work out that a second press undoes it. */
+ok(/'Add to comparison'/.test(Psrc) && /'Remove from comparison'/.test(Psrc),
+  'I5 it says what it does in words — "Add to comparison", then "Remove from comparison"');
+ok(!/'In comparison'/.test(Psrc),
+  'I5a …and the state-only wording is gone, so neither face leaves the next press to be guessed at');
+ok(/aria-pressed=\{on\}/.test(Psrc) && /Remove this program from the comparison/.test(Psrc),
   'I6 …carries its state for a screen reader, and says what the NEXT press does');
 ok(!/type="checkbox"/.test(/export function CompareButton[\s\S]*?\n}\n/.exec(Psrc)[0]),
   'I7 …and there is no checkbox left inside it');

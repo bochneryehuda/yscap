@@ -86,3 +86,45 @@ export function keepPlaceOnClick(e, run) {
   if (w && typeof w.requestAnimationFrame === 'function') w.requestAnimationFrame(restore);
   else restore();
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   AND WHEN A SEARCH LANDS, THE ANSWER STARTS AT THE TOP.
+
+   Owner-reported 2026-09-04: *"You search this scenario, and the search
+   finishes. You right away get to the bottom, to the highest rate, the 11.5
+   rate. You need to stay at the top, looks like a bug."*
+
+   ⛔ WHAT ACTUALLY MOVED, because nothing on this screen scrolls the page on a
+   search. The Search button sits at the BOTTOM of a long form, so the press
+   happens with the page scrolled well down. A successful search then COLLAPSES
+   that form (`setFormOpen(false)` — the strip takes over) and opens the cheapest
+   rate row. The document loses most of its height ABOVE the board while the
+   browser holds the scroll OFFSET where it was, so the same offset now points
+   deep into a much shorter page: the officer lands near the end of the board,
+   which is the highest rate on it. Exactly the 11.5 in the report.
+
+   ⛔ SO IT IS NOT AN ANCHOR PROBLEM, AND `holdInPlace` IS THE WRONG TOOL. That
+   one keeps the thing you PRESSED where it was, which is right for opening a row
+   and wrong here: the control pressed was a Search button that is about to be
+   folded away, and holding the page still is precisely what lands you at the
+   bottom. A new board is a new page — it starts at its top.
+
+   ⛔ INSTANT, NOT SMOOTH. Everything on screen has just been replaced; a
+   half-second glide through a board nobody has read yet is a wait, not an
+   explanation. (The two `behavior: 'smooth'` calls on this screen are BUTTONS a
+   person pressed to go somewhere — there the slide says "you are being moved".)
+
+   ⛔ AND IT NEVER THROWS. Older browsers take only the two-argument form, and a
+   test render has no window at all. Returns whether it actually scrolled, so a
+   caller — and a test — can tell "did nothing" from "did it".
+   ────────────────────────────────────────────────────────────────────────── */
+export function backToTop(win) {
+  const w = win || (typeof window !== 'undefined' ? window : null);
+  if (!w || typeof w.scrollTo !== 'function') return false;
+  try {
+    w.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    return true;
+  } catch {
+    try { w.scrollTo(0, 0); return true; } catch { return false; }
+  }
+}

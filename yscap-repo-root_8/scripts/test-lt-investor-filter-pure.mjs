@@ -107,7 +107,7 @@ const PROGRAMS = [
 {
   ok(F.overlaySummary(null, 5) === null, 'IF-16 no selection, no sentence');
   const s = F.overlaySummary(new Set(['a', 'b']), 7);
-  ok(/Showing 2 investors — display only/.test(s) && /7 programmes hidden/.test(s)
+  ok(/Showing 2 investors — display only/.test(s) && /7 programs hidden/.test(s)
     && /Lender Price was asked for everything/.test(s),
   'IF-17 the sentence counts, says DISPLAY ONLY, and names the un-narrowed search');
   ok(/Showing 1 investor — display only/.test(F.overlaySummary(new Set(['a']), 0)),
