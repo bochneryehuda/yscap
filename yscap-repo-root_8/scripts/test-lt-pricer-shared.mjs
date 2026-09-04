@@ -333,13 +333,34 @@ globalThis.__x = { React, renderToString, LtPricer, PricerScreen, LtCombinedPric
       settings: { problems: [] } }));
     ok(panel.ok && /switched off/.test(panel.h),
       'H4 the accounting names what is OFF the board and why — a short board is never a silent one');
-    /* ⛔ AND IT PRINTS OUR OWN NAME FOR AN INVESTOR, never the vendor's spelling: `whiteLabel`
-       wins wherever one is set, which is the rule every other surface follows. */
+    /* ⛔ RE-POINTED, NOT LOOSENED (owner-directed 2026-09-04: *"when you write the
+       white-labelled name, you should also write the investor's name so it's clear
+       and you understand everything"*).
+
+       THIS ASSERTION USED TO FORBID THE REAL NAME ENTIRELY, and its subject was two
+       things at once: that OUR name leads, and that the vendor's never appears. The
+       owner reversed the second on this surface — an officer cannot act on "Eclipse
+       is switched off" until they know whose sheet Eclipse is — and this board is
+       staff-only three ways (`/api/lt` is `requireStaff`; only `LtPricer` imports the
+       module; `/engine` bounces a TPO), each asserted in
+       `test-lt-board-explains-itself-pure.js` §G.
+
+       THE HALF THAT MATTERS IS KEPT AND MADE SHARPER: our name is the HEADING and
+       the vendor's is an aside. Printing them the other way round would put an
+       investor's real name where every other surface shows the client-safe one, and
+       is exactly what this line still refuses. */
     const wl = drew(React.createElement(NotOnThisBoard, {
       hidden: [{ investor: 'NQM Funding', whiteLabel: 'Ruby', reason: 'the rate sheet did not answer' }],
       settings: null }));
-    ok(wl.ok && /Ruby/.test(wl.h) && !/NQM/.test(wl.h),
-      'H4a …under OUR white label, never the vendor\'s spelling');
+    ok(wl.ok && /<strong[^>]*>Ruby<\/strong>/.test(wl.h),
+      'H4a …with OUR white label as the heading');
+    ok(wl.ok && /NQM Funding/.test(wl.h) && !/<strong[^>]*>NQM/.test(wl.h),
+      'H4a2 …and the real investor stated BESIDE it, never in its place — on this staff-only board');
+    /* AND AN INVESTOR NOBODY HAS WHITE-LABELLED HAS ONE NAME, printed once. */
+    const bare = drew(React.createElement(NotOnThisBoard, {
+      hidden: [{ investor: 'Verus', reason: 'switched off' }], settings: null }));
+    ok(bare.ok && (bare.h.match(/Verus/g) || []).length === 1,
+      'H4a3 …while an investor with no white-label name is never printed twice');
     ok(drew(React.createElement(NotOnThisBoard, { hidden: [], settings: {} })).h === '',
       'H4b …and draws NOTHING when there is nothing to account for, which is most boards');
     /* An unreadable SETTING is its own fact and must be said even on a board with nobody hidden —

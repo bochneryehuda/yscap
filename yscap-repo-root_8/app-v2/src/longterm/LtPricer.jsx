@@ -1,9 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { rememberPairing } from './LtInvestorLinks.jsx';
 import BoardExplains from './BoardExplains.jsx';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
-import { money, money2, noteRate as rate, price, points as pts } from './format.js';
+import { money, money2, noteRate as rate, price, points as pts, pct } from './format.js';
 // The pure rules that decide what a fee/comp figure MEANS live in their own plain-JS module
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
@@ -973,6 +973,24 @@ const EXPLAIN_REASON = NO_BREAKDOWN;
 function askedLine(a) {
   if (!a || typeof a !== 'object') return null;
   const parts = [];
+  /* ⛔ THE LOAN FIRST, THE QUOTE SECOND — the order is the whole value of this line.
+     What a person comparing our board against a rate sheet's own screen needs to see
+     is WHICH LOAN we asked about, because that is what differs when two boards
+     disagree. The purpose leads because it is the field that cost a day on
+     2026-09-04: the two screens were a purchase and a cash-out refinance, and every
+     adjustment except the purpose one matched, which reads exactly like a bug in one
+     line. The rate and the lock identify the QUOTE and never move an adjustment. */
+  if (a.purpose) parts.push(String(a.purpose));
+  if (a.fico != null && Number.isFinite(Number(a.fico))) parts.push(`FICO ${Number(a.fico)}`);
+  /* Through the SHARED formatter — a screen that writes its own is how two places
+     come to print the same number two ways (`test-lt-pipeline-columns-pure` enforces it). */
+  if (a.ltv != null && Number.isFinite(Number(a.ltv))) {
+    parts.push(`${pct(Number(a.ltv) > 1 ? Number(a.ltv) : Number(a.ltv) * 100)} LTV`);
+  }
+  if (a.dscr != null && Number.isFinite(Number(a.dscr))) parts.push(`DSCR ${Number(a.dscr).toFixed(2)}`);
+  if (a.occupancy) parts.push(String(a.occupancy));
+  if (a.propertyType) parts.push(String(a.propertyType));
+  if (a.prepayMonths != null && Number.isFinite(Number(a.prepayMonths))) parts.push(`${Number(a.prepayMonths)}-mo prepay`);
   if (a.rate != null && Number.isFinite(Number(a.rate))) parts.push(`${Number(a.rate).toFixed(3)}%`);
   // NO PRICE ON THIS LINE. The vendor is asked about ITS price, which carries the holdback, and
   // printing it under a row that shows the held-back price would let a reader subtract the two.
@@ -982,6 +1000,40 @@ function askedLine(a) {
   if (where || a.zip) parts.push(`${where || ''}${a.zip ? `${where ? ' ' : ''}${a.zip}` : ''}`.trim());
   if (a.transactionId) parts.push(`search …${String(a.transactionId).slice(-6)}`);
   return parts.length ? `Asked about: ${parts.join(' · ')}` : null;
+}
+
+/**
+ * WHICH PRICE BUILD A SELECTION REPORTS — one definition, both doors.
+ *
+ * ⛔ THE PROBLEM IS THAT THE BUILD LIVES IN TWO PLACES. A row from the sheet that
+ * publishes its itemisation with the search carries it on the option itself; a
+ * row from the sheet that explains ON DEMAND only ever has it after somebody
+ * opened the panel, and that answer lands in `PriceBuild`'s local state. So the
+ * Add button beside the row, which is handed the ORIGINAL option, would send
+ * nothing at all — and `snapshot.buildMember` would abstain on a build the board
+ * had been shown. A pre-merge audit measured exactly that: the incident row,
+ * collected and issued, price never cross-checked.
+ *
+ * So: the option in hand when it carries a build, otherwise the one the board
+ * remembers being explained for this quote. Never the other way round — the
+ * option a caller passes is the one it is talking about.
+ *
+ * ⛔ ALL THREE FIGURES OR NOTHING, and that is not tidiness: the server's rule is
+ * "absent is not a failure", so a partial landing must read as absent rather than
+ * as a row of holes that could be mistaken for a checked one. `landingGap` would
+ * answer `checked:false` either way; sending null says the same thing in one
+ * place instead of three.
+ */
+export function landingOf(option, rememberedBuild) {
+  const pb = (option && option.priceBuild) || rememberedBuild || null;
+  if (!pb) return null;
+  const ok = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
+  if (!ok(pb.basePoints) || !ok(pb.adjustmentPoints) || !ok(pb.adjustedPoints)) return null;
+  return {
+    basePoints: Number(pb.basePoints),
+    adjustmentPoints: Number(pb.adjustmentPoints),
+    adjustedPoints: Number(pb.adjustedPoints),
+  };
 }
 
 export function PriceBuild({ o: oProp, comp, ts, quote }) {
@@ -1041,12 +1093,24 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
         if (dead) return;
         // `alreadyExplained` is not a failure and must not read as one: that sheet published its
         // itemization with the quote, so what is already on the row IS the answer.
-        if (r && r.option) setFetched(r.option);
-        else if (r && r.ok === false) setAskErr(r.message || 'This rate sheet could not be asked to explain this price.');
+        if (r && r.option) {
+          setFetched(r.option);
+          /* ⛔ AND THE BOARD IS TOLD, so the Add button beside this row — which is
+             handed the ORIGINAL option and would otherwise send no build at all —
+             can send what was actually explained. Without this the price-landing
+             refusal is reachable only from inside this panel, and every option
+             collected into a comparison goes to the document unchecked. */
+          if (ts && ts.noteExplained) ts.noteExplained(quote && quote.key, r.option);
+        } else if (r && r.ok === false) setAskErr(r.message || 'This rate sheet could not be asked to explain this price.');
       })
       .catch((e) => { if (!dead) setAskErr((e && e.message) || 'This rate sheet could not be asked to explain this price.'); })
       .finally(() => { if (!dead) setAsking(false); });
     return () => { dead = true; };
+    /* `ts` and `quote` are deliberately NOT dependencies: `ts` is rebuilt on every
+       board render, so listing it would re-ask the rate sheet to explain the same
+       row on every keystroke elsewhere on the page — a paid call per character.
+       What the effect is ABOUT is the quote it was handed (`handleKey`), and both
+       are only ever read inside the callback. */
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [askable, handleKey, invKey]);
   /* The fetched option is the SAME shape the row already carried, so everything below reads one
@@ -1112,6 +1176,29 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
   const vendorTotal = nn(b.adjustmentPoints) ? Math.round(b.adjustmentPoints * 1000) / 1000 : null;
   const totalsAgree = vendorTotal == null || Math.abs(summedR - vendorTotal) < 0.0015;
 
+  /* ⛔ DOES THE BUILD LAND ON THE PRICE THIS PANEL PRINTS — the check `totalsAgree`
+     above cannot make, and the one that matters.
+
+     `totalsAgree` compares the lines against `adjustmentPoints`. On a Lender Price row
+     that is real: the vendor states both, from different structures. On a LoanNEX row
+     they are the SAME NUMBERS ADDED TWICE — each line's `value` is derived from the
+     vendor's `priceAdjustment`, and `adjustmentPoints` is derived by summing those same
+     values — so it can never disagree however wrong a line is. Mutation-proven.
+
+     And LoanNEX is exactly where a disagreement is possible: its PRICE comes from the
+     search and its ITEMISATION from a separate on-demand call, so this panel can draw a
+     running total that lands nowhere near the Final price printed directly beneath it.
+     Measured at 0.875 points, in silence, on a row that looked perfect.
+
+     This mirrors `pricing/breakdown.landingOf` on the server, which is the definition;
+     `scripts/test-lt-price-lands-pure.mjs` runs both over the same inputs and fails the
+     moment they disagree. UNKNOWN rather than false when a half is missing — a hole must
+     never read as a clean bill of health. */
+  const landGap = (nn(base.basePoints) && nn(b.adjustmentPoints) && nn(b.adjustedPoints))
+    ? Math.round(((base.basePoints + b.adjustmentPoints) - b.adjustedPoints) * 1000) / 1000
+    : null;
+  const landsOnPrice = landGap == null ? null : Math.abs(landGap) < 0.0005;
+
   const groups = [];
   for (const a of stack) {
     const g = a.group || 'Adjustments';
@@ -1171,6 +1258,19 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
           )}
         </div>
       )}
+      {/* ⛔ …AND ON A PANEL THAT DID ITEMISE, WHICH IS WHERE IT WAS MISSING.
+          This line used to live ONLY inside the note above, which draws only when the
+          panel is EMPTY — so on a row that priced, with a full build on screen, there
+          was no way to see which loan the rate sheet had been asked about. That is
+          precisely the row somebody is looking at when they compare our number against
+          a vendor's own screen, and on 2026-09-04 the answer to a day-long hunt was
+          already in this object and not drawn. Quiet by design: one muted line at the
+          top of the build, never a warning, because a healthy row is the normal case. */}
+      {!explainNote && ev && askedLine(ev.asked) && (
+        <div style={{ fontSize: 11.5, color: MUTED, marginBottom: 10, lineHeight: 1.6 }}>
+          {askedLine(ev.asked)}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
         <Track title="Price build"
           note={`Price is 100 minus points. Every line came from ${buildSubject}; the right-hand column is this page adding them up so the build can be followed.`}>
@@ -1217,10 +1317,24 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
           ))}
           {adj.length === 0 && <Row k="Adjustments" v="none itemized" indent />}
           <div style={{ height: 8 }} />
-          <Row k={engineName ? `Adjustments total (${engineName})` : 'Adjustments total'} v={pts(b.adjustmentPoints)} />
+          {/* ⛔ NOT "(LoanNEX)". This row was captioned with the rate sheet's name on
+              every board, and on a LoanNEX row the number is OURS — the sum of the lines
+              above it, not a total the vendor sent. Saying otherwise dressed our own
+              arithmetic up as the vendor's, which is the one thing a reader checking our
+              price against a rate sheet must not be told. */}
+          <Row k="Adjustments total" v={pts(b.adjustmentPoints)}
+            title={`The lines above, added up. ${engineName ? `${engineName} ` : 'The rate sheet '}states each line; this total is this page adding them.`} />
           {!totalsAgree && (
             <Row k="…the itemized lines add to" v={pts(summedR)} tone="bad"
               title="The lines shown do not add to the vendor's own total. Nothing is adjusted to hide it — both numbers are shown." />
+          )}
+          {/* ⛔ AND THE ONE THAT CANNOT BE A TAUTOLOGY. Never hidden, never rounded away:
+              a build that does not land on its own Final price is shown as exactly that,
+              with the gap named, because the alternative is a panel that looks reconciled
+              while quoting a price nothing supports. */}
+          {landsOnPrice === false && (
+            <Row k="…but the build lands on" v={pts(Math.round((base.basePoints + b.adjustmentPoints) * 1000) / 1000)} tone="bad"
+              title={`The base plus the adjustments above do not come to the points behind the Final price — a gap of ${Math.abs(landGap).toFixed(3)}. The price shown came from the board; these lines came from the rate sheet's own breakdown. Do not quote this row until they agree.`} />
           )}
           {/* OUR OWN RULES, NAMED IN THE LADDER THEY MOVED. The overlay deliberately
               leaves the sheet's own numbers alone and rides beside them — which is
@@ -1443,15 +1557,29 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
           simply do not exist there rather than being disabled with an excuse.
           The SELECTION is assembled by the board (which holds the scenario) and
           passed WHOLE — nothing about the money is computed here. */}
-      {ts && ts.enabled && quote && (
-        <QuoteTermSheetActions
-          sel={ts.selectionFor(quote, o)}
-          issue={ts.issueFor ? ts.issueFor(quote, o) : null}
-          enabled={ts.enabled}
-          mode={comp && comp.mode}
-          cartCount={ts.count}
-          onAdded={ts.reload} />
-      )}
+      {/* ⛔ AND NOT WHILE THE RATE SHEET IS STILL BEING ASKED. For the second or two
+          the explain call is in flight the option in hand carries no build, so a
+          selection assembled now says the price was never itemised — and the
+          refusal that compares the two abstains, on the one panel that is about
+          to know the answer. Issuing in that window skips a check that exists a
+          moment later. It says so rather than vanishing: a control that
+          disappears reads as broken, and this one comes back on its own. */}
+      {ts && ts.enabled && quote && (asking
+        ? (
+          <div style={{ marginTop: 12, fontSize: 12, color: MUTED }}>
+            Asking the rate sheet to explain this price — the term sheet controls
+            open once it answers, so the price build can be checked against it.
+          </div>
+        )
+        : (
+          <QuoteTermSheetActions
+            sel={ts.selectionFor(quote, o)}
+            issue={ts.issueFor ? ts.issueFor(quote, o) : null}
+            enabled={ts.enabled}
+            mode={comp && comp.mode}
+            cartCount={ts.count}
+            onAdded={ts.reload} />
+        ))}
     </div>
   );
 }
@@ -2124,6 +2252,30 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
      silently leaves somebody wondering whether it saved. */
   const [pickBusy, setPickBusy] = useState(null);
   const [pickNote, setPickNote] = useState(null);
+  /* ⛔ EVERY PRICE BUILD THIS BOARD HAS ACTUALLY BEEN SHOWN, remembered here so
+     the ROW can send it (pre-merge audit, 2026-09-04).
+
+     One of the two rate sheets explains a row on DEMAND, so the itemisation
+     arrives in `PriceBuild`'s own local state and the row above it goes on
+     holding an option whose build is empty. That is fine for drawing — the panel
+     reads what it fetched — and it silently disarmed the refusal on the two
+     doors that matter most: the Add button beside every quote, and therefore
+     every option collected into a comparison. The board had SEEN the build and
+     then sent a selection that said it had none, so `snapshot.buildMember`
+     abstained under its own "absent is not a failure" rule and the exact 0.875
+     incident row could be collected and issued unchecked.
+
+     Keyed on the quote's own key, so re-opening a panel, collecting the row and
+     issuing it an hour later all describe the same build. Nothing here computes
+     a landing: it stores the option the server explained and `selectionFor`
+     reads the three figures off it, exactly as the panel does. */
+  const [explained, setExplained] = useState({});
+  const noteExplained = useCallback((key, option) => {
+    const k = key == null ? null : String(key);
+    const pb = option && option.priceBuild;
+    if (!k || !pb) return;
+    setExplained((prev) => (prev[k] === pb ? prev : { ...prev, [k]: pb }));
+  }, []);
   const [cartDocKind, setCartDocKind] = useState(null);
 
   /* THE CARRYING COSTS THE BOARD'S PITI COLUMN IS BUILT FROM (owner-directed 2026-08-30).
@@ -2386,6 +2538,14 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
         rawPrice: q.price,
         adjustedPoints: q.adjustedPoints,
       },
+      /* ⛔ THE BUILD BEHIND THIS PRICE, SO THE SERVER CAN REFUSE A ROW THAT DOES NOT ADD UP.
+         A LoanNEX row's price comes from the search and its itemisation from a separate
+         on-demand call; until now nothing compared them anywhere, and `snapshot.buildMember`
+         validated the price only as "is it a number" while already refusing over a dollar of
+         monthly payment. Sent ONLY when the breakdown has actually been fetched — a row nobody
+         opened sends nothing and is issued exactly as before, because refusing those would stop
+         the desk working over a check nobody asked for. */
+      priceLanding: landingOf(o, explained[String(q && q.key)]),
       pricedAt: (o && o.rateSheet && o.rateSheet.effectiveAt) || (res && res.pricedAt) || null,
       /* ⛔ THE RATIO THIS OPTION WAS PRICED AT — the bracket board's own stamp on the
          option (`o.dscr`), never the form's figure. On a banded board the form's DSCR
@@ -2461,6 +2621,12 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
        option the cart does not have — which is the failure that would make this
        worse than the drawer it replaces. */
     busyKey: pickBusy,
+    /* Filled by `PriceBuild` the moment a rate sheet explains a row. It is on
+       `ts` rather than threaded as its own prop because `ts` is already the one
+       thing every quote row and every price panel is handed, and a second
+       channel for the same fact is how the row and the panel come to disagree
+       about what was priced. */
+    noteExplained,
     pick: async (q, o) => {
       setPickBusy(q && q.key);
       try {

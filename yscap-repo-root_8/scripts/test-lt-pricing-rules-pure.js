@@ -724,6 +724,122 @@ console.log('\nI. WHAT THE SECOND POST-MERGE AUDIT FOUND');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\nJ. BLOCKING ONE PROGRAM, WHICH IS NOT BLOCKING THE INVESTOR');
+// ═══════════════════════════════════════════════════════════════════════════
+/* Owner-directed 2026-09-04: *"this investor should not populate this program
+   name"*, and — asked which of the two verbs a rule should carry — *"let me
+   choose per rule"*. So there are two stopping verbs and the writer picks; the
+   difference between them is the only thing worth testing, and it is a property
+   of the BOARD, so the overlay is RUN rather than read. */
+{
+  /* ONE investor, TWO programs, so "the other one still prices" is a fact this
+     fixture can actually hold. A one-program fixture would pass either way. */
+  const twoPrograms = () => ([
+    { investorKey: 'acra', whiteLabel: 'Vermilion', lender: 'Acra', program: 'DSCR 30',
+      priceBuild: { price: 99.5, borrowerPaidPoints: 0.5, noteRate: 7.5 }, terms: { ltv: 70, dscr: 1.2 } },
+    { investorKey: 'acra', whiteLabel: 'Vermilion', lender: 'Acra', program: 'DSCR 40 IO',
+      priceBuild: { price: 99, borrowerPaidPoints: 1, noteRate: 7.9 }, terms: { ltv: 70, dscr: 1.2 } },
+    { investorKey: 'visio', whiteLabel: 'Onyx', lender: 'Visio', program: 'DSCR 30',
+      priceBuild: { price: 98, borrowerPaidPoints: 2, noteRate: 7.9 }, terms: { ltv: 70, dscr: 1.2 } },
+  ]);
+  const NJ = { combinator: 'and', rules: [{ field: 'state', operator: 'eq', value: 'NJ' }] };
+  /* THE RULE NAMES THE INVESTOR AS WELL AS THE PROGRAM, which is what a real
+     "we do not place THIS program with THIS investor" rule says — and it is what
+     makes J5 a measurement: a rule matching on the program name ALONE genuinely
+     matches every investor's copy of it, so blocking all of them would be the
+     rule working, not the key over-reaching. */
+  const ruleFor = (type, program, investorKey = 'acra', extra = {}) => ({
+    id: `${type}:${program}`, name: `${type} on ${program}`, enabled: true, engine: 'all', priority: 10,
+    when: {
+      combinator: 'and',
+      rules: [
+        { field: 'state', operator: 'eq', value: 'NJ' },
+        { field: 'investor_key', operator: 'eq', value: investorKey },
+        { field: 'program_name', operator: 'eq', value: program },
+      ],
+    },
+    then: [{ type, reason: 'we do not place this here' }],
+    ...extra,
+  });
+  const SC = { state: 'NJ', loan: 400000 };
+
+  ok('J1  "block this program name" is a verb a rule may use',
+    !!actions.specOf('block_program') && actions.specOf('block_program').stops === 'program');
+  ok('J2  …and it needs a reason, like every other stop',
+    actions.specOf('block_program').needsReason === true);
+
+  const prog = overlay.apply(twoPrograms(), { rules: [ruleFor('block_program', 'DSCR 30')], scenario: SC, engine: 'general' });
+  const names = (rows) => rows.map((r) => `${r.investorKey}/${r.program}`).sort();
+  eq('J3  the named program is off the board for the investor it matched',
+    names(prog.programs).includes('acra/DSCR 30'), false);
+  eq('J4  …AND THE INVESTOR\'S OTHER PROGRAM STILL PRICES — the whole difference between the two verbs',
+    names(prog.programs).includes('acra/DSCR 40 IO'), true);
+  /* ⛔ AND ANOTHER INVESTOR'S PROGRAM OF THE SAME NAME IS UNTOUCHED. "30 Yr.
+     Fixed" is on nearly every sheet, so a key of the program alone would block
+     every investor's copy of it — `block_investor` applied to several investors
+     at once, which nobody asked for. */
+  eq('J5  …and another investor quoting a program of the SAME NAME is untouched',
+    names(prog.programs).includes('visio/DSCR 30'), true);
+  eq('J6  …the removal is reported, never silent', (prog.blocked || []).length, 1);
+  eq('J7  …and says WHICH kind of block it was, so the board can word the two differently',
+    (prog.blocked[0] || {}).kind, 'program');
+  eq('J8  …naming the program', (prog.blocked[0] || {}).program, 'DSCR 30');
+
+  /* THE CONTROL. The same rule with the WIDER verb takes the investor's other
+     program too — which is what makes J4 a measurement rather than a tautology. */
+  const inv = overlay.apply(twoPrograms(), { rules: [ruleFor('block_investor', 'DSCR 30')], scenario: SC, engine: 'general' });
+  eq('J9  CONTROL: "block this investor" takes the other program as well',
+    names(inv.programs).includes('acra/DSCR 40 IO'), false);
+  eq('J10 …and still leaves the other investor alone',
+    names(inv.programs).includes('visio/DSCR 30'), true);
+  eq('J11 …reported as an INVESTOR block', (inv.blocked[0] || {}).kind, 'investor');
+
+  /* BOTH AT ONCE IS REFUSED AT THE DOOR, and the refusal now names all three
+     stopping verbs — it named two while there were three, so a writer who had
+     picked the third was advised about verbs they had not used. */
+  const both = actions.validate([{ type: 'block_investor', reason: 'a' }, { type: 'block_program', reason: 'b' }]);
+  ok('J12 a rule cannot stop a quote two ways', both.length === 1);
+  ok('J13 …and the refusal names every stopping verb there is',
+    both[0].includes('block this program name') && both[0].includes('block this investor') && both[0].includes('mark ineligible'));
+  ok('J14 …built from the registry, so a fourth verb cannot be left out of it',
+    !/pick "mark ineligible" or "block this investor"\.$/.test(both[0]));
+
+  /* THE WIDER BLOCK WINS WHERE BOTH REACH ONE ROW. Two rules, which is legal —
+     only two stops in ONE rule are refused — and they are matched on DIFFERENT
+     rows of the same investor, because a single row can only ever carry ONE
+     stop (the highest-priority rule that matched it, which is what priority is
+     for and is not being re-litigated here). So: the program rule takes DSCR 30,
+     the investor rule fires on DSCR 40 IO, and the DSCR 30 row is then reached
+     by both. Reporting it as a PROGRAM block would tell an officer this
+     investor's other programs are still priced, when the investor block has
+     just taken them. */
+  const wide = overlay.apply(twoPrograms(), {
+    rules: [ruleFor('block_program', 'DSCR 30'), ruleFor('block_investor', 'DSCR 40 IO')],
+    scenario: SC, engine: 'general',
+  });
+  eq('J15 where both kinds reach one row the WIDER one is reported',
+    ((wide.blocked || []).find((b) => b.program === 'DSCR 30' && b.investorKey === 'acra') || {}).kind, 'investor');
+  eq('J15b …and the investor is off the board entirely',
+    names(wide.programs).filter((n) => n.startsWith('acra/')).length, 0);
+
+  /* THE SCREEN'S OWN SPLIT, extracted and RUN — a source check could not tell a
+     working split from one that files every row under "investor". */
+  const bsrc = src('app-v2/src/longterm/BoardExplains.jsx');
+  const m = bsrc.match(/export function blockedBy\(rows, kind\) \{[\s\S]*?\n\}/);
+  ok('J16 the screen\'s own splitter was found', !!m);
+  const blockedBy = m ? new Function(`${m[0].replace(/^export /, '')}; return blockedBy;`)() : () => [];
+  eq('J17 …a program block is filed under programs',
+    blockedBy([{ kind: 'program' }], 'program').length, 1);
+  eq('J18 …an investor block is filed under investors',
+    blockedBy([{ kind: 'investor' }], 'investor').length, 1);
+  eq('J19 …a row from BEFORE this verb existed carries no kind and was an investor block',
+    blockedBy([{ name: 'old' }], 'investor').length, 1);
+  eq('J20 …and an unrecognised kind reads as the WIDER one, which never promises other programs are priced',
+    blockedBy([{ kind: 'nonsense' }], 'investor').length, 1);
+  eq('J21 …so no row is ever dropped by both sections', blockedBy([{ kind: 'nonsense' }], 'program').length, 0);
+}
+
 const total = pass + failures.length;
 console.log(`\n${failures.length ? 'FAILED' : 'ALL PASSED'} (${pass} passed, ${failures.length} failed of ${total})`);
 if (failures.length) { failures.forEach((f) => console.log(`  · ${f}`)); process.exit(1); }

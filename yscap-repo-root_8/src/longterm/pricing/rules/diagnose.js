@@ -217,6 +217,19 @@ function diagnose(rule, facts) {
      can show in a column. `broken` is deliberately separate from `fires: false`
      — "this rule did not match this loan" and "this rule cannot match anything"
      are the two answers the owner needs told apart. */
+  /* ⛔ HONEST NOTE, MEASURED RATHER THAN ASSUMED: the `unreadableRows` term is
+     REDUNDANT TODAY and is kept anyway. The post-merge audit deleted it and
+     both suites stayed green, then swept the whole grammar — 65 fields × every
+     operator each type takes × a battery of unreadable values — and found ZERO
+     cases where a row is unreadable while `logic.validate` reports no problem:
+     the unknown-field and wrong-operator arms are caught by the validator
+     first, so `problems` is already non-empty every time.
+     It stays because it is the honest statement of the rule ("broken" means
+     either) and because it is the term that would bite the day
+     `evaluateRuleTri` starts answering null for a row that validates. But
+     nothing here should be read as proof that it fires — a guard whose stated
+     reason is wrong is worse than no guard, so the reason is written down as it
+     actually is. */
   const broken = problems.length > 0 || unreadableRows.length > 0;
   let headline;
   /* THE HEADLINE IS THE PLAIN SENTENCE AND THE DETAIL IS THE LIST BESIDE IT.

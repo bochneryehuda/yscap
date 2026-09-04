@@ -26,6 +26,66 @@ const logic = require('../pricing/rules/logic');
 const overlay = require('../pricing/rules/overlay');
 const audit = require('../pricing/rules/audit');
 const facts = require('../pricing/rules/facts');
+const investorConfig = require('../pricing/investor-config');
+const investorSettings = require('../pricing/investor-settings');
+
+/**
+ * WHAT A RULE MAY PICK FROM WHEN IT NAMES AN INVESTOR.
+ *
+ * Owner-reported 2026-09-04: *"I want to put a rule to block a certain investor
+ * or to block a certain white label name, not populate the value. We can only
+ * type. We need to have the same kind of dropdown, select, and search."*
+ *
+ * ⛔ IT IS PUBLISHED HERE AND NOT PUT IN THE FIELD REGISTRY, deliberately.
+ * `rules/fields.js` is PURE — no database, no tenant, no await — which is what
+ * lets the overlay, the validator and this door all read one grammar. The
+ * roster is DB-backed and per-tenant, so putting it there would either make
+ * that registry impure or freeze one tenant's investors into the code. It rides
+ * as its OWN map that the builder lays over the field, so there is one roster,
+ * published, rather than a second copy in the browser.
+ *
+ * ⛔ AND IT IS A SHORTCUT, NEVER A GATE. These four are TEXT fields: a sheet can
+ * name an investor the roster has never seen, and a rule written the day before
+ * that investor is added must still be writable. The browser offers the list and
+ * accepts anything typed; nothing here narrows what a rule may say.
+ *
+ * ⛔ FAILS TO A PLAIN TEXT BOX, AND SAYS SO. An unreadable roster answers no
+ * options and a `problem` sentence — never an EMPTY list, which on a screen
+ * reads as "we have no investors" rather than "we could not find out".
+ */
+async function investorOptions() {
+  try {
+    const c = await investorConfig.customRaw();
+    const src = await investorConfig.investorsRaw();
+    const cfg = investorSettings.readSettings(src && src.raw, c.custom);
+    const rows = investorSettings.roster(cfg.settings, c.custom);
+    const seen = new Set();
+    const whiteLabels = [];
+    for (const r of rows) {
+      const wl = String((r && r.whiteLabel) || '').trim();
+      if (!wl || seen.has(wl.toLowerCase())) continue;
+      seen.add(wl.toLowerCase());
+      /* THE REAL NAME RIDES AS THE SUB-LABEL, so somebody picking a white-label
+         name can see whose it is — the same both-names rule the board's
+         removals list follows. This door is super-admin only. */
+      whiteLabels.push({ v: wl, label: wl, note: r.label || null });
+    }
+    const byLabel = (a, b) => String(a.label).localeCompare(String(b.label));
+    return {
+      options: {
+        investor: rows.map((r) => ({ v: r.label, label: r.label })).sort(byLabel),
+        investor_key: rows.map((r) => ({ v: r.key, label: `${r.label} (${r.key})` })).sort(byLabel),
+        white_label: whiteLabels.sort(byLabel),
+      },
+      /* `problem` is the settings store's own word for "could not be read".
+         `problems` are per-investor complaints about hand-added rows, which do
+         not make the LIST wrong — they are reported on the settings screen. */
+      problem: (c && c.problem) || (src && src.problem) || null,
+    };
+  } catch (e) {
+    return { options: {}, problem: String((e && e.message) || e) };
+  }
+}
 
 /** The REAL staff role, never a long-term override — an override may not hand this out. */
 function isSuperAdmin(req) {
@@ -44,10 +104,19 @@ function attach(router) {
    * served rather than shipped in the bundle, so a field added to the registry
    * appears in the builder without a front-end deploy.
    */
-  router.get('/catalog', (req, res) => {
+  router.get('/catalog', async (req, res) => {
+    /* THE ROSTER IS FETCHED, AND A FAILURE TO FETCH IT NEVER COSTS THE CATALOG.
+       Everything else here is pure and cannot fail; without this guard an
+       unreadable settings store would 500 the whole builder, so a screen that
+       needed a plain text box would instead show nothing at all. */
+    const inv = await investorOptions();
     res.json({
       ok: true,
       groups: fields.grouped(),
+      /* WHICH FIELDS OFFER A LIST, laid over the registry by the builder. See
+         `investorOptions` for why it is not IN the registry. */
+      optionsByField: inv.options,
+      optionsProblem: inv.problem,
       operatorsByType: require('../../lib/conditions/rules').OPERATORS_BY_TYPE,
       operatorLabels: require('../../lib/conditions/rules').OPERATOR_LABEL,
       noValueOperators: require('../../lib/conditions/rules').NO_VALUE_OPS,

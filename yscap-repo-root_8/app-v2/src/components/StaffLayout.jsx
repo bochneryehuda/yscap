@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
-import { useAuth, takeReturnTo } from '../lib/auth.jsx';
+import { useAuth } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
 import { subscribeChat } from '../lib/chatEvents.js';
 import { arena as arenaApi } from '../lib/arena.js';
@@ -12,7 +12,8 @@ import { Brand } from './Layout.jsx';
 // officer who has never heard of it is never shown a broken control.
 import ProductSwitch from '../longterm/ProductSwitch.jsx';
 import ChatBubble from './ChatBubble.jsx';
-import { useStaleBuild } from '../lib/useStaleBuild.jsx';
+import { useStaleBuild, StaleBuildBanner } from '../lib/useStaleBuild.jsx';
+import StaffViewBanner from './StaffViewBanner.jsx';
 import { RESEARCH_PAGES, inResearch as isResearchPath } from './ResearchNav.jsx';
 
 // Role labels + the persona test come from the ONE front-end role registry
@@ -283,7 +284,7 @@ function GlobalSearch() {
 }
 
 export default function StaffLayout({ children }) {
-  const { signOut, role, can, exitStaffView } = useAuth();
+  const { signOut, role, can } = useAuth();
   // THE ARENA. Its nav entry exists ONLY while the master switch is on, and
   // `seesArena` is the server's answer -- never a role check here, or the rule
   // "when it's off, nobody should even see it" would have two definitions and
@@ -448,56 +449,26 @@ export default function StaffLayout({ children }) {
   const approvalsCount = escCount + excCount + fescCount + reviewCount + myExcCount + trReviewCount;
   const roleLabel = ROLE_LABEL[role] || role || 'Internal';
 
-  // STAFF VIEW BANNER — when this console is somebody ELSE'S, seen through a
-  // super-admin's read-only session, it must say so on every screen, both
-  // products, unmissably. Probed once per mount: the answer cannot change
-  // without the token changing, and a token change remounts the app.
-  const [staffViewOf, setStaffViewOf] = useState(null);
-  useEffect(() => {
-    let alive = true;
-    api.staffViewSession().then((s) => {
-      if (alive && s && s.active) setStaffViewOf(s.viewing || {});
-    }).catch(() => {});
-    return () => { alive = false; };
-  }, []);
-  /* LEAVING A STAFF VIEW GOES THROUGH THE SHARED HANDOFF (auth.jsx), which is the
-     same one the borrower and broker views use: ask the server for a fresh token
-     for the REAL viewer, fall back to the copy parked in sessionStorage when the
-     network is unavailable, and — if NEITHER produces a session — drop the token
-     and make them sign in rather than leave them sitting inside somebody else's
-     console. This used to be a fourth hand-rolled copy of that dance reading the
-     storage keys directly; it now reads none. The navigation stays explicit
-     because the token has changed under the running app. */
-  const leaveStaffView = async () => {
-    const restored = await exitStaffView();
-    // Back to where the super admin was before they opened the teammate's screen
-    // (owner-reported 2026-09-01), else the console home.
-    const back = restored ? (takeReturnTo() || '/internal') : '';
-    window.location.assign(restored ? `/portal/#${back}` : '/');
-    window.location.reload();
-  };
-
+  /* THE STAFF-VIEW BANNER IS A SHARED COMPONENT (components/StaffViewBanner.jsx).
+     It used to live inline here, which was fine while this was the only internal
+     shell; Pilot Engine is a second one, and a staff-view token is a staff token,
+     so a super admin who opened /engine got no banner and no way out. It
+     self-fetches, so a shell mounts it and holds no state of its own. */
   return (
     <div className="app">
-      {staffViewOf && (
-        <div role="alert" style={{ position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1001,
-          background: '#1F3864', color: '#fff', padding: '8px 14px', display: 'flex',
-          alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14 }}>
-          <span>You are seeing <strong>{staffViewOf.name || 'a team member'}</strong>’s screen — read-only.
-            Switch Long-term / Short-term above to see everything they see.</span>
-          <button className="btn small" style={{ background: '#fff', color: '#141B22', border: 'none' }}
-            onClick={leaveStaffView}>Back to my own screen</button>
-        </div>
-      )}
-      {staleBuild && (
-        <div role="alert" style={{ position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1000,
-          background: '#AE8746', color: '#fff', padding: '8px 14px', display: 'flex',
-          alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14 }}>
-          <span>PILOT was updated — refresh to get the latest screens and fixes.</span>
-          <button className="btn small" style={{ background: '#fff', color: '#141B22', border: 'none' }}
-            onClick={() => window.location.reload()}>Refresh now</button>
-        </div>
-      )}
+      <StaffViewBanner hint="Switch Long-term / Short-term above to see everything they see." />
+      {/* ⛔ THE SHARED BANNER, NOT A COPY OF IT. This block was written out here
+          by hand while `Layout`, `TpoLayout` and `EngineLayout` all rendered
+          `StaleBuildBanner` — the same fork the staff-view bar had, one file
+          later. It had already drifted: the shared one carries
+          `data-top-banner="1"` (what a render harness finds the bars by) and
+          takes `inFlow`, and this copy had neither, so the console was the one
+          shell a banner check could not see. Two copies of one bar drift, and
+          the one that drifts is the one that stops telling somebody their tab
+          is a day old. The rendering is otherwise identical, `inFlow` is not
+          passed here (the console pins it, exactly as this copy did), and the
+          hook above is unchanged. */}
+      <StaleBuildBanner stale={staleBuild} />
       <aside className={`app-sidebar ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(false)}>
         <div className="app-brandrow">
           <Brand to="/internal" ariaLabel="PILOT by YS Capital — Internal" console={consoleLabel} />

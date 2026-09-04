@@ -105,9 +105,34 @@ console.log('\nE. the door: a super admin can start a view from EITHER team scre
      'the RTL handoff lives in ONE place beside its borrower and broker siblings');
   ok(/startStaffView, exitStaffView,/.test(auth), 'and both are handed to the screens through the auth context');
 
+  /* THE BANNER IS ITS OWN COMPONENT NOW (components/StaffViewBanner.jsx). It was
+     inline in StaffLayout, which was right while that was the only internal
+     shell; Pilot Engine is a SECOND one, and a staff-view token is a staff token,
+     so a super admin who opened /engine got no banner and no way out. These
+     assertions did not change their subject — only where the code lives. */
+  const banner = strip(read('app-v2/src/components/StaffViewBanner.jsx'));
+  ok(/staffViewSession\(\)/.test(banner), 'the banner still asks the SERVER whether this console is somebody else’s');
+  ok(/exitStaffView\(\)/.test(banner), 'and the way out goes through that same shared handoff');
+  ok(!/ys_portal_staff_token/.test(banner), 'the banner never reads the parked-token key itself');
+
+  /* EVERY INTERNAL SHELL MOUNTS IT — the thing that was missing. A shell that
+     admits a staff-view token and does not say so leaves somebody standing in a
+     colleague's console with no notice and no way back. */
   const layout = strip(read('app-v2/src/components/StaffLayout.jsx'));
-  ok(/staffViewSession\(\)/.test(layout), 'the banner still asks the SERVER whether this console is somebody else’s');
-  ok(/exitStaffView\(\)/.test(layout), 'and the way out goes through that same shared handoff');
+  const engineShell = strip(read('app-v2/src/components/EngineLayout.jsx'));
+  /* THE RENDERED TAG, WITH ANY PROPS. This pinned `<StaffViewBanner />`
+     exactly, which was right while the component took none and went red the
+     day the console passed its own hint back (the engine passes `inFlow`). The
+     SUBJECT is that the shell RENDERS it, so that is what is asserted — and a
+     `<` still cannot be satisfied by the import line, which is the hole a bare
+     substring check would leave. */
+  const MOUNTED = /<StaffViewBanner[\s/>]/;
+  ok(MOUNTED.test(layout), 'the console shell mounts it');
+  ok(MOUNTED.test(engineShell), 'and so does the Pilot Engine shell');
+  /* "NEITHER" HAS TO MEAN BOTH — this read only the console while its label
+     claimed the pair, so a copy pasted into the engine shell would have passed. */
+  ok(!/You are seeing/.test(layout) && !/You are seeing/.test(engineShell),
+     'and neither keeps its own second copy of the bar');
   ok(!/ys_portal_staff_token/.test(layout), 'the layout no longer reads the parked-token key itself');
 
   /* PRODUCT SEPARATION. The LONG-TERM screen keeps its OWN inline copy on

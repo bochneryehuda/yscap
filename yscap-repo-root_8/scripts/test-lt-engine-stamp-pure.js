@@ -156,15 +156,31 @@ ok(engineLabel.ENGINE_KEYS.length === 2, 'A9 the registry carries exactly the tw
     'D4 "every line came from" names this row\'s engine');
   ok(!/Adjustments total \(\$\{engine\.sheetLabel\}\)/.test(src),
     'D5 the adjustments total no longer names the board-wide sheet');
-  ok(/Adjustments total \(\$\{engineName\}\)/.test(src),
-    'D6 the adjustments total names this row\'s engine');
+  /* ⛔ D6 IS INVERTED NOW, AND THE SECTION'S SUBJECT IS UNCHANGED.
+     It pinned `Adjustments total (${engineName})` — correct about the thing this
+     section is FOR (name THIS row's engine, never the board-wide sheet) and wrong
+     about something it was not looking at: on a LoanNEX row that number is not the
+     vendor's total at all. `quote-shape` derives each line's value from the vendor's
+     `priceAdjustment` and then derives `adjustmentPoints` by SUMMING THOSE VALUES, so
+     the total is this page's own arithmetic. Captioning it with the rate sheet's name
+     told a reader checking our price against that very sheet that the sheet had
+     vouched for the number — the one thing it must not say.
+     The section's subject is still fully guarded: D3/D4/D5/D7/D8/D10 keep every
+     sentence that NEEDS a subject on this row's engine, and a total that names no
+     engine cannot name the wrong one. */
+  ok(!/Adjustments total \(\$\{engineName\}\)/.test(src),
+    'D6 the adjustments total does NOT claim the rate sheet\'s name — it is our sum of its lines');
+  ok(/k="Adjustments total"/.test(src),
+    'D6b …it is captioned as exactly what it is');
   ok(!/\$\{engine\.sheetSubject\} returned no/.test(src),
     'D7 no "returned no …" sentence names the board-wide sheet any more');
   ok((src.match(/\$\{buildSubject\} returned no/g) || []).length === 3,
     'D8 all three "returned no …" sentences name this row\'s engine');
-  // AN UNNAMED ROW PRINTS NOTHING RATHER THAN A GUESS.
-  ok(/engineName \? `Adjustments total/.test(src),
-    'D9 an unnamed row drops the engine from the label instead of guessing one');
+  /* AN UNNAMED ROW PRINTS NOTHING RATHER THAN A GUESS — still true, and now true of
+     every row: the total names no engine at all, so there is no name to guess. What
+     still has to fall back safely is the SENTENCE that needs a subject (D10). */
+  ok(/\$\{engineName \? `\$\{engineName\} ` : 'The rate sheet '\}/.test(src),
+    'D9 the total\'s explanation names this row\'s engine, or says "the rate sheet" — never a guess');
   ok(/const buildSubject = engineName \|\| engine\.sheetSubject/.test(src),
     'D10 a sentence that needs a subject falls back to the neutral one');
 }

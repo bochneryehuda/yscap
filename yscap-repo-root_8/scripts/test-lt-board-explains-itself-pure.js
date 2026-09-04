@@ -292,6 +292,67 @@ async function main() {
       'F3b …and the combined screen keeps no second copy of any of them');
   }
 
+  console.log('\nG · the removals list names BOTH the white-labelled program and the real investor');
+  {
+    const { stripComments } = require(path.join(ROOT, 'scripts/lib/strip-comments'));
+    const fs = require('fs');
+    const raw = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
+    const rd = (f) => stripComments(raw(f));
+    const explains = rd('app-v2/src/longterm/BoardExplains.jsx');
+
+    /* ⛔ THE RULE IS EXTRACTED AND RUN, NOT READ. `investorAside` decides which of two
+       names a staff screen prints beside the other, and a source check could only
+       ever confirm the function exists — it could not tell a working rule from one
+       that returns '' for everything, which is the exact defect (one name again) this
+       was written to fix. The screen is a `.jsx` module this CommonJS suite cannot
+       require, so the function's own text is lifted out of the shipped file and
+       executed. */
+    const m = raw('app-v2/src/longterm/BoardExplains.jsx')
+      .match(/export function investorAside\(h\) \{[\s\S]*?\n\}/);
+    ok(!!m, 'G1 the rule that decides the second name was found in the shipped screen');
+    const aside = m ? new Function(`${m[0].replace(/^export /, '')}; return investorAside;`)() : () => '';
+
+    eq(aside({ whiteLabel: 'Eclipse', investor: 'Verus Mortgage Capital' }), 'Verus Mortgage Capital',
+      'G2 a white-labelled investor states the real name beside our own — the owner\'s whole ask');
+    eq(aside({ investor: 'Verus Mortgage Capital' }), '',
+      'G3 …an investor nobody has white-labelled yet has ONE name and it is printed once');
+    eq(aside({ whiteLabel: 'Blue Lake', investor: 'BlueLake' }), '',
+      'G4 …and two spellings of one company are one company, never "Blue Lake (BlueLake)"');
+    eq(aside({ whiteLabel: 'Eclipse' }), '',
+      'G5 …a row with no real investor name invents none');
+    for (const junk of [null, undefined, {}, { whiteLabel: 1, investor: 2 }, { whiteLabel: '  ' }]) {
+      let out = 'THREW';
+      try { out = aside(junk); } catch (_) { /* recorded below */ }
+      ok(out !== 'THREW', `G6 …and junk off a vendor-derived payload never throws (${JSON.stringify(junk)})`);
+    }
+
+    /* AND THE SCREEN ACTUALLY DRAWS IT. A perfect rule nothing calls is not a fix — the
+       class this repo has been bitten by often enough to name. */
+    ok(/investorAside\(h\)/.test(explains) && /\(\{aside\}\)/.test(explains),
+      'G7 the removals list calls it and prints the second name beside ours');
+    ok(/h\.whiteLabel \|\| h\.investor \|\| h\.key/.test(explains),
+      'G8 …while our own name still LEADS, which is the name every term sheet uses');
+
+    /* ⛔ AND PRINTING THE REAL NAME AT ALL IS ONLY LEGAL BECAUSE THIS IS STAFF-ONLY.
+       The standing hard rule is that the investor's name never reaches a borrower or a
+       TPO. These are the three things that make it true, asserted rather than assumed,
+       so the day this engine is promoted to a client surface the build says so instead
+       of the name quietly going out. */
+    const server = rd('src/server.js');
+    ok(/app\.use\('\/api\/lt', requireAuth, requireStaff/.test(server),
+      'G9 the whole long-term API is behind the staff wall — a borrower or broker token cannot fetch this board at all');
+    const importers = [];
+    (function walk(d) {
+      for (const e of fs.readdirSync(path.join(ROOT, d), { withFileTypes: true })) {
+        const rel = `${d}/${e.name}`;
+        if (e.isDirectory()) walk(rel);
+        else if (/\.jsx?$/.test(e.name) && /from '[^']*BoardExplains/.test(rd(rel))) importers.push(rel);
+      }
+    })('app-v2/src');
+    eq(importers, ['app-v2/src/longterm/LtPricer.jsx'],
+      'G10 …and exactly one screen imports it, which is the staff pricer');
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }

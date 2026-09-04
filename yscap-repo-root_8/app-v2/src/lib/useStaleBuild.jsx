@@ -32,10 +32,13 @@ export function useStaleBuild() {
   return stale;
 }
 
-export function StaleBuildBanner({ stale }) {
+export function StaleBuildBanner({ stale, inFlow = false }) {
   if (!stale) return null;
   return (
-    <div role="alert" style={{ position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1000,
+    <div role="alert" data-top-banner="1" style={{
+      /* See StaffViewBanner: a shell that stacks its own banners passes inFlow
+         so the two cannot sit on top of one another. Default unchanged. */
+      ...(inFlow ? { position: 'static' } : { position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1000 }),
       background: '#AE8746', color: '#fff', padding: '8px 14px', display: 'flex',
       alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14 }}>
       <span>PILOT was updated — refresh to get the latest screens and fixes.</span>

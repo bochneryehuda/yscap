@@ -5,6 +5,7 @@ import { useAuth, useAuthNotice, actorFromToken } from '../lib/auth.jsx';
 import AuthShell from '../components/AuthShell.jsx';
 import PasswordInput from '../components/PasswordInput.jsx';
 import { returnDest } from './Login.jsx';
+import { isEngineDest } from '../lib/authVariant.js';
 
 export default function StaffLogin() {
   const { signIn } = useAuth();
@@ -19,6 +20,19 @@ export default function StaffLogin() {
   const [useBackup, setUseBackup] = useState(false);   // 2FA: type a backup code instead
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+
+  /* PILOT ENGINE WEARS ITS OWN NAME ON THE WAY IN, and it is the SAME page.
+     Owner-directed 2026-09-04: *"the log in page should have a regular pilot
+     design of the pilot log in page but some added design for the new name"*.
+     Read off where the visitor was HEADING (`returnDest` already carries it),
+     so there is no second login route to keep in step and no way for the two to
+     disagree about a password, a lockout or a 2FA challenge — there is one
+     staff sign-in and this is it. Landing here directly still reads as the
+     console, which is right: that is what it is.
+
+     The match is a ROUTE test, not a prefix — `/engineering` is not the engine
+     — and it lives in `lib/authVariant.js` so that is provable by calling it. */
+  const toEngine = isEngineDest(returnDest(loc, ''));
 
   const done = (t) => {
     signIn(t);
@@ -55,11 +69,13 @@ export default function StaffLogin() {
 
   return (
     <AuthShell
-      variant="staff"
-      title={mode === 'mfa' ? 'Enter your code' : 'Staff sign in'}
+      variant={toEngine ? 'engine' : 'staff'}
+      title={mode === 'mfa' ? 'Enter your code' : toEngine ? 'Sign in to Pilot Engine' : 'Staff sign in'}
       subtitle={mode === 'mfa'
         ? 'Open your authenticator app and enter the 6-digit code.'
-        : 'For loan officers, processors, underwriters and administrators.'}>
+        : toEngine
+          ? 'Your usual PILOT account — the same one you use for the console.'
+          : 'For loan officers, processors, underwriters and administrators.'}>
         {notice && !err && <div className="notice info" style={{ marginTop: 16 }}>{notice}</div>}
         {err && <div role="alert" className="notice err" style={{ marginTop: 16 }}>{err}</div>}
 
