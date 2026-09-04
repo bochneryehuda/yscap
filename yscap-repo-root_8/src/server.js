@@ -7,6 +7,7 @@
 const express = require('express');
 const path = require('path');
 const cfg = require('./config');
+const engineRedirect = require('./lib/engine-redirect');
 
 // A single failed request (e.g. a momentary DB outage) must never crash the
 // whole service. Log and keep serving; health checks and the static site stay up.
@@ -780,6 +781,38 @@ if (PILOT_LOGIN_HOSTS.size) {
     next();
   });
 }
+
+/**
+ * PILOT ENGINE — the bookmarkable address for the pricing engine.
+ *
+ * Owner-directed 2026-09-04: *"just to have a straight URL that will take them
+ * directly to our pricing engine… a direct URL that I can place on my
+ * bookmark."*
+ *
+ * ⛔ IT SERVES NOTHING AND RENDERS NOTHING. It is a redirect into the ONE
+ * portal bundle, at the route `App.jsx` already mounts — the same screens the
+ * console mounts, in a shell without the left menu. There is no second app, no
+ * second build and no second copy of the pricer to keep in step; a deploy that
+ * updates the pricer updates this by definition.
+ *
+ * The SPA is a HashRouter, so the destination carries a `#`. A browser follows
+ * a 302 and applies the fragment, which is what turns an ugly
+ * `/portal/#/engine` into something somebody will actually bookmark. Anything
+ * deeper (`/engine/scenarios`) is carried through as the same sub-path, so
+ * every engine screen is bookmarkable and not just the front one.
+ *
+ * 302, never 301: a permanent redirect is cached by the browser forever and
+ * would outlive any future decision to serve this path directly.
+ */
+app.get(/^\/engine(\/.*)?$/, (req, res) => {
+  /* THE TAIL IS REBUILT FROM THE MATCH, never echoed from the raw URL — an
+     open redirect is a phishing primitive, and `req.url` carries whatever a
+     visitor typed. The rebuilding lives in its own pure module so the rule can
+     be handed hostile input and asked what it answers
+     (`scripts/test-pilot-engine-pure.mjs`); a regex over this file could only
+     ever pin the spelling. */
+  return res.redirect(302, engineRedirect.engineRedirectTarget(cfg.portalPath, (req.params && req.params[0]) || ''));
+});
 
 // HTML entry points must NEVER be cached (owner-reported 2026-07-15 night:
 // an officer's long-lived tab / cached shell ran YESTERDAY'S bundle — old

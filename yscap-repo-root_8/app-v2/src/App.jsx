@@ -55,6 +55,7 @@ import LtSheetLookup from './longterm/LtSheetLookup.jsx';
 import LtReports from './longterm/LtReports.jsx';
 import LtConditionLibrary from './longterm/LtConditionLibrary.jsx';
 import LtLoan from './longterm/LtLoan.jsx';
+import EngineLayout from './components/EngineLayout.jsx';
 import StaffLogin from './screens/StaffLogin.jsx';
 import StaffQueue from './screens/StaffQueue.jsx';
 import StaffTrackRecordWorkspace from './screens/StaffTrackRecordWorkspace.jsx';
@@ -156,6 +157,30 @@ function StaffPrivate({ children }) {
   if (isTpo) return <Navigate to="/tpo" replace />;
   if (!isStaff) return <Navigate to="/dashboard" replace />;
   return <StaffLayout>{children}</StaffLayout>;
+}
+
+/**
+ * PILOT ENGINE — the pricing engine at its own address (owner-directed
+ * 2026-09-04: *"a straight URL that will take them directly to our pricing
+ * engine… same logins, same passwords, same usernames, same team members, same
+ * everything"*).
+ *
+ * ⛔ THIS IS `StaffPrivate` WITH ONE LINE CHANGED — the shell. Every check is
+ * the same check, deliberately: there is no engine login, no engine session and
+ * no engine permission, so a person who can price in the console can price here
+ * and a person who cannot, cannot. Copying the checks instead of matching them
+ * is how two doors drift into disagreeing about who may open one.
+ *
+ * The unauthenticated bounce carries `from`, so the existing login returns you
+ * to the engine rather than the console — no second sign-in and no new code.
+ */
+function EnginePrivate({ children }) {
+  const { isAuthed, isStaff, isTpo } = useAuth();
+  const loc = useLocation();
+  if (!isAuthed) return <Navigate to="/internal/login" state={{ from: loc.pathname + loc.search }} replace />;
+  if (isTpo) return <Navigate to="/tpo" replace />;
+  if (!isStaff) return <Navigate to="/dashboard" replace />;
+  return <EngineLayout>{children}</EngineLayout>;
 }
 
 /* Broker (TPO) area. Anyone who is not a signed-in external broker is bounced to
@@ -319,6 +344,21 @@ export default function App() {
               pricer is: it shows which investor was really behind each price, and
               an investor name never reaches a borrower or a TPO. */}
           <Route path="/internal/lt/sheets" element={<StaffPrivate><LtSheetLookup /></StaffPrivate>} />
+
+          {/* ── PILOT ENGINE ────────────────────────────────────────────────
+              ⛔ THE SAME COMPONENTS THE CONSOLE MOUNTS, NOT COPIES OF THEM.
+              Every element below names the identical import used by an
+              `/internal/lt/*` route a few lines up — one module each, so a
+              change to the pricer changes both surfaces because there is only
+              one pricer. `scripts/test-pilot-engine-pure.mjs` fails the build
+              the moment an engine route stops naming the console's component.
+              The only difference is the shell: `EnginePrivate` swaps the
+              console's left menu for the engine's slim bar. */}
+          <Route path="/engine" element={<EnginePrivate><LtPricer /></EnginePrivate>} />
+          <Route path="/engine/combined" element={<EnginePrivate><LtCombinedPricer /></EnginePrivate>} />
+          <Route path="/engine/scenarios" element={<EnginePrivate><LtScenarios /></EnginePrivate>} />
+          <Route path="/engine/sheets" element={<EnginePrivate><LtSheetLookup /></EnginePrivate>} />
+          <Route path="/engine/ppe" element={<EnginePrivate><LtPpe /></EnginePrivate>} />
           <Route path="/internal/lt/loan/:loanId" element={<StaffPrivate><LtLoan /></StaffPrivate>} />
           <Route path="/internal/new" element={<StaffPrivate><StaffNewFile /></StaffPrivate>} />
           <Route path="/internal/tasks" element={<StaffPrivate><StaffTasks /></StaffPrivate>} />
