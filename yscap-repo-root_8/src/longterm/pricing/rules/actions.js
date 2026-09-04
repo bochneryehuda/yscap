@@ -106,6 +106,30 @@ const KEYS = Object.freeze(Object.keys(ACTIONS));
 const MONEY_KEYS = Object.freeze(KEYS.filter((k) => ACTIONS[k].money));
 const STOP_KEYS = Object.freeze(KEYS.filter((k) => ACTIONS[k].stops));
 
+/**
+ * THE ONE WAY A VERB IS LOOKED UP, and it is `hasOwnProperty` for a reason a
+ * plain `ACTIONS[type]` cannot give you.
+ *
+ * ⛔ `ACTIONS` is an object literal, so a bracket lookup walks the PROTOTYPE
+ * CHAIN: `ACTIONS['constructor']` is `Object`, and `toString` / `valueOf` /
+ * `__proto__` / `hasOwnProperty` / `isPrototypeOf` / `propertyIsEnumerable` /
+ * `toLocaleString` are all truthy too. Every one of them therefore passed
+ * `validate()` — it only ever asked whether the spec was truthy — and was
+ * SAVEABLE; the summariser then read `spec.label.toLowerCase()` off `Object`,
+ * which has no `label`, and threw. `overlay.apply` is called without a catch by
+ * both engines, so ONE such rule took down every board, general and combined,
+ * on every DSCR band. Measured end to end against a real database before this
+ * was written: `validate` returned `[]`, the row saved, and the next board threw
+ * `TypeError: Cannot read properties of undefined (reading 'toLowerCase')`.
+ *
+ * An own-property test closes it at the door AND in the overlay, which is what
+ * this file's header has always claimed happens.
+ */
+const specOf = (type) => (
+  typeof type === 'string' && Object.prototype.hasOwnProperty.call(ACTIONS, type) ? ACTIONS[type] : null
+);
+
+
 /** Three decimals, the engine's own price precision. */
 const r3 = (n) => Math.round(Number(n) * 1000) / 1000;
 
@@ -124,7 +148,7 @@ function validate(list) {
   list.forEach((a, i) => {
     const at = `Action ${i + 1}`;
     if (!a || typeof a !== 'object') { problems.push(`${at}: not shaped like an action.`); return; }
-    const spec = ACTIONS[a.type];
+    const spec = specOf(a.type);
     if (!spec) { problems.push(`${at}: "${a.type}" is not something a rule can do.`); return; }
     if (spec.money) {
       const n = Number(a.points);
@@ -144,7 +168,7 @@ function validate(list) {
   /* ⛔ ONE STOP IS ENOUGH, AND TWO CONTRADICT EACH OTHER. Blocking the investor
      and marking the row ineligible say different things about the same loan, and
      a board can only print one reason. */
-  const stops = list.filter((a) => a && ACTIONS[a.type] && ACTIONS[a.type].stops);
+  const stops = list.filter((a) => a && specOf(a.type) && specOf(a.type).stops);
   if (stops.length > 1) problems.push('A rule can stop a quote one way, not two — pick "mark ineligible" or "block this investor".');
   return problems;
 }
@@ -159,7 +183,7 @@ function validate(list) {
 function netPoints(list) {
   let net = 0;
   for (const a of Array.isArray(list) ? list : []) {
-    const spec = ACTIONS[a && a.type];
+    const spec = specOf(a && a.type);
     if (!spec || !spec.money) continue;
     const n = Number(a.points);
     if (!Number.isFinite(n) || n <= 0) continue;
@@ -171,7 +195,7 @@ function netPoints(list) {
 /** The stopping action, if the list has one. */
 function stopAction(list) {
   for (const a of Array.isArray(list) ? list : []) {
-    const spec = ACTIONS[a && a.type];
+    const spec = specOf(a && a.type);
     if (spec && spec.stops) return { ...a, spec };
   }
   return null;
@@ -179,7 +203,7 @@ function stopAction(list) {
 
 /** One action in words, for a board explanation and an audit line. */
 function summarizeAction(a) {
-  const spec = ACTIONS[a && a.type];
+  const spec = specOf(a && a.type);
   if (!spec) return 'an action that could not be read';
   if (spec.money) return `${spec.label.toLowerCase()} of ${r3(Number(a.points))} point${Number(a.points) === 1 ? '' : 's'}`;
   if (spec.needsReason && !isBlankText(a.reason)) return `${spec.label.toLowerCase()} — ${String(a.reason).trim()}`;
@@ -194,5 +218,5 @@ function summarize(list) {
 
 module.exports = {
   ACTIONS, KEYS, MONEY_KEYS, STOP_KEYS, MAX_POINTS,
-  validate, netPoints, stopAction, summarize, summarizeAction, r3,
+  validate, netPoints, stopAction, summarize, summarizeAction, r3, specOf,
 };
