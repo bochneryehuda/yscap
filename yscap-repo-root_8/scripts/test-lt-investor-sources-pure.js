@@ -1042,6 +1042,54 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
     && /onClick=\{\(\) => undoReset\(r\.key\)\}/.test(screen),
     'L24 …with a one-click undo beside it, so a mis-press never costs a setting');
 
+  /* ── N. AN INVESTOR NOBODY HAS NAMED STARTS OFF ─────────────────────────
+     Owner-directed 2026-09-04: *"Something that is populating on LenderPric should
+     automatically add to the list, or even if it's populating on LoanPass, it
+     should be automatically turned off till I go and I put in the white label name
+     and I turn it on."*
+
+     ⛔ THE INDEPENDENT REASON, which is why this is a safety property and not only
+     a preference: a programme with no white label cannot go on a term sheet at all
+     (`termsheet/snapshot` refuses it, `program_not_named`), so quoting one offers a
+     price nobody can issue.
+
+     ⛔ AND THE OWNER'S LIST IS MEASURED HERE, not restated: the 26 names come from
+     the sheet itself, so a name added to it is on the settings list for free and a
+     name removed leaves it — which is the whole point of the sheet being one file. */
+  {
+    const st = require(path.join(ROOT, 'src/longterm/pricing/investor-settings'));
+    const rows = st.roster({}, undefined);
+    const named = rows.filter((r) => r.whiteLabel);
+    const unnamed = rows.filter((r) => !r.whiteLabel);
+    ok(named.length > 0 && unnamed.length > 0,
+      `M0 the registry has both named and unnamed investors to tell apart (${named.length}/${unnamed.length})`);
+    ok(named.every((r) => r.enabled),
+      'N1 every investor the owner has named is on by default — unchanged');
+    ok(unnamed.every((r) => !r.enabled),
+      'N2 every investor nobody has named yet is OFF by default');
+    ok(unnamed.every((r) => r.enabledOrigin === 'unnamed'),
+      'N3 …and says WHY, so "off because nobody named it" is not read as "off because the owner said so"');
+    ok(unnamed.every((r) => r.prefill.enabled === false),
+      'N4 "use the pre-fill" cannot turn an unnamed investor back on');
+    // A SAVED ANSWER STILL WINS — this is a default, never an override of a decision.
+    const key = unnamed[0].key;
+    ok(st.roster({ [key]: { enabled: true } }).find((r) => r.key === key).enabled === true,
+      'N5 somebody who deliberately turned an unnamed investor on keeps it on');
+    // The second half of the owner's sentence: naming it turns it back on by itself.
+    ok(st.roster({ [key]: { whiteLabel: 'Topazite' } }).find((r) => r.key === key).enabled === true,
+      'N6 naming an investor turns it back on with no second setting');
+    // THE SETTINGS SCREEN IS THE OWNER'S LIST — with nothing sighted, exactly the named ones.
+    const shown = rows.filter((r) => st.belongsOnSettingsList(r, {}));
+    ok(shown.length === named.length && shown.every((r) => !!r.whiteLabel),
+      `M7 with nothing sighted the settings list is exactly the named investors (${shown.length})`);
+    // …and one a rate sheet has ACTUALLY produced joins it, unnamed and off.
+    const seen = { [key]: { lenderprice: { state: 'seen' } } };
+    ok(st.belongsOnSettingsList(unnamed[0], seen[key]),
+      'N8 an investor a sheet has actually produced joins the list, unnamed');
+    ok(!st.roster({}, undefined).find((r) => r.key === key).enabled,
+      'N9 …and joins it switched OFF, which is the owner\'s rule in full');
+  }
+
   console.log(`\n${bad ? 'FAILED' : 'ALL PASSED'} (${pass} passed, ${bad} failed)\n`);
   process.exit(bad ? 1 : 0);
 })();
