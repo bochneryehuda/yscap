@@ -9,17 +9,31 @@
    LTV, the lesser max initial, the lesser max ARV, the more conservative
    geographic restrictions … the rate should be the more expensive rate from
    the two programs … the higher origination fees … only going to allow a 10%
-   assignment fee … something that we can sell to either note buyer …
-   Maximum loan out for the speed program is $1 million."
+   assignment fee … something that we can sell to either note buyer."
+
+   TWO SECTIONS, AND THEY ARE NOT THE SAME THING (owner-reported 2026-09-03,
+   after reading the composition panel): "There's one section where it goes
+   over why the standard program is, why the silver program is, and chooses
+   the middle. Another section of the overlays is no interest reserve, 90%
+   LTC, and a $1 million loan amount." So:
+
+     1. THE COMPOSITION — for each ceiling axis, what STANDARD allows, what
+        SILVER allows, and the lesser of the two. Those two columns are each
+        parent's OWN published guideline row (tierRowOf) and carry no lever
+        of ours; the panel must never print a Speed overlay in them.
+     2. THE OVERLAYS — this program's own, on top of that lesser: the maximum
+        loan, the maximum loan-to-cost, no financed interest reserve, and the
+        assignment share. They are listed by `overlayList` and are the ONLY
+        numbers this file owns.
 
    HOW IT IS BUILT — one sentence: run both frozen engines on the Speed
-   basis (assignment fee financeable at 10%), take the elementwise MINIMUM
-   of the ceiling each engine says THIS deal may reach (plus the Speed
-   Program's own $1,000,000 wall), pin BOTH engines to that combined ceiling
-   through their own voluntary levers (targetLoan / targetAcqLTV /
-   targetARLTV / targetLTC — each a MIN, each inert when unset), and report
-   the evaluation with the HIGHER note rate. Refuse if either refuses; MANUAL
-   if either is MANUAL.
+   basis (assignment fee financeable at 10%, no financed reserve), take the
+   elementwise MINIMUM of the ceiling each engine says THIS deal may reach,
+   apply the overlays, pin BOTH engines to that combined ceiling through
+   their own voluntary levers (targetLoan / targetAcqLTV / targetARLTV /
+   targetLTC — each a MIN, each inert when unset), and report the evaluation
+   with the HIGHER note rate. Refuse if either refuses; MANUAL if either is
+   MANUAL.
 
    WHY IT IS NEVER "THE LESSER OF THE TWO LOAN AMOUNTS" (owner-directed):
    "even though it's going to be less than both programs, you still need to
@@ -44,7 +58,7 @@
    WHAT THIS FILE DOES NOT CONTAIN: a matrix, a grid, a geography list, a
    tier ladder, an assignment formula, a rate. Every number comes out of the
    two engines it composes; when EMCAP sends a new workbook or the Standard
-   matrix moves, Speed moves with it. The two constants below are the Speed
+   matrix moves, Speed moves with it. The four constants below are the Speed
    Program's OWN overlays and nothing else.
 
    Reuses YSP / SVP exactly as src/lib/pricing.js loads them; the server and
@@ -52,7 +66,7 @@
    web/v2/tools — scripts/test-engine-copies-match.js). Proven by
    scripts/test-speed-program-pure.js: dual-sellability (each program alone,
    at ITS OWN 15% rule and caps, accepts every Speed loan), rate ≥ both,
-   worst status wins, the 10% basis, the $1M wall, cap attribution.
+   worst status wins, the 10% basis, the overlays, cap attribution.
    Exposes window.SPP (browser) and module.exports (Node).
    ===================================================================== */
 (function (root, factory) {
@@ -67,7 +81,7 @@
   "use strict";
 
   /* ---------------- the Speed Program's OWN overlays (owner 2026-09-03) ---------------- */
-  var SPEED_MAX_LOAN = 1000000;        // "Maximum loan out for the speed program is $1 million."
+  var SPEED_MAX_LOAN = 800000;         // "Let's move down the maximum of the speed program to $800,000."
   var ASSIGNMENT_MAX_PCT = 0.10;       // "only going to allow a 10% assignment fee (wholesale fee)"
   /* Two more overlays (owner-directed 2026-09-03, second message): "on this Speed Program
      we never allow interest reserve. Financed interest reserve … even if you're putting
@@ -80,9 +94,9 @@
   var SPEED_MAX_LTC = 0.90;            // never more than 90% loan-to-cost
   var FINANCED_RESERVE_ALLOWED = false; // no financed interest reserve, whatever was requested
   var MAX_PASSES = 4;                  // the ceiling fixed point (Silver may step down under a pin)
-  var ORIG_PCT = 0.0125;               // never used for pricing here — the server takes the HIGHER of
-                                       // the two programs' resolved origination (pricing.js normalize)
-  var LABEL = { standard: "Standard", silver: "Silver", both: "both programs", speed: "the Speed Program's own $1,000,000 wall" };
+  var ORIG_PCT = 0.0125;               // the engine-constant fallback for the Speed origination chain
+                                       // (per-file origSpeedPct → company orig_speed_pct → this)
+  var LABEL = { standard: "Standard", silver: "Silver", both: "both programs", speed: "a Speed Program overlay" };
   var PROGRAM_NAME = { standard: "Standard Program", silver: "Silver Program" };
   var RANK = { ELIGIBLE: 0, MANUAL: 1, INELIGIBLE: 2, ERROR: 3 };
   var CAP_KEYS = ["maxLoan", "maxAcqLTV", "maxARLTV", "maxLTC"];
@@ -133,10 +147,26 @@
      regime/loan type/strategy/tier it landed in, Silver's verbatim tier row — and the
      wall is credited only when it is genuinely below both. Attribution only: the
      figure itself is the MIN either way. */
+  /* THE PARENT'S OWN GUIDELINE ROW — its published tier row for the profile this deal
+     landed in, carrying NO lever: not Speed's walls, not a voluntary target, not the
+     step-down lattice. This is what "what does Standard allow / what does Silver allow"
+     means on the composition table, and it is why that table can no longer print
+     Speed's own $800,000 wall in the two parents' columns (owner-reported 2026-09-03:
+     "it's saying that the maximum loan amount of the standard and the silver is $1
+     million … which is not true. They have their own stuff"). Standard exposes the row
+     through YSP.caps(); Silver publishes it as `tierCaps` (the workbook Tier Grid row,
+     verbatim). Null when unreadable — the caller falls back to the enforced ceiling. */
+  function tierRowOf(name, ev) {
+    try {
+      if (name === "silver") { var tc = ev && ev.tierCaps; return tc ? { maxLoan: num(tc.maxLoan), minFico: num(tc.minFico), maxAcqLTV: num(tc.maxAcqLTV), maxARLTV: num(tc.maxARLTV), maxLTC: num(tc.maxLTC) } : null; }
+      var row = YSP.caps(ev.regime, ev.loanType, ev.strategyCode, ev.tier);
+      return row ? { maxLoan: num(row.maxLoan), minFico: num(row.minFico), maxAcqLTV: num(row.maxAcqLTV), maxARLTV: num(row.maxARLTV), maxLTC: num(row.maxLTC) } : null;
+    } catch (_) { return null; }
+  }
   function wallDonor(evS, evV, key, speedWall, combined) {
-    var wallS = Infinity, wallV = Infinity;
-    try { var row = YSP.caps(evS.regime, evS.loanType, evS.strategyCode, evS.tier); if (row && num(row[key]) > 0) wallS = num(row[key]); } catch (_) { /* attribution only */ }
-    var tc = evV && (evV.tierCaps || evV.caps); if (tc && num(tc[key]) > 0) wallV = num(tc[key]);
+    var rowS = tierRowOf("standard", evS), rowV = tierRowOf("silver", evV);
+    var wallS = rowS && num(rowS[key]) > 0 ? num(rowS[key]) : Infinity;
+    var wallV = rowV && num(rowV[key]) > 0 ? num(rowV[key]) : Infinity;
     var own = Math.min(wallS, wallV);
     if (!(own < Infinity)) return combined;
     if (speedWall < own - 1e-9) return "speed";
@@ -197,7 +227,16 @@
      engine's "Meets the … guidelines." line is dropped (Speed states its own); a
      sentence both engines raise identically is kept once, tagged [Both]. */
   function isMeetsLine(r) { return /^Meets the .* guidelines\.$/.test(String(r && r.msg || "")); }
-  function mergeReasons(evS, evV) {
+  /* THE ASSIGNMENT-CAP SENTENCE IS SPEED'S, NOT THE PARENTS' (owner-reported 2026-09-03:
+     "it's saying that this is relevant for both. This is also an overlay only for this
+     program"). Both engines raise the identical sentence because both were handed the
+     Speed Program's 10% share, so the plain de-duplication tagged it [Both] — and read
+     as if Standard and Silver each capped assignment fees at 10%, which neither does
+     (their own rule is 15%). Whenever the share in force is BELOW the company's 15%, it
+     is this program's overlay and it is tagged as one. */
+  function isAssignmentCapLine(r) { return /assignment fee is financed \(the /.test(String(r && r.msg || "")); }
+  function mergeReasons(evS, evV, sharePct) {
+    var overlayShare = num(sharePct) > 0 && num(sharePct) < 0.15;
     var out = [], seen = {};
     var listS = (evS && evS.reasons) || [], listV = (evV && evV.reasons) || [];
     var inV = {};
@@ -205,11 +244,13 @@
     for (var i = 0; i < listS.length; i++) {
       var r = listS[i]; if (isMeetsLine(r)) continue;
       var key = r.level + "|" + r.msg; if (seen[key]) continue; seen[key] = true;
+      if (overlayShare && isAssignmentCapLine(r)) { out.push({ level: r.level, msg: "[Speed overlay] " + r.msg, code: r.code || "speed_assignment_cap", program: "speed" }); continue; }
       out.push({ level: r.level, msg: (inV[key] ? "[Both] " : "[Standard] ") + r.msg, code: r.code, program: inV[key] ? "both" : "standard" });
     }
     for (var k2 = 0; k2 < listV.length; k2++) {
       var r2 = listV[k2]; if (isMeetsLine(r2)) continue;
       var key2 = r2.level + "|" + r2.msg; if (seen[key2]) continue; seen[key2] = true;
+      if (overlayShare && isAssignmentCapLine(r2)) { out.push({ level: r2.level, msg: "[Speed overlay] " + r2.msg, code: r2.code || "speed_assignment_cap", program: "speed" }); continue; }
       out.push({ level: r2.level, msg: "[Silver] " + r2.msg, code: r2.code, program: "silver" });
     }
     return out;
@@ -234,11 +275,29 @@
   function speedLine(caps, donor, evS, evV, rateDonor) {
     var who = function (k) { return donor[k] === "speed" ? "the Speed Program's own wall" : (LABEL[donor[k]] || donor[k]); };
     var rS = num(evS.noteRate), rV = num(evV.noteRate);
-    return "Sized under the lesser of the Standard and Silver programs and the Speed Program's own walls (" + usd(SPEED_MAX_LOAN) + " maximum, " + pct(SPEED_MAX_LTC) + " loan-to-cost, no financed interest reserve)" +
-      ": max loan " + usd(caps.maxLoan) + " (" + who("maxLoan") + "), acquisition LTV " + pct(caps.maxAcqLTV) + " (" + who("maxAcqLTV") +
+    return "Sized under the lesser of the Standard and Silver programs, then the Speed Program's own overlays (" + usd(SPEED_MAX_LOAN) + " maximum loan, " + pct(SPEED_MAX_LTC) + " maximum loan-to-cost, no financed interest reserve, assignment fees financeable to " + pct(ASSIGNMENT_MAX_PCT) + ")" +
+      ". Enforced: max loan " + usd(caps.maxLoan) + " (" + who("maxLoan") + "), acquisition LTV " + pct(caps.maxAcqLTV) + " (" + who("maxAcqLTV") +
       "), after-repair LTV " + pct(caps.maxARLTV) + " (" + who("maxARLTV") + "), loan-to-cost " + pct(caps.maxLTC) + " (" + who("maxLTC") +
       "); priced at the higher of the two rates for this structure — Standard " + (rS ? pct(rS) : "unpriced") + ", Silver " + (rV ? pct(rV) : "unpriced") +
-      " → " + LABEL[rateDonor] + "; assignment fees financeable to " + pct(ASSIGNMENT_MAX_PCT) + " of the seller's contract price.";
+      " → " + LABEL[rateDonor] + ".";
+  }
+  /* THE SPEED PROGRAM'S OWN OVERLAYS, as a list — the second section of the
+     composition panel (owner-directed 2026-09-03: "There's one section where it goes
+     over why the standard program is, why the silver program is, and chooses the
+     middle. Another section of the overlays is no interest reserve, 90% LTC, and a
+     $1 million loan amount"). The FIGURES come from the constants above, so a surface
+     can never print a stale one, and the parents' columns never carry them. */
+  function overlayList(inp) {
+    return [
+      { key: "max_loan", label: "Maximum loan", value: usd(SPEED_MAX_LOAN),
+        note: "The Speed Program never lends more than " + usd(SPEED_MAX_LOAN) + ", whatever the two programs allow." },
+      { key: "max_ltc", label: "Maximum loan-to-cost", value: pct(SPEED_MAX_LTC),
+        note: "Never more than " + pct(SPEED_MAX_LTC) + " of cost, even where both programs allow more." },
+      { key: "no_reserve", label: "Financed interest reserve", value: "Not allowed",
+        note: "Interest is never financed into a Speed loan; it is paid from the borrower's own funds." },
+      { key: "assignment", label: "Assignment fee financeable", value: pct(num(inp && inp.assignmentMaxPct) || ASSIGNMENT_MAX_PCT),
+        note: "Of the seller's contract price — the company rule is 15%; the Speed Program allows " + pct(ASSIGNMENT_MAX_PCT) + "." },
+    ];
   }
   function reserveLine(req) {
     if (!req) return null;
@@ -304,17 +363,20 @@
     if (status === "INELIGIBLE" || !cS || !cV || !sized(evS) || !sized(evV)) {
       // One program refuses, or one could not size (a city review with no pricing, a
       // missing figure): Speed carries both programs' sentences and no structure.
-      reasons = mergeReasons(evS, evV);
+      reasons = mergeReasons(evS, evV, inp.assignmentMaxPct);
       if (typed > SPEED_MAX_LOAN) reasons.unshift({ level: "INELIGIBLE", msg: "Loan amount exceeds the Speed Program's " + usd(SPEED_MAX_LOAN) + " maximum.", program: "speed" });
       if (!reasons.length) reasons.push({ level: status === "INELIGIBLE" ? "INELIGIBLE" : "MANUAL", msg: "The Speed Program could not size this deal on both programs — submit for individual review.", program: "speed" });
       var st0 = typed > SPEED_MAX_LOAN ? "INELIGIBLE" : (status === "ELIGIBLE" ? "MANUAL" : status);
       return result(st0, reasons, assign(baseFields(evS, evV, pickDonor(evS, evV) === "silver" ? evV : evS), {
         caps: null, pricedCeiling: null, noteRate: 0, sizing: null,
-        speed: { maxLoanCap: SPEED_MAX_LOAN, maxLtcCap: SPEED_MAX_LTC, financedReserveAllowed: FINANCED_RESERVE_ALLOWED, reserveRequested: reserveRequested(input), assignmentMaxPct: inp.assignmentMaxPct, passes: 0, converged: false, rateDonor: null, capDonor: null,
+        speed: { maxLoanCap: SPEED_MAX_LOAN, maxLtcCap: SPEED_MAX_LTC, financedReserveAllowed: FINANCED_RESERVE_ALLOWED, reserveRequested: reserveRequested(input), assignmentMaxPct: inp.assignmentMaxPct, overlays: overlayList(inp), passes: 0, converged: false, rateDonor: null, capDonor: null,
           standard: summary(evS, cS), silver: summary(evV, cV) },
       }));
     }
-    var ownS = cS, ownV = cV;
+    /* The parents' OWN rows for the display — never the pinned ceilings, which carry
+       Speed's walls (see tierRowOf). Falls back to the pinned ceiling when a row is
+       unreadable, which can only make the display more conservative, never wrong-way. */
+    var ownS = tierRowOf("standard", evS) || cS, ownV = tierRowOf("silver", evV) || cV;
     var comb = combine(cS, cV), caps = comb.caps, donor = comb.donor;
     donor.maxLoan = maxLoanDonor(evS, evV, donor.maxLoan);
     donor.maxLTC = maxLtcDonor(evS, evV, donor.maxLTC);
@@ -330,11 +392,11 @@
       status = worse(evS.status, evV.status);
       cS = ceilingOf("standard", evS); cV = ceilingOf("silver", evV);
       if (status === "INELIGIBLE" || !cS || !cV || !sized(evS) || !sized(evV)) {
-        reasons = mergeReasons(evS, evV);
+        reasons = mergeReasons(evS, evV, inp.assignmentMaxPct);
         if (!reasons.length) reasons.push({ level: "MANUAL", msg: "The Speed Program could not size this deal on both programs under the combined ceiling — submit for individual review.", program: "speed" });
         return result(status === "ELIGIBLE" ? "MANUAL" : status, reasons, assign(baseFields(evS, evV, pickDonor(evS, evV) === "silver" ? evV : evS), {
           caps: caps, pricedCeiling: caps, noteRate: 0, sizing: null,
-          speed: { maxLoanCap: SPEED_MAX_LOAN, maxLtcCap: SPEED_MAX_LTC, financedReserveAllowed: FINANCED_RESERVE_ALLOWED, reserveRequested: reserveRequested(input), assignmentMaxPct: inp.assignmentMaxPct, passes: passes, converged: false, rateDonor: null, capDonor: donor,
+          speed: { maxLoanCap: SPEED_MAX_LOAN, maxLtcCap: SPEED_MAX_LTC, financedReserveAllowed: FINANCED_RESERVE_ALLOWED, reserveRequested: reserveRequested(input), assignmentMaxPct: inp.assignmentMaxPct, overlays: overlayList(inp), passes: passes, converged: false, rateDonor: null, capDonor: donor,
             standard: summary(evS, ownS), silver: summary(evV, ownV) },
         }));
       }
@@ -350,7 +412,7 @@
       caps = next.caps;
     }
     if (!converged) {
-      reasons = mergeReasons(evS, evV);
+      reasons = mergeReasons(evS, evV, inp.assignmentMaxPct);
       reasons.unshift({ level: "MANUAL", msg: "The Speed Program could not settle on a structure both programs price after " + MAX_PASSES + " passes — submit for individual review.", program: "speed" });
       status = worse(status, "MANUAL");
     }
@@ -376,7 +438,18 @@
       if (dInit > dRes + 1 && denom > 0) {
         var pinAcq = Math.min(caps.maxAcqLTV, num(other.sizing.acquisition) / denom);
         var re = (rateDonor === "silver" ? SVP : YSP).evaluate(assign(pinTo(inp, caps), { targetAcqLTV: pinAcq }));
-        if (sized(re) && re.status !== "INELIGIBLE") { donorEv = re; if (rateDonor === "silver") evV = re; else evS = re; }
+        if (sized(re) && re.status !== "INELIGIBLE") {
+          donorEv = re; if (rateDonor === "silver") evV = re; else evS = re;
+          /* THE REPORTED CEILING IS ALWAYS THE ONE THE REPORTED STRUCTURE WAS SIZED AT.
+             The alignment tightened the acquisition wall below the combined ceiling, so
+             the combined ceiling moves with it and the axis is credited to the parent
+             whose own floor set the smaller initial — otherwise the panel would print an
+             acquisition LTV this loan was never sized at. */
+          if (pinAcq < caps.maxAcqLTV - 1e-9) {
+            caps = assign({}, caps, { maxAcqLTV: pinAcq });
+            donor.maxAcqLTV = (rateDonor === "silver") ? "standard" : "silver";
+          }
+        }
       }
     }
     // The rate is the higher of the two whatever structure was kept.
@@ -388,7 +461,7 @@
     if (!(num(evS.noteRate) > 0) || !(num(evV.noteRate) > 0)) status = worse(status, "MANUAL");
     if (typed > SPEED_MAX_LOAN) status = "INELIGIBLE";
 
-    reasons = converged ? mergeReasons(evS, evV) : reasons;
+    reasons = converged ? mergeReasons(evS, evV, inp.assignmentMaxPct) : reasons;
 
     /* SELLABLE TO EITHER BUYER MEANS EACH BUYER'S OWN BOOK ACCEPTS THIS LOAN — on ITS
        OWN basis. The passes above run the parents on the Speed basis (10% share), and a
@@ -422,7 +495,7 @@
       noteRate: noteRate || 0,
       sizing: donorEv.sizing,
       speed: {
-        maxLoanCap: SPEED_MAX_LOAN, maxLtcCap: SPEED_MAX_LTC, financedReserveAllowed: FINANCED_RESERVE_ALLOWED, reserveRequested: reserveRequested(input), assignmentMaxPct: inp.assignmentMaxPct, passes: passes, converged: converged,
+        maxLoanCap: SPEED_MAX_LOAN, maxLtcCap: SPEED_MAX_LTC, financedReserveAllowed: FINANCED_RESERVE_ALLOWED, reserveRequested: reserveRequested(input), assignmentMaxPct: inp.assignmentMaxPct, overlays: overlayList(inp), passes: passes, converged: converged,
         rateDonor: rateDonor, capDonor: donor,
         standard: summary(evS, ownS), silver: summary(evV, ownV),
       },
@@ -456,12 +529,13 @@
     return { eligible: true, status: full.status, maxLtc: maxLtc, binding: (full.sizing && full.sizing.binding) || "", maxNoteRate: full.noteRate, rows: rows };
   }
 
-  /* Markup hooks FORWARD TO BOTH ENGINES. The Speed Program has no markup of its own
-     — its rate is the higher of two note rates that already carry each program's
-     markup — but the server's rate build-up measures a buy rate by pinning "the
-     engine" to a markup and re-pricing (pricing.js measureRateBuildUp); forwarding
-     lets that measurement run through the composition and PROVE ITSELF as it does
-     for the others (it omits rather than guesses when the re-price does not land). */
+  /* Markup hooks FORWARD TO BOTH ENGINES. The Speed Program has its OWN margin (owner
+     2026-09-03, second message — the Pricing Admin Center's markup_speed_pct and Speed
+     per-tier values, the per-file sticky markup): the server hands it to this hook and
+     both parents price at it, so the note rate is the higher of the two BUY rates plus
+     the Speed margin (Silver's frozen engine clamps any margin it receives at 1.00%).
+     The same forwarding lets the server's rate build-up measure the buy rate by pinning
+     the margin and re-pricing (pricing.js measureRateBuildUp), proving itself or omitting. */
   function setMarkup(f) { YSP.setMarkup(f); SVP.setMarkup(f); }
   function setMarkupTiers(m) { YSP.setMarkupTiers(m); SVP.setMarkupTiers(m); }
 

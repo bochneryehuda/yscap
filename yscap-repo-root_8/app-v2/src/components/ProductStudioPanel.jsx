@@ -172,7 +172,7 @@ export function overridesFromSnapshot(snap, mode) {
       asIsValue: f.asIs,
       arv: f.arv,
       rehabBudget: f.construction,
-      origStdPct: f.tsOrigStd, origGoldPct: f.tsOrigGold, origSilverPct: f.tsOrigSilver,
+      origStdPct: f.tsOrigStd, origGoldPct: f.tsOrigGold, origSilverPct: f.tsOrigSilver, origSpeedPct: f.tsOrigSpeed,
       origManualPct: f.tsOrigManual,
       lenderFee: f.tsFeeUW, creditFee: f.tsFeeCredit, appraisalFee: f.tsFeeAppr,
       /* OUR FEE'S TWO PARTS and the optional New York settlement agent fee (owner-directed
@@ -254,6 +254,9 @@ export function overridesFromSnapshot(snap, mode) {
     ...(f.tsYspStd === '' ? { markupStdPct: '' } : f.tsYspStd != null ? { markupStdPct: f.tsYspStd } : {}),
     ...(f.tsYspGold === '' ? { markupGoldPct: '' } : f.tsYspGold != null ? { markupGoldPct: f.tsYspGold } : {}),
     ...(f.tsYspSilver === '' ? { markupSilverPct: '' } : f.tsYspSilver != null ? { markupSilverPct: f.tsYspSilver } : {}),
+    // Speed's own margin — same explicit-blank contract as its siblings (a blank CLEARS
+    // the sticky per-file value so the company default governs again).
+    ...(f.tsYspSpeed === '' ? { markupSpeedPct: '' } : f.tsYspSpeed != null ? { markupSpeedPct: f.tsYspSpeed } : {}),
     // Manual GOLD top-tier markup (item 15): a blank clears the sticky per-file
     // value (company/historic default governs); a value overrides Gold Tier 1.
     ...(f.tsYspGoldT1 === '' ? { markupGoldT1Pct: '' } : f.tsYspGoldT1 != null ? { markupGoldT1Pct: f.tsYspGoldT1 } : {}),
@@ -300,13 +303,26 @@ export function termOptionsFromSnapshot(snap) {
    program's guidelines without re-running anything. Hoisted (stable identity),
    and it names our two PROGRAMS, never a note buyer. Ceilings arrive as
    fractions and rates as fractions, exactly as the engines hold them. */
-const SPEED_DONOR = { standard: 'Standard', silver: 'Silver', both: 'Both (equal)', speed: 'Speed’s own cap' };
+const SPEED_DONOR = { standard: 'Standard', silver: 'Silver', both: 'Both (equal)', speed: 'A Speed overlay' };
 export function SpeedComposition({ sp }) {
   if (!sp || !sp.standard || !sp.silver) return null;
   const st = sp.standard, sv = sp.silver;
   const donor = sp.capDonor || {};
-  const cS = st.ceiling || {}, cV = sv.ceiling || {};
-  const enforced = (k) => (donor[k] === 'silver' ? cV[k] : donor[k] === 'speed' ? sp.maxLoanCap : cS[k]);
+  /* THE TWO PARENT COLUMNS ARE THEIR OWN PUBLISHED GUIDELINE ROWS, never the ceilings
+     they were PINNED to — those carry this program's overlays, which is what made the
+     panel claim Standard and Silver each cap a loan at Speed's own maximum
+     (owner-reported 2026-09-03). `ceiling` is what each parent priced; `ownCeiling` is
+     what that program allows. The enforced figure is the minimum of the two priced
+     ceilings and the overlay for that axis — never the maximum-loan overlay reused on
+     every row, which is what printed a dollar amount in the loan-to-cost row. */
+  const cS = st.ownCeiling || st.ceiling || {}, cV = sv.ownCeiling || sv.ceiling || {};
+  const pS = st.ceiling || {}, pV = sv.ceiling || {};
+  const OVERLAY = { maxLoan: Number(sp.maxLoanCap) || Infinity, maxLTC: Number(sp.maxLtcCap) || Infinity };
+  const enforced = (k) => Math.min(
+    Number(pS[k]) > 0 ? Number(pS[k]) : Infinity,
+    Number(pV[k]) > 0 ? Number(pV[k]) : Infinity,
+    OVERLAY[k] || Infinity,
+  );
   const pct1 = (v) => pct(v, 1);
   const rows = [
     { k: 'maxLoan', label: 'Max loan', fmt: money },
@@ -320,7 +336,8 @@ export function SpeedComposition({ sp }) {
     <section className="sos" data-speed-composition="1">
       <p className="sos-h">How Speed was composed</p>
       <p className="sos-sub">
-        The lesser of the Standard and Silver limits on every measure{Number(sp.maxLoanCap) > 0 ? `, under Speed’s own ${money(sp.maxLoanCap)} maximum` : ''}, priced at the higher of the two rates. Each row: both programs’ figures, then the one Speed enforced and who set it.
+        Section 1 — what each program allows and the lesser of the two. Each row shows both
+        programs’ own limits, then the figure enforced and who set it.
       </p>
       {rows.map((r) => (
         <div key={r.k} className="metrow">
@@ -328,6 +345,19 @@ export function SpeedComposition({ sp }) {
           <span className="v">{r.fmt(enforced(r.k))} · {SPEED_DONOR[donor[r.k]] || '—'}</span>
         </div>
       ))}
+      {Array.isArray(sp.overlays) && sp.overlays.length > 0 && (
+        <>
+          <p className="sos-sub" style={{ marginTop: '.5rem' }}>
+            Section 2 — the Speed Program’s own overlays, applied on top of the lesser above.
+          </p>
+          {sp.overlays.map((o) => (
+            <div key={o.key} className="metrow" data-speed-overlay={o.key}>
+              <span className="k">{o.label}</span>
+              <span className="v">{o.value}</span>
+            </div>
+          ))}
+        </>
+      )}
       <div className="metrow">
         <span className="k">Rate — Standard {rate(st.noteRate)} · Silver {rate(sv.noteRate)}</span>
         <span className="v">{rate(chargedRate)} · {SPEED_DONOR[sp.rateDonor] || '—'}</span>
@@ -1582,7 +1612,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     const DEFAULTED = {
       markupStdPct: `rate markup (${PROGRAM_SHORT.standard})`, markupGoldPct: `rate markup (${PROGRAM_SHORT.gold})`,
       origStdPct: `origination points (${PROGRAM_SHORT.standard})`, origGoldPct: `origination points (${PROGRAM_SHORT.gold})`,
-      origSilverPct: `origination points (${PROGRAM_SHORT.silver})`, origManualPct: `origination points (${PROGRAM_SHORT.manual})`,
+      origSilverPct: `origination points (${PROGRAM_SHORT.silver})`, origSpeedPct: `origination points (${PROGRAM_SHORT.speed})`, origManualPct: `origination points (${PROGRAM_SHORT.manual})`,
       // (No Speed row: Speed has no markup or origination knob — it inherits both
       // donors' through the composition, owner decision 2026-09-03.)
       lenderFee: 'underwriting / legal fee', creditFee: 'credit-report fee',

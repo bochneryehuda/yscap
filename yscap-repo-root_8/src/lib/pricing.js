@@ -305,6 +305,7 @@ function buildInputs(app, experience, overrides) {
     ...(app.file_markup_std_pct  != null ? { markupStdPct:  num(app.file_markup_std_pct) }  : {}),
     ...(app.file_markup_gold_pct != null ? { markupGoldPct: num(app.file_markup_gold_pct) } : {}),
     ...(app.file_markup_silver_pct != null ? { markupSilverPct: num(app.file_markup_silver_pct) } : {}),
+    ...(app.file_markup_speed_pct != null ? { markupSpeedPct: num(app.file_markup_speed_pct) } : {}),   // db/694
     /* Sticky per-file CONSTRUCTION FEASIBILITY fee (owner-directed 2026-08-21, db/609) — the
        studio's manual box, persisted exactly like the markups above so a re-quote never drops the
        amount an admin typed. NULL/absent → the company default for this deal's kind governs, so
@@ -390,14 +391,14 @@ function buildInputs(app, experience, overrides) {
     // whom. Whitelisted so the studio and the file price the same deal.
     'payoff',
     'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
-    'markupStdPct', 'markupGoldPct', 'markupSilverPct',
+    'markupStdPct', 'markupGoldPct', 'markupSilverPct', 'markupSpeedPct',
     // Per-file GOLD TOP-TIER markup (owner item 15 — the studio's "manual section
     // for the top tier"). A percent; overlays the company per-tier default for the
     // Gold engine's Tier 1 only. Blank/absent leaves the historic Gold Tier 1 = 0
     // (or the company per-tier default if one is set) — so it never changes a file
     // that doesn't use it. See markupTiersFor().
     'markupGoldT1Pct',
-    'origStdPct', 'origGoldPct', 'origSilverPct', 'origManualPct',
+    'origStdPct', 'origGoldPct', 'origSilverPct', 'origSpeedPct', 'origManualPct',
     'lenderFee', 'creditFee', 'appraisalFee', 'titleFee', 'feasibilityFee',
     /* OUR FEE'S TWO PARTS AND THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE (owner-directed
        2026-08-26). Each is a per-file amount typed in the studio's manual section; a BLANK box is
@@ -452,6 +453,7 @@ function buildInputs(app, experience, overrides) {
     if (overrides.markupStdPct === '') delete out.markupStdPct;
     if (overrides.markupGoldPct === '') delete out.markupGoldPct;
     if (overrides.markupSilverPct === '') delete out.markupSilverPct;
+    if (overrides.markupSpeedPct === '') delete out.markupSpeedPct;
     if (overrides.markupGoldT1Pct === '') delete out.markupGoldT1Pct;
     /* OUR FEE'S TWO PARTS, THE OPTIONAL SETTLEMENT FEE AND THE CEMA AMOUNT need the SAME explicit
        delete, and it is not the NUMK loop that provides it. That loop SKIPS a blank, which stops a
@@ -521,7 +523,7 @@ function numberOverride(input, key, fallback) {
 function percentOverride(input, key, fallbackFraction) {
   return hasInput(input, key) ? num(input[key]) / 100 : fallbackFraction;
 }
-function markupKeyFor(program) { return program === 'gold' ? 'markupGoldPct' : program === 'silver' ? 'markupSilverPct' : 'markupStdPct'; }
+function markupKeyFor(program) { return program === 'gold' ? 'markupGoldPct' : program === 'silver' ? 'markupSilverPct' : program === 'speed' ? 'markupSpeedPct' : 'markupStdPct'; }
 function markupOverride(input, program) {
   const key = markupKeyFor(program);
   return hasInput(input, key) ? num(input[key]) / 100 : null;
@@ -544,7 +546,7 @@ function setEngineMarkup(program, value) {
    historic behavior byte-for-byte (Gold Tier 1 = 0, every other tier the base/
    override markup). A configured value is what makes Gold Tier 1 controllable —
    exactly the owner's "we don't even have an option to control the best tier". */
-function tierMapKey(program) { return program === 'gold' ? 'gold' : program === 'silver' ? 'silver' : 'standard'; }
+function tierMapKey(program) { return program === 'gold' ? 'gold' : program === 'silver' ? 'silver' : program === 'speed' ? 'speed' : 'standard'; }
 function markupTiersFor(program, input, cd) {
   const out = {};
   const comp = cd && cd.markupTiers && typeof cd.markupTiers === 'object' ? cd.markupTiers[tierMapKey(program)] : null;
@@ -700,8 +702,8 @@ function resolvedOrigPct(program, input, cd) {
   const engineOrigPct = (program === 'gold' ? (GSP.constants && GSP.constants.ORIG_PCT)
     : program === 'silver' ? (SVP && SVP.constants && SVP.constants.ORIG_PCT)
     : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
-  const companyOrigPct = program === 'gold' ? cd.origGoldPct : program === 'silver' ? cd.origSilverPct : cd.origStdPct;
-  const key = program === 'gold' ? 'origGoldPct' : program === 'silver' ? 'origSilverPct' : 'origStdPct';
+  const companyOrigPct = program === 'gold' ? cd.origGoldPct : program === 'silver' ? cd.origSilverPct : program === 'speed' ? cd.origSpeedPct : cd.origStdPct;
+  const key = program === 'gold' ? 'origGoldPct' : program === 'silver' ? 'origSilverPct' : program === 'speed' ? 'origSpeedPct' : 'origStdPct';
   return percentOverride(input, key, companyOrigPct != null ? companyOrigPct / 100 : engineOrigPct);
 }
 
@@ -711,8 +713,9 @@ function normalize(program, input, ev, ladder, opts) {
   // Origination default: per-file override → COMPANY default → engine constant.
   const engineOrigPct = (program === 'gold' ? (GSP.constants && GSP.constants.ORIG_PCT)
     : program === 'silver' ? (SVP && SVP.constants && SVP.constants.ORIG_PCT)
+    : program === 'speed' ? (SPP && SPP.constants && SPP.constants.ORIG_PCT)
     : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
-  const companyOrigPct = program === 'gold' ? cd.origGoldPct : program === 'silver' ? cd.origSilverPct : cd.origStdPct;
+  const companyOrigPct = program === 'gold' ? cd.origGoldPct : program === 'silver' ? cd.origSilverPct : program === 'speed' ? cd.origSpeedPct : cd.origStdPct;
   const defaultOrigPct = (companyOrigPct != null ? companyOrigPct / 100 : engineOrigPct);
   /* THE MANUAL PRODUCT HAS ITS OWN ORIGINATION KNOB (owner-directed 2026-07-30:
      "we don't have a word to enter origination fee for the manual program. We only
@@ -725,15 +728,14 @@ function normalize(program, input, ev, ladder, opts) {
      origination onto origStdPct/origGoldPct only). */
   const origKey = program === 'gold' ? 'origGoldPct'
     : program === 'silver' ? 'origSilverPct'
+    : program === 'speed' ? 'origSpeedPct'
     : (program === 'manual' && hasInput(input, 'origManualPct')) ? 'origManualPct'
     : 'origStdPct';
-  /* THE SPEED PROGRAM CHARGES THE HIGHER ORIGINATION OF ITS TWO PARENTS (owner-directed
-     2026-09-03: "the higher rate and the higher origination fees"). It has no knob of its
-     own — decision D5 — so each parent's figure is resolved through its own chain
-     (per-file override → company default → engine constant) and the larger wins. */
-  const origPct = program === 'speed'
-    ? Math.max(resolvedOrigPct('standard', input, cd), resolvedOrigPct('silver', input, cd))
-    : percentOverride(input, origKey, defaultOrigPct);
+  /* THE SPEED PROGRAM HAS ITS OWN ORIGINATION KNOB (owner-directed 2026-09-03, second
+     message, reversing D5: "adjust the settings and the pricing of the speed program
+     separately, including … the origination fees"): per-file origSpeedPct → company
+     orig_speed_pct (db/694) → 1.25%, the same chain as every other program. */
+  const origPct = percentOverride(input, origKey, defaultOrigPct);
   // Rounding policy (owner-directed 2026-07-09): the financed loan is reported in
   // WHOLE DOLLARS, floored DOWN — never lend more than the engine sized. The
   // reported breakdown must reconcile EXACTLY (initial advance + holdback +
@@ -1309,17 +1311,21 @@ function quoteProgram(program, input, opts) {
   const tiers = program === 'speed' ? null : markupTiersFor(program, input, cd);
   if (tiers) setEngineMarkupTiers(program, tiers);
   if (program === 'speed') {
-    /* THE SPEED PROGRAM prices BOTH parents inside one composition, so BOTH parents'
-       markups are set — Standard's and Silver's own company default / per-file sticky /
-       per-tier overlay, exactly as their own quotes set them — never one shared value.
-       Speed has no markup of its own (decision D5). Everything is reset in finally,
-       so the engines are only ever "hot" during this quote, like every other branch. */
-    const mS = markupFor('standard', input, cd), mV = markupFor('silver', input, cd);
-    const tS = markupTiersFor('standard', input, cd), tV = markupTiersFor('silver', input, cd);
-    if (mS != null) setEngineMarkup('standard', mS);
-    if (mV != null) setEngineMarkup('silver', mV);
-    if (tS) setEngineMarkupTiers('standard', tS);
-    if (tV) setEngineMarkupTiers('silver', tV);
+    /* THE SPEED PROGRAM HAS ITS OWN MARGIN (owner-directed 2026-09-03, second message,
+       reversing D5: "adjust the settings and the pricing of the speed program separately,
+       including adjusting the margins"). The composition still prices BOTH parents and
+       charges the higher rate — but both parents now run at the SPEED margin (per-file
+       sticky file_markup_speed_pct → company markup_speed_pct → the engines' built-in
+       0.5%) and the Speed per-tier overlay, so the note rate is the higher of the two
+       BUY rates plus the Speed margin. Silver's frozen engine still clamps any margin it
+       is handed at 1.00% (its buyer eats spread above one point), so a Speed margin above
+       1.00% is earned only when Standard donates the rate — stated in the admin hint.
+       SPP.setMarkup / setMarkupTiers forward to both parents; reset in finally, so the
+       engines are only ever "hot" during this quote, like every other branch. */
+    const mSpeed = markupFor('speed', input, cd);
+    const tSpeed = markupTiersFor('speed', input, cd);
+    if (mSpeed != null) setEngineMarkup('speed', mSpeed);
+    if (tSpeed) setEngineMarkupTiers('speed', tSpeed);
     try {
       const ev = SPP.evaluate(input);
       if (input.forcePrice && ev.status === 'INELIGIBLE') { ev.status = 'MANUAL'; ev.exitShortfall = 0; }
@@ -1329,13 +1335,11 @@ function quoteProgram(program, input, opts) {
         if (pl && pl.eligible && pl.rows && pl.rows.length) ladder = { maxLtc: pl.maxLtc, binding: pl.binding, rows: pl.rows };
       } catch (_) { /* ladder is best-effort */ }
       // The build-up probes THROUGH the composition (SPP forwards a pinned markup to both
-      // parents) and proves itself or omits — no markup state of Speed's own to restore.
-      return attachRateBuildUp(normalize('speed', input, ev, ladder, opts), 'speed', input, ev, null, null);
+      // parents) and proves itself or omits; the Speed margin state is restored after it.
+      return attachRateBuildUp(normalize('speed', input, ev, ladder, opts), 'speed', input, ev, mSpeed, tSpeed);
     } finally {
-      if (mS != null) setEngineMarkup('standard', null);
-      if (mV != null) setEngineMarkup('silver', null);
-      if (tS) setEngineMarkupTiers('standard', null);
-      if (tV) setEngineMarkupTiers('silver', null);
+      if (mSpeed != null) setEngineMarkup('speed', null);
+      if (tSpeed) setEngineMarkupTiers('speed', null);
     }
   }
   if (program === 'silver') {
@@ -1437,7 +1441,7 @@ function econVersionFor(app) {
     // the sticky per-file markups.
     app.rehab_type, app.sqft_pre, app.sqft_post,
     (app.property_address && app.property_address.state) || '',
-    app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct, app.file_feasibility_fee,
+    app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct, app.file_markup_speed_pct, app.file_feasibility_fee,
     // Our fee's two parts + the optional New York settlement fee — fingerprinted siblings of
     // the feasibility fee, so a change to one re-quotes rather than serving a stale answer.
     app.file_underwriting_fee, app.file_legal_fee, app.file_settlement_fee, app.file_cema_fee, app.ny_cema,

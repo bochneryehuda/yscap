@@ -907,7 +907,7 @@ const BORROWER_HIDDEN_APP_FIELDS = [
   'market_rent',
   // INTERNAL pricing margin + internal valuations — a borrower may see their loan
   // structure but never OUR markup or the internal appraised figures.
-  'file_markup_std_pct', 'file_markup_gold_pct', 'file_markup_silver_pct', 'actual_appraised_value', 'approx_appraised_value',
+  'file_markup_std_pct', 'file_markup_gold_pct', 'file_markup_silver_pct', 'file_markup_speed_pct', 'actual_appraised_value', 'approx_appraised_value',
   // The A/B-piece split (db/579) — how the loan is SOLD, internal knowledge of
   // the same class as the note buyer's name; never a borrower-facing fact
   // (audit 2026-08-18 finding 4: the denylist-over-SELECT-a.* failed open on
