@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ltApi } from './api.js';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, card, eyebrow, sub, input, label, LINE, WASH } from './ppeStyles.js';
 import { askConfirm } from '../lib/dialog.js';
+import { fieldsUsedBy, previewBoxes, buildSample } from './ruleSample.js';
 
 /**
  * THE PRICING RULE CENTER — our own rules, on top of every engine.
@@ -42,6 +43,14 @@ const btn = {
 const btnPrimary = { ...btn, background: GOLD, borderColor: GOLD, color: '#fff' };
 const btnSoft = { ...btn, background: '#FAF8F3', borderColor: 'transparent', fontWeight: 550 };
 const btnDanger = { ...btn, color: DANGER, borderColor: 'rgba(138,47,47,.28)' };
+/* TAKING A CONDITION OUT IS NOT AS IMPORTANT AS WRITING ONE, and it used to be
+   a full-width button sitting in the grid beside the field and the value, at
+   exactly their weight — so a row of three decisions read as a row of four. */
+const btnIcon = {
+  border: `1px solid ${LINE}`, background: '#fff', color: MUTED, borderRadius: 8,
+  width: 30, height: 30, lineHeight: '28px', padding: 0, fontSize: 15, fontWeight: 600,
+  cursor: 'pointer', flex: '0 0 auto',
+};
 const chip = {
   display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 9px',
   borderRadius: 999, fontSize: 11.5, fontWeight: 700, letterSpacing: '.02em',
@@ -69,6 +78,10 @@ export default function LtPricingRules() {
   const [err, setErr] = useState(null);
   const [editing, setEditing] = useState(null);      // the draft rule, or null
   const [events, setEvents] = useState(null);
+  /* TWO VIEWS OF ONE CENTRE — writing the rules, and checking they work.
+     Owner-directed 2026-09-04: *"open audit engines to make sure that every rule
+     is actually firing."* */
+  const [view, setView] = useState('rules');
 
   const flatFields = useMemo(
     () => (cat ? cat.groups.flatMap((g) => g.fields) : []), [cat]);
@@ -98,6 +111,31 @@ export default function LtPricingRules() {
   });
 
   const openRule = (r) => setEditing({ ...r, when: isGroup(r.when) ? r.when : blankTree(flatFields) });
+
+  /**
+   * START A NEW RULE FROM ONE THAT ALREADY WORKS.
+   *
+   * The commonest second rule is the first one with one thing changed — the same
+   * conditions for another state, the same holdback at another loan size — and
+   * rebuilding nine conditions by hand to change one is where mistakes come
+   * from.
+   *
+   * ⛔ IT OPENS A DRAFT, IT DOES NOT SAVE ONE. `id` is dropped, so nothing
+   * exists until the person presses Add — a copy that quietly went live the
+   * moment you clicked Duplicate would be a rule nobody wrote governing every
+   * board. It also comes back SWITCHED OFF and carries "(copy)" in its name, so
+   * a half-edited twin can never be mistaken for the original or start pricing
+   * against it. The deep copy is so editing the draft cannot reach into the card
+   * behind it.
+   */
+  const duplicateRule = (r) => setEditing({
+    ...JSON.parse(JSON.stringify(r)),
+    id: null,
+    name: `${r.name} (copy)`,
+    enabled: false,
+    archivedAt: null,
+    when: isGroup(r.when) ? JSON.parse(JSON.stringify(r.when)) : blankTree(flatFields),
+  });
 
   const afterWrite = async () => { setEditing(null); await load(); };
 
@@ -140,6 +178,29 @@ export default function LtPricingRules() {
         <div style={{ ...card, borderColor: 'rgba(138,47,47,.28)', color: DANGER, marginBottom: 14 }}>{err}</div>
       )}
 
+      <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: `1px solid ${LINE}` }}>
+        {[['rules', 'The rules'], ['audit', 'Are they firing?']].map(([k, lbl]) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setView(k)}
+            aria-current={view === k ? 'page' : undefined}
+            style={{
+              border: 0, background: 'none', cursor: 'pointer', padding: '9px 14px',
+              fontSize: 13.5, fontWeight: view === k ? 750 : 600,
+              color: view === k ? INK : SLATE,
+              borderBottom: `2px solid ${view === k ? GOLD : 'transparent'}`, marginBottom: -1,
+            }}
+          >{lbl}</button>
+        ))}
+      </div>
+
+      {view === 'audit' && <AuditView byKey={byKey} cat={cat} rules={rules} onOpenRule={(id) => {
+        const r = rules.find((x) => x.id === id);
+        if (r) { setView('rules'); openRule(r); }
+      }} />}
+
+      {view === 'rules' && (<>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
         <button type="button" style={btnPrimary} onClick={startNew}>Write a rule</button>
         <button type="button" style={btnSoft} onClick={() => setShowArchived((v) => !v)}>
@@ -180,6 +241,7 @@ export default function LtPricingRules() {
           byKey={byKey}
           actions={cat ? cat.actions : []}
           onOpen={() => openRule(r)}
+          onDuplicate={() => duplicateRule(r)}
           onToggle={() => toggle(r)}
           onArchive={() => archive(r)}
           onRestore={() => restore(r)}
@@ -187,6 +249,7 @@ export default function LtPricingRules() {
       ))}
 
       {events && <History events={events} />}
+      </>)}
 
       {editing && cat && (
         <Editor
@@ -203,8 +266,293 @@ export default function LtPricingRules() {
   );
 }
 
+/**
+ * THE AUDIT — is every rule actually firing?
+ *
+ * Owner-directed 2026-09-04: *"open audit engines to make sure that every rule
+ * is actually firing."*
+ *
+ * ⛔ IT DERIVES NOTHING. Every verdict, every sentence and every number comes
+ * from the server (`/audit`, `/audit/dry-run`), which reads them from the one
+ * module the board's own overlay reads. A screen that worked out "is this rule
+ * broken?" for itself would be a second opinion, and the one that drifts is the
+ * one somebody acts on.
+ *
+ * ⛔ AN UNREADABLE LEDGER SAYS SO. Every counter would be 0, which is the exact
+ * sentence "this rule has never fired" — so a database hiccup would put the
+ * whole centre on screen as broken. The server reports its own `ledgerProblem`
+ * and this says it could not read the numbers instead of drawing zeroes.
+ */
+const VERDICT = {
+  broken:      { label: 'Cannot run',   bg: 'rgba(138,47,47,.10)',  fg: DANGER },
+  never_fired: { label: 'Never fired',  bg: 'rgba(138,47,47,.08)',  fg: DANGER },
+  stale:       { label: 'Not lately',   bg: 'rgba(176,124,42,.12)', fg: CAUTION },
+  not_asked:   { label: 'No boards yet', bg: '#F3F1EC',             fg: SLATE },
+  off:         { label: 'Switched off', bg: '#F3F1EC',              fg: SLATE },
+  archived:    { label: 'Taken out',    bg: '#F3F1EC',              fg: MUTED },
+  firing:      { label: 'Firing',       bg: 'rgba(47,127,134,.12)', fg: '#1F5C61' },
+};
+
+function AuditView({ byKey, cat, rules, onOpenRule }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(true);
+
+  const load = useCallback(async () => {
+    setBusy(true); setErr(null);
+    try { setData(await ltApi.pricingRuleAudit()); }
+    catch (e) { setErr(String((e && e.message) || e)); }
+    finally { setBusy(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  if (busy && !data) return <div style={{ ...card }}>Reading the audit…</div>;
+  if (err) return <div style={{ ...card, borderColor: 'rgba(138,47,47,.28)', color: DANGER }}>{err}</div>;
+  if (!data) return null;
+
+  const rows = data.rows || [];
+  const needsWork = rows.filter((r) => r.verdict === 'broken' || r.verdict === 'never_fired');
+
+  return (
+    <div>
+      <div style={{ ...card, marginBottom: 14 }}>
+        <div style={{ fontSize: 15, fontWeight: 750, color: INK, marginBottom: 4 }}>{data.summary}</div>
+        <p style={{ ...sub, margin: '0 0 10px' }}>
+          Counted over the last {data.windowDays} days, from what the boards actually did. A rule can be
+          saved, switched on and in the right order and still never touch a board — this is the screen
+          that says so.
+        </p>
+        {data.ledgerProblem && (
+          <div style={{ fontSize: 12.5, color: DANGER, fontWeight: 600 }}>
+            The firing record could not be read, so the numbers below are not the real ones: {data.ledgerProblem}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+          {Object.entries(data.counts || {}).filter(([, n]) => n > 0).map(([k, n]) => (
+            <span key={k} style={{ ...chip, background: (VERDICT[k] || {}).bg || '#F3F1EC', color: (VERDICT[k] || {}).fg || SLATE }}>
+              {n} {(VERDICT[k] || {}).label || k}
+            </span>
+          ))}
+          <button type="button" style={{ ...btnSoft, marginLeft: 'auto' }} onClick={load} disabled={busy}>
+            {busy ? 'Reading…' : 'Read it again'}
+          </button>
+        </div>
+      </div>
+
+      {!!needsWork.length && (
+        <div style={{ ...card, marginBottom: 14, borderColor: 'rgba(138,47,47,.28)' }}>
+          <div style={{ fontSize: 13.5, fontWeight: 750, color: DANGER, marginBottom: 6 }}>
+            {needsWork.length === 1 ? 'This one needs looking at' : 'These need looking at'}
+          </div>
+          <p style={{ fontSize: 12.5, color: SLATE, margin: 0, lineHeight: 1.6 }}>
+            A rule that refuses loans and never fires is the dangerous one: nothing goes wrong that anybody
+            can see, and it is only noticed when a loan we meant to refuse gets quoted.
+          </p>
+        </div>
+      )}
+
+      {rows.map((r) => <AuditRow key={r.ruleId || r.name} row={r} onOpen={() => onOpenRule && onOpenRule(r.ruleId)} />)}
+
+      {!rows.length && (
+        <div style={{ ...card }}>
+          <div style={{ fontSize: 14.5, fontWeight: 700, color: INK, marginBottom: 4 }}>Nothing to audit yet</div>
+          <p style={{ ...sub, margin: 0 }}>Write a rule and this screen will tell you whether it is doing anything.</p>
+        </div>
+      )}
+
+      <FireDrill cat={cat} byKey={byKey} rules={rules} onOpenRule={onOpenRule} />
+    </div>
+  );
+}
+
+/** One rule's standing — its verdict, its own sentence, and what it has done. */
+function AuditRow({ row, onOpen }) {
+  const [open, setOpen] = useState(false);
+  const v = VERDICT[row.verdict] || VERDICT.not_asked;
+  const f = row.firing || {};
+  const nums = [
+    ['Boards it was asked on', f.boardsSeen],
+    ['Boards it matched', f.boardsMatched],
+    ['Quotes it moved the price of', f.quotesAdjusted],
+    ['Quotes it refused', f.quotesRefused],
+    ['Investors it blocked', f.rowsBlocked],
+  ].filter(([, n]) => Number(n) > 0);
+
+  return (
+    <div style={{ ...card, marginBottom: 10 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <span style={{ ...chip, background: v.bg, color: v.fg }}>{v.label}</span>
+        <span style={{ fontSize: 14.5, fontWeight: 700, color: INK }}>{row.name || '(unnamed)'}</span>
+        <span style={{ fontSize: 12, color: MUTED }}>
+          {row.engine === 'all' ? 'Both engines' : row.engine === 'general' ? 'General engine' : 'Combined engine'} · order {row.priority}
+        </span>
+        <button type="button" style={{ ...btnSoft, marginLeft: 'auto' }} onClick={() => setOpen((x) => !x)}>
+          {open ? 'Less' : 'More'}
+        </button>
+        {onOpen && row.ruleId && <button type="button" style={btnSoft} onClick={onOpen}>Open the rule</button>}
+      </div>
+
+      <div style={{ fontSize: 13, color: row.verdict === 'broken' || row.verdict === 'never_fired' ? DANGER : SLATE, marginTop: 7, lineHeight: 1.55 }}>
+        {row.headline}
+      </div>
+
+      {!!(row.problems || []).length && (
+        <ul style={{ margin: '8px 0 0', paddingLeft: 18, color: DANGER, fontSize: 12.5, lineHeight: 1.7 }}>
+          {row.problems.map((p, i) => <li key={i}>{p}</li>)}
+        </ul>
+      )}
+      {!!(row.unreadableRows || []).length && (
+        <ul style={{ margin: '8px 0 0', paddingLeft: 18, color: DANGER, fontSize: 12.5, lineHeight: 1.7 }}>
+          {row.unreadableRows.map((p, i) => <li key={i}>{p}</li>)}
+        </ul>
+      )}
+
+      {open && (
+        <div style={{ marginTop: 10, borderTop: `1px solid ${LINE}`, paddingTop: 10 }}>
+          <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 8, lineHeight: 1.6 }}>
+            <strong style={{ color: INK }}>Says:</strong> {row.says}<br />
+            <strong style={{ color: INK }}>Does:</strong> {row.does}
+          </div>
+          {nums.length ? (
+            <div style={{ display: 'grid', gap: 6, gridTemplateColumns: 'repeat(auto-fit,minmax(min(13rem,100%),1fr))' }}>
+              {nums.map(([k, n]) => (
+                <div key={k} style={{ background: WASH, borderRadius: 8, padding: '8px 10px' }}>
+                  <div style={{ fontSize: 11.5, color: MUTED }}>{k}</div>
+                  <div style={{ fontSize: 16, fontWeight: 750, color: INK }}>{Number(n).toLocaleString()}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12.5, color: MUTED }}>Nothing recorded for this rule in this period.</div>
+          )}
+          {f.lastAt && (
+            <div style={{ fontSize: 12, color: MUTED, marginTop: 8 }}>
+              Last did something {new Date(f.lastAt).toLocaleString()}.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * THE FIRE DRILL — one loan, every rule, and for each one that does not fire,
+ * WHICH condition stopped it.
+ *
+ * The owner's *"make sure that every rule that you fire will actually work"* in
+ * its most direct form: instead of waiting for a board to prove a rule works,
+ * describe a loan and ask.
+ */
+function FireDrill({ cat, byKey, rules, onOpenRule }) {
+  const [open, setOpen] = useState(false);
+  const [sample, setSample] = useState({});
+  const [engine, setEngine] = useState('general');
+  const [out, setOut] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  /* THE BOXES ARE WHAT THE RULES THEMSELVES READ, across all of them — this
+     screen tries every rule at once, so asking about a fact no rule reads is
+     noise and leaving out one they do read is the defect this replaces.
+     Six boxes were hard-coded here, and one of them — "Loan amount" — sent
+     `loanAmount` while the pricer reads `loan`, so it had never once been
+     read: a rule on the loan amount was reported as not firing because the
+     amount was "not stated", to somebody looking straight at the number they
+     had typed. That is exactly why the box names now come from the server. */
+  const usedKeys = useMemo(() => {
+    const seen = [];
+    for (const r of (rules || [])) fieldsUsedBy(r.when, seen);
+    return seen;
+  }, [rules]);
+  const boxes = useMemo(() => previewBoxes(usedKeys, cat, byKey), [usedKeys, cat, byKey]);
+
+  const run = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const built = buildSample(boxes, sample);
+      setOut(await ltApi.pricingRuleDryRun({ scenario: built.scenario, quote: built.quote, engine }));
+    } catch (e) { setErr(String((e && e.message) || e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ ...card, marginTop: 16 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 14.5, fontWeight: 750, color: INK }}>Try every rule against one loan</div>
+          <div style={{ ...sub, margin: 0 }}>Describe a loan and see which rules fire — and why the others do not.</div>
+        </div>
+        <button type="button" style={{ ...btnSoft, marginLeft: 'auto' }} onClick={() => setOpen((v) => !v)}>
+          {open ? 'Close' : 'Open'}
+        </button>
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 12, borderTop: `1px solid ${LINE}`, paddingTop: 12 }}>
+          <div style={{ fontSize: 12.5, color: MUTED, marginBottom: 8 }}>
+            {boxes.length
+              ? 'Only what your rules actually read. Leave a box empty to say nothing about it.'
+              : 'Write a rule and the loan it reads will appear here to fill in.'}
+          </div>
+          <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(min(9rem,100%),1fr))' }}>
+            {boxes.map((b) => (
+              <div key={b.factKey}>
+                <label style={label} htmlFor={`fd-${b.factKey}`}>{b.field.label}</label>
+                <SampleInput id={`fd-${b.factKey}`} field={b.field} value={sample[b.factKey]}
+                  onChange={(v) => setSample((m) => ({ ...m, [b.factKey]: v }))} />
+              </div>
+            ))}
+            <div>
+              <label style={label}>Board</label>
+              <select style={input} value={engine} onChange={(e) => setEngine(e.target.value)}>
+                <option value="general">General engine</option>
+                <option value="combined">Combined engine</option>
+              </select>
+            </div>
+          </div>
+
+          <button type="button" style={{ ...btnPrimary, marginTop: 10 }} onClick={run} disabled={busy}>
+            {busy ? 'Trying…' : 'Try every rule'}
+          </button>
+
+          {err && <div style={{ fontSize: 12.5, color: DANGER, marginTop: 8 }}>{err}</div>}
+
+          {out && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: INK, marginBottom: 8 }}>{out.summary}</div>
+              {(out.rows || []).map((r) => (
+                <div key={r.ruleId || r.name} style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 10, marginBottom: 8, background: '#fff' }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                    <span style={{ ...chip, background: r.wouldRun ? 'rgba(47,127,134,.12)' : '#F3F1EC', color: r.wouldRun ? '#1F5C61' : SLATE }}>
+                      {r.wouldRun ? 'Fires' : 'Does not fire'}
+                    </span>
+                    <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{r.name || '(unnamed)'}</span>
+                    {!r.enabled && <span style={{ fontSize: 11.5, color: MUTED }}>switched off</span>}
+                    {r.archived && <span style={{ fontSize: 11.5, color: MUTED }}>taken out</span>}
+                    {!r.governs && <span style={{ fontSize: 11.5, color: CAUTION }}>written for the other board</span>}
+                    {onOpenRule && r.ruleId && (
+                      <button type="button" style={{ ...btnSoft, marginLeft: 'auto' }} onClick={() => onOpenRule(r.ruleId)}>Open</button>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12.5, color: r.broken ? DANGER : SLATE, marginTop: 6, lineHeight: 1.55 }}>{r.headline}</div>
+                  {!r.fires && !!(r.blockers || []).length && (
+                    <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: SLATE, fontSize: 12.5, lineHeight: 1.7 }}>
+                      {r.blockers.map((b, i) => <li key={i}>{b.why}</li>)}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** One rule, as a card that says what it does before anybody opens it. */
-function RuleCard({ rule, byKey, actions, onOpen, onToggle, onArchive, onRestore }) {
+function RuleCard({ rule, byKey, actions, onOpen, onDuplicate, onToggle, onArchive, onRestore }) {
   const off = !rule.enabled;
   const gone = !!rule.archivedAt;
   const stop = (rule.then || []).find((a) => a.type === 'ineligible' || a.type === 'block_investor');
@@ -239,6 +587,7 @@ function RuleCard({ rule, byKey, actions, onOpen, onToggle, onArchive, onRestore
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {!gone && <button type="button" style={btnSoft} onClick={onOpen}>Open</button>}
+          {!gone && <button type="button" style={btnSoft} onClick={onDuplicate}>Duplicate</button>}
           {!gone && <button type="button" style={btn} onClick={onToggle}>{off ? 'Turn on' : 'Turn off'}</button>}
           {!gone
             ? <button type="button" style={btnDanger} onClick={onArchive}>Take out</button>
@@ -285,12 +634,34 @@ function sayActions(list, actions) {
   }).join('; ') || 'nothing';
 }
 
+/* ── TRYING A RULE ON A SAMPLE LOAN ────────────────────────────────────────
+ *
+ * Owner-directed 2026-09-04 ("a little more user-friendly"). The panel used to
+ * offer four fixed boxes — state, loan amount, prepayment months, DSCR — while
+ * the grammar reads FORTY-EIGHT loan and property facts. So a rule about FICO,
+ * LTV, property type or a credit event was tried against a loan that stated
+ * none of them, came back "It does not match this loan", and read as the rule
+ * being broken. It now asks for exactly the facts THIS rule reads.
+ *
+ * ⛔ THE DERIVATION LIVES IN `ruleSample.js`, NOT HERE, and that is deliberate:
+ * which boxes come out for a given rule is arithmetic, and a source guard over
+ * this file could only ever pin the spelling of the call. It is a plain module
+ * so the test can call it and assert the answer.
+ *
+ * ⛔ WHICH BOX FILLS WHICH FACT COMES FROM THE SERVER (`cat.scenarioInput` /
+ * `cat.quoteInput`). Never re-type one here; add it to `facts.js` and it
+ * appears in both screens on its own.
+ */
+
 /** The builder. */
 function Editor({ draft, setDraft, cat, byKey, onClose, onSaved, onError }) {
   const [problems, setProblems] = useState([]);
   const [busy, setBusy] = useState(false);
   const [tried, setTried] = useState(null);
-  const [scenario, setScenario] = useState({ state: 'NJ', loan: 250000, prepayMonths: 60, dscr: 1.2 });
+  /* KEYED ON THE FACT, not on the box name — the boxes come and go as the rule
+     is edited, and a value typed for FICO must still be there when another
+     condition is added beside it. */
+  const [sample, setSample] = useState({});
 
   const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
   const flat = cat.groups.flatMap((g) => g.fields);
@@ -312,14 +683,17 @@ function Editor({ draft, setDraft, cat, byKey, onClose, onSaved, onError }) {
     } finally { setBusy(false); }
   };
 
+  const boxes = previewBoxes(fieldsUsedBy(draft.when), cat, byKey);
+
   const tryIt = async () => {
     setBusy(true); setProblems([]);
     try {
+      const built = buildSample(boxes, sample);
       const out = await ltApi.pricingRuleTest({
         rule: { name: draft.name || 'trying it', engine: draft.engine, when: draft.when, then: draft.then, reason: draft.reason },
-        scenario,
+        scenario: built.scenario,
         engine: draft.engine === 'combined' ? 'combined' : 'general',
-        quote: { price: 100, points: 0, noteRate: 7.5 },
+        quote: built.quote,
       });
       setTried(out);
     } catch (e) {
@@ -362,6 +736,26 @@ function Editor({ draft, setDraft, cat, byKey, onClose, onSaved, onError }) {
         <Actions list={draft.then} cat={cat} onChange={(t) => set({ then: t })} />
       </div>
 
+      {/* READ IT BACK IN WORDS, WHILE IT IS BEING WRITTEN.
+          The owner is not a developer, and a rule is nine dropdowns until
+          somebody says it out loud. The saved cards have always shown this
+          sentence — the one moment it is worth most is BEFORE you save, and it
+          was the one moment it was missing.
+          ⛔ IT IS THE SAME `sayTree`/`sayActions` THE CARDS USE, so the sentence
+          you approve is the sentence the list will show. A second wording here
+          would be a second opinion about what your own rule says. */}
+      <div style={{
+        marginTop: 14, padding: '10px 12px', borderRadius: 10,
+        background: WASH, border: `1px solid ${LINE}`,
+      }}>
+        <div style={{ ...eyebrow, marginBottom: 4 }}>In words</div>
+        <div style={{ fontSize: 13.5, color: INK, lineHeight: 1.6 }}>
+          {sayTree(draft.when, byKey, 0)
+            ? <>When <strong>{sayTree(draft.when, byKey, 0)}</strong>, {sayActions(draft.then, cat.actions)}.</>
+            : <span style={{ color: MUTED }}>Pick a field above and this will read your rule back to you.</span>}
+        </div>
+      </div>
+
       <div style={{ marginTop: 14 }}>
         <label style={label} htmlFor="pr-note">A note for whoever reads this next (optional)</label>
         <input id="pr-note" style={input} value={draft.note || ''} onChange={(e) => set({ note: e.target.value })} />
@@ -375,15 +769,28 @@ function Editor({ draft, setDraft, cat, byKey, onClose, onSaved, onError }) {
 
       <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${LINE}` }}>
         <div style={{ ...eyebrow, marginBottom: 6 }}>Try it before you turn it on</div>
-        <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(min(10rem,100%),1fr))' }}>
-          {[['state', 'State'], ['loan', 'Loan amount'], ['prepayMonths', 'Prepay (months)'], ['dscr', 'DSCR']].map(([k, l]) => (
-            <div key={k}>
-              <label style={label} htmlFor={`pr-sc-${k}`}>{l}</label>
-              <input id={`pr-sc-${k}`} style={input} value={scenario[k] ?? ''}
-                onChange={(e) => setScenario((s) => ({ ...s, [k]: e.target.value }))} />
+        {!boxes.length && (
+          <div style={{ fontSize: 13, color: MUTED, marginBottom: 10 }}>
+            Pick a field above and a box will appear here to try it against.
+          </div>
+        )}
+        {!!boxes.length && (
+          <>
+            <div style={{ fontSize: 12.5, color: MUTED, marginBottom: 8 }}>
+              A sample loan, asking only for what this rule reads. Leave a box empty to
+              say nothing about it — a rule about something you have not stated will not match.
             </div>
-          ))}
-        </div>
+            <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(min(11rem,100%),1fr))' }}>
+              {boxes.map((b) => (
+                <div key={b.factKey}>
+                  <label style={label} htmlFor={`pr-sc-${b.factKey}`}>{b.field.label}</label>
+                  <SampleInput id={`pr-sc-${b.factKey}`} field={b.field} value={sample[b.factKey]}
+                    onChange={(v) => setSample((m) => ({ ...m, [b.factKey]: v }))} />
+                </div>
+              ))}
+            </div>
+          </>
+        )}
         <button type="button" style={{ ...btnSoft, marginTop: 10 }} onClick={tryIt} disabled={busy}>Try this loan</button>
         {tried && (
           <div style={{ marginTop: 10, fontSize: 13, color: SLATE, lineHeight: 1.6 }}>
@@ -492,9 +899,12 @@ function Row({ row, fields, byKey, cat, onChange, onDrop }) {
 
   return (
     <div style={{
-      display: 'grid', gap: 8, alignItems: 'end',
-      gridTemplateColumns: 'repeat(auto-fit,minmax(min(11rem,100%),1fr))',
+      display: 'flex', gap: 8, alignItems: 'flex-end',
       border: `1px solid ${LINE}`, borderRadius: 10, padding: 10, background: '#fff',
+    }}>
+    <div style={{
+      display: 'grid', gap: 8, alignItems: 'end', flex: '1 1 auto', minWidth: 0,
+      gridTemplateColumns: 'repeat(auto-fit,minmax(min(11rem,100%),1fr))',
     }}>
       <div>
         <label style={label}>Field</label>
@@ -520,12 +930,12 @@ function Row({ row, fields, byKey, cat, onChange, onDrop }) {
             value={row.value} onChange={(v) => onChange({ ...row, value: v })} />
         </div>
       )}
-      <div>
-        <button type="button" style={btnSoft} onClick={onDrop}>Remove</button>
-      </div>
       {f && f.help && (
         <div style={{ gridColumn: '1/-1', fontSize: 12, color: MUTED }}>{f.help}</div>
       )}
+    </div>
+    <button type="button" style={btnIcon} onClick={onDrop}
+      title="Take this condition out" aria-label="Take this condition out">×</button>
     </div>
   );
 }
@@ -572,6 +982,40 @@ function ValueInput({ field, isList, isRange, value, onChange }) {
     );
   }
   return <input style={input} value={value ?? ''} onChange={(e) => onChange(e.target.value)} />;
+}
+
+/**
+ * One box on the sample loan, drawn from the field's own type.
+ *
+ * EVERY BOX CAN BE LEFT BLANK, and blank is a real answer here: it means the
+ * sample says nothing about that fact. So a yes/no field gets three states, not
+ * two — a rule reading "is not rural" must be triable against a loan that does
+ * not say, which is what a live board hands it most of the time.
+ */
+function SampleInput({ id, field, value, onChange }) {
+  const common = { id, style: input, value: value ?? '' };
+  if (field.type === 'boolean') {
+    return (
+      <select {...common} onChange={(e) => onChange(e.target.value)}>
+        <option value="">Not stated</option>
+        <option value="yes">Yes</option>
+        <option value="no">No</option>
+      </select>
+    );
+  }
+  if (field.options && field.options.length) {
+    return (
+      <select {...common} onChange={(e) => onChange(e.target.value)}>
+        <option value="">Not stated</option>
+        {field.options.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+      </select>
+    );
+  }
+  if (field.type === 'money' || field.type === 'pct' || field.type === 'number') {
+    return <input {...common} type="number" step="any" inputMode="decimal"
+      placeholder="Not stated" onChange={(e) => onChange(e.target.value)} />;
+  }
+  return <input {...common} placeholder="Not stated" onChange={(e) => onChange(e.target.value)} />;
 }
 
 /** What the rule does. */

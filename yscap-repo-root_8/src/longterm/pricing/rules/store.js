@@ -281,7 +281,112 @@ async function events(opts) {
   }));
 }
 
+/**
+ * WHAT EVERY RULE HAS ACTUALLY DONE — the firing ledger (db/697), rolled up.
+ *
+ * Owner-directed 2026-09-04: *"open audit engines to make sure that every rule
+ * is actually firing."*
+ *
+ * ⛔ NEVER THROWS, for the same reason `liveRules` never throws: this feeds a
+ * screen ABOUT the rules, and an audit that cannot be read must cost the officer
+ * the numbers, never the page. A failure answers an empty map plus the problem,
+ * and the screen says it could not read the ledger rather than drawing an
+ * all-zero table that reads as "nothing has ever fired".
+ *
+ * ⛔ THE WINDOW IS A FLOOR, NOT A FILTER ON `first_at`/`last_at`. Rows are
+ * bucketed by DAY, so a rule that last fired six months ago has no row inside a
+ * 90-day window at all — and `firstAt`/`lastAt` are therefore the first and last
+ * moments WITHIN the window, which is what the screen must say. "Has this ever
+ * fired?" is answered by the separate all-time query below, never by inspecting
+ * a windowed total.
+ */
+async function firingSummary(opts) {
+  const o = opts || {};
+  const days = Number.isFinite(Number(o.days)) && Number(o.days) > 0 ? Math.min(3650, Math.floor(Number(o.days))) : 90;
+  const out = new Map();
+  try {
+    const { rows } = await db.query(
+      `SELECT rule_id,
+              engine,
+              SUM(boards_seen)      AS boards_seen,
+              SUM(boards_matched)   AS boards_matched,
+              SUM(quotes_reached)   AS quotes_reached,
+              SUM(quotes_adjusted)  AS quotes_adjusted,
+              SUM(quotes_refused)   AS quotes_refused,
+              SUM(rows_blocked)     AS rows_blocked,
+              SUM(unreadable)       AS unreadable,
+              MIN(first_at)         AS first_at,
+              MAX(last_at)          AS last_at
+         FROM lt_pricing_rule_firing
+        WHERE day >= (CURRENT_DATE - ($1::int - 1))
+        GROUP BY rule_id, engine`,
+      [days]);
+    for (const r of rows) {
+      const id = String(r.rule_id);
+      if (!out.has(id)) out.set(id, { ruleId: id, engines: {}, total: blankFiring() });
+      const cur = out.get(id);
+      const one = readFiring(r);
+      cur.engines[r.engine] = one;
+      addFiring(cur.total, one);
+    }
+    /* HAS IT *EVER* FIRED — asked over the WHOLE table, deliberately outside the
+       window. A rule that fired last year and not since is a very different
+       finding from one that has never fired at all, and the window cannot tell
+       them apart. */
+    const { rows: ever } = await db.query(
+      `SELECT rule_id, MAX(last_at) AS last_at
+         FROM lt_pricing_rule_firing
+        WHERE last_at IS NOT NULL
+        GROUP BY rule_id`);
+    for (const r of ever) {
+      const id = String(r.rule_id);
+      if (!out.has(id)) out.set(id, { ruleId: id, engines: {}, total: blankFiring() });
+      out.get(id).everFiredAt = r.last_at || null;
+    }
+    return { days, byRule: out, problem: null };
+  } catch (e) {
+    return { days, byRule: new Map(), problem: e && e.message ? String(e.message) : 'the firing ledger could not be read' };
+  }
+}
+
+/* `bigint` comes back from pg as a STRING (it does not fit a JS number), so every
+   counter is read through Number() rather than used as it arrives — a template
+   would otherwise print "12" + "3" as "123". */
+const bigNum = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
+function blankFiring() {
+  return { boardsSeen: 0, boardsMatched: 0, quotesReached: 0, quotesAdjusted: 0, quotesRefused: 0, rowsBlocked: 0, unreadable: 0, firstAt: null, lastAt: null };
+}
+
+function readFiring(r) {
+  return {
+    boardsSeen: bigNum(r.boards_seen),
+    boardsMatched: bigNum(r.boards_matched),
+    quotesReached: bigNum(r.quotes_reached),
+    quotesAdjusted: bigNum(r.quotes_adjusted),
+    quotesRefused: bigNum(r.quotes_refused),
+    rowsBlocked: bigNum(r.rows_blocked),
+    unreadable: bigNum(r.unreadable),
+    firstAt: r.first_at || null,
+    lastAt: r.last_at || null,
+  };
+}
+
+function addFiring(acc, one) {
+  acc.boardsSeen += one.boardsSeen;
+  acc.boardsMatched += one.boardsMatched;
+  acc.quotesReached += one.quotesReached;
+  acc.quotesAdjusted += one.quotesAdjusted;
+  acc.quotesRefused += one.quotesRefused;
+  acc.rowsBlocked += one.rowsBlocked;
+  acc.unreadable += one.unreadable;
+  if (one.firstAt && (!acc.firstAt || one.firstAt < acc.firstAt)) acc.firstAt = one.firstAt;
+  if (one.lastAt && (!acc.lastAt || one.lastAt > acc.lastAt)) acc.lastAt = one.lastAt;
+}
+
 module.exports = {
   liveRules, listRules, getRule, createRule, updateRule, archiveRule, restoreRule, events,
-  problemsWith, shape, MAX_NAME, _internals: { normalize, logEvent, inTx },
+  firingSummary,
+  problemsWith, shape, MAX_NAME, _internals: { normalize, logEvent, inTx, blankFiring, readFiring, addFiring },
 };
+

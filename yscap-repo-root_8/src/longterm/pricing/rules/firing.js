@@ -1,0 +1,174 @@
+'use strict';
+/**
+ * LONG-TERM — TURNING ONE BOARD'S OVERLAY RESULT INTO FIRING COUNTS.
+ *
+ * Owner-directed 2026-09-04: *"open audit engines to make sure that every rule
+ * is actually firing."*
+ *
+ * The overlay already reports, per board, what every rule did. Nothing kept it,
+ * so the question "has this rule ever fired?" had no answer at all. This module
+ * is the pure half of keeping it: overlay result in, counter deltas out.
+ * `ledger.js` beside it does the writing, and is the only impure half.
+ *
+ * ── WHY THE DENOMINATOR IS THE POINT ───────────────────────────────────────
+ *
+ * ⛔ `boardsSeen` IS THE WHOLE VALUE OF THIS FILE, and it is the one number the
+ * overlay does not report. Without it "this rule has matched 0 quotes" is
+ * unreadable, because it is the same sentence for two opposite situations:
+ *
+ *   asked 4,000 times, matched 0  → the rule is WRONG. Fix it today.
+ *   asked 0 times,     matched 0  → nobody has priced a board it governs yet.
+ *
+ * So every rule IN FORCE is counted as seen, whether or not it matched. In force
+ * means enabled AND governing this engine — judged with the overlay's own
+ * `governs`, never a second copy of that test, because a rule counted as seen on
+ * a board it does not govern would report a healthy denominator for a rule that
+ * is not actually being asked.
+ *
+ * PURE: no database, no network, no clock — the caller passes the clock in.
+ */
+
+const overlay = require('./overlay');
+
+/** UTC day, as `YYYY-MM-DD`. The bucket db/697 keys on. */
+function dayOf(at) {
+  const d = at instanceof Date ? at : new Date(at || Date.now());
+  const t = Number.isFinite(d.getTime()) ? d : new Date();
+  return t.toISOString().slice(0, 10);
+}
+
+/** An empty counter row, so every delta has every key and a writer never sees undefined. */
+function blank(ruleId, ruleName, engine, day) {
+  return {
+    ruleId,
+    ruleName: ruleName == null ? null : String(ruleName),
+    engine,
+    day,
+    boardsSeen: 0,
+    boardsMatched: 0,
+    quotesReached: 0,
+    quotesAdjusted: 0,
+    quotesRefused: 0,
+    rowsBlocked: 0,
+    unreadable: 0,
+    at: null,
+  };
+}
+
+const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
+/**
+ * ONE BOARD → ONE DELTA PER RULE IN FORCE.
+ *
+ * @param {object} result  what `overlay.apply` returned ({applied, ineligible, blocked, problems, ran})
+ * @param {object} opts    {rules, engine, at}
+ * @returns {Array} one delta per rule that was in force on this board
+ */
+function deltasFrom(result, opts = {}) {
+  const engine = opts.engine === 'combined' ? 'combined' : 'general';
+  const day = dayOf(opts.at);
+  const at = opts.at instanceof Date ? opts.at : new Date(opts.at || Date.now());
+  const stamp = Number.isFinite(at.getTime()) ? at : new Date();
+
+  const rules = Array.isArray(opts.rules) ? opts.rules : [];
+  const out = new Map();
+
+  /* EVERY RULE IN FORCE IS SEEN, MATCHED OR NOT — the denominator. A rule with
+     no id is skipped rather than bucketed under `null`, which would merge every
+     unsaved rule in the system into one meaningless row; only the `/test` door
+     produces one, and it does not write to the ledger. */
+  for (const r of rules) {
+    if (!r || !r.id) continue;
+    if (r.enabled === false) continue;
+    if (!overlay.governs(r, engine)) continue;
+    const d = blank(r.id, r.name, engine, day);
+    d.boardsSeen = 1;
+    out.set(r.id, d);
+  }
+
+  const res = result || {};
+  /* ⛔ A BOARD THE OVERLAY NEVER RAN ON CONTRIBUTES NOTHING — decided HERE, in
+     the pure half, not only in the writer. `ran: false` means there were no
+     rules in force, or the board had already been overlaid (the combined
+     engine's `?shape=options` pass is the same board a second time). Counting
+     `boardsSeen` for it inflates every denominator with boards the rule was
+     never actually on, and counting the second pass would report every quote
+     twice. The writer keeps its own check so it can return before doing any
+     work at all. */
+  if (res.ran === false) return [];
+  /* A RULE THAT DID SOMETHING BUT IS NOT IN THE IN-FORCE LIST STILL COUNTS.
+     It cannot happen from the two engines, which pass the same list the overlay
+     ran — but a caller that passed a trimmed list would otherwise silently drop
+     real firings, and a ledger that under-reports is worse than one that has a
+     row it cannot explain. Its `boardsSeen` stays 0, which is itself the signal. */
+  const touch = (ruleId, name) => {
+    if (!ruleId) return null;
+    if (!out.has(ruleId)) out.set(ruleId, blank(ruleId, name, engine, day));
+    const d = out.get(ruleId);
+    if (d.ruleName == null && name != null) d.ruleName = String(name);
+    return d;
+  };
+
+  for (const a of Array.isArray(res.applied) ? res.applied : []) {
+    const d = touch(a && a.ruleId, a && a.name);
+    if (!d) continue;
+    d.boardsMatched = 1;
+    d.quotesReached += num(a.quotes);
+    d.quotesAdjusted += num(a.adjustedQuotes);
+    d.at = stamp;
+  }
+
+  for (const i of Array.isArray(res.ineligible) ? res.ineligible : []) {
+    const d = touch(i && i.ruleId, i && i.rule);
+    if (!d) continue;
+    d.boardsMatched = 1;
+    d.quotesRefused += 1;
+    d.at = stamp;
+  }
+
+  for (const b of Array.isArray(res.blocked) ? res.blocked : []) {
+    const d = touch(b && b.ruleId, b && b.rule);
+    if (!d) continue;
+    d.boardsMatched = 1;
+    d.rowsBlocked += 1;
+    d.at = stamp;
+  }
+
+  /* A RULE THE OVERLAY COULD NOT READ IS A FIRING EVENT OF ITS OWN. It did not
+     match and it did not act — it was REFUSED, and the centre has to say so.
+     Counting it as a plain non-match would leave a broken rule looking merely
+     unlucky, which is the exact confusion this whole table exists to end. */
+  for (const p of Array.isArray(res.problems) ? res.problems : []) {
+    const d = touch(p && p.ruleId, p && p.name);
+    if (!d) continue;
+    d.unreadable += 1;
+    d.at = stamp;
+  }
+
+  return [...out.values()];
+}
+
+/** Fold many deltas into one row per (ruleId, day, engine) — what the writer upserts. */
+function merge(deltas) {
+  const out = new Map();
+  for (const d of Array.isArray(deltas) ? deltas : []) {
+    if (!d || !d.ruleId) continue;
+    const key = `${d.ruleId}\u0000${d.day}\u0000${d.engine}`;
+    const cur = out.get(key);
+    if (!cur) { out.set(key, { ...d }); continue; }
+    cur.boardsSeen += num(d.boardsSeen);
+    cur.boardsMatched += num(d.boardsMatched);
+    cur.quotesReached += num(d.quotesReached);
+    cur.quotesAdjusted += num(d.quotesAdjusted);
+    cur.quotesRefused += num(d.quotesRefused);
+    cur.rowsBlocked += num(d.rowsBlocked);
+    cur.unreadable += num(d.unreadable);
+    if (d.ruleName != null) cur.ruleName = d.ruleName;
+    /* THE LATEST MOMENT WINS, and a null never overwrites a real one — a board
+       where the rule was merely seen must not erase the moment it last fired. */
+    if (d.at && (!cur.at || d.at > cur.at)) cur.at = d.at;
+  }
+  return [...out.values()];
+}
+
+module.exports = { deltasFrom, merge, dayOf, _internals: { blank } };
