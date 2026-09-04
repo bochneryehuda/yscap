@@ -29,8 +29,10 @@
  * report. Both exclusions are narrow and stated; a real collision is tens of points, not one.
  *
  * Run: node scripts/render-fee-audit.js
- * SKIPs (exit 0) without Playwright/Chromium — CI has no browser, which is why this is not in the
- * `npm test` chain; `scripts/test-fee-audit-pure.js` carries the guards CI can enforce.
+ * SKIPs (exit 0) without Playwright/Chromium — CI has no browser, so on CI this run is a skip and
+ * `scripts/test-fee-audit-pure.js` carries the guards CI can enforce. It IS in the `npm test` chain
+ * as of 2026-09-04: a harness outside the chain is a harness nobody runs, and this one sat red
+ * through a merge and a deploy once already.
  */
 const path = require('path');
 const fs = require('fs');

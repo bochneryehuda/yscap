@@ -27,7 +27,7 @@
  * It refuses to pass on a page where it measured nothing — the trap that made three earlier
  * harnesses in this repo report ALL GREEN while comparing zero pairs.
  *
- * Browser-dependent, so NOT in `npm test` (the `render-fee-audit` convention); SKIPs without
+ * Browser-dependent, and IN `npm test` since 2026-09-04 — it SKIPs without
  * Playwright. The CSS half is pinned by H8d/H8e in `test-lender-fees-pure`, which runs in CI.
  */
 const path = require('path'); let chromium = null;

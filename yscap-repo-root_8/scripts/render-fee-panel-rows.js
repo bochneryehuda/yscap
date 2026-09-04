@@ -15,7 +15,7 @@
  *   - That card TOGGLES, so a blind click shuts it again (the documented trap) — it is clicked
  *     only when `progDetail.offsetParent === null`.
  *
- * Browser-dependent, so NOT in `npm test` (the `render-fee-audit` convention); SKIPs without
+ * Browser-dependent, and IN `npm test` since 2026-09-04 — it SKIPs without
  * Playwright. The markup half is pinned by H7/H7a/H8 in `test-lender-fees-pure`, which runs in CI.
  */
 const path=require('path'); let chromium=null;

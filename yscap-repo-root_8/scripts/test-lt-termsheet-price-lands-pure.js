@@ -235,24 +235,47 @@ console.log('\nE. the browser actually SENDS it — a server rule nothing feeds 
   /* …AND ONLY THEN. An unopened row must send nothing, or every ordinary issue would
      start being judged against a build nobody has. */
   ok(send({ priceBuild: { basePoints: -0.34, adjustmentPoints: null, adjustedPoints: -1.965 } }) == null,
-    'E3 a half-fetched build sends nothing at all');
+    'E3 a half-fetched build, with nothing remembered, sends nothing at all');
   ok(send({}) == null && send(null) == null,
     'E4 …and so does a row with no build, and no row');
 
+  /* ⛔ THE FIXTURE IS THE ROW THE PRODUCER ACTUALLY PUBLISHES, NOT A CONVENIENT ONE.
+     The first cut of this section tested `{ priceBuild: null }` — a shape no board row
+     has ever had — so it passed over a `landingOf` that returned null for every LoanNEX
+     row on the two Add doors this section exists to guard. `programsFromLoanNex` writes
+     a priceBuild on EVERY row, carrying the derived points with the two itemised figures
+     null, and it is that TRUTHINESS that defeated the old `||`. Pinned against the
+     producer's own source below, so the fixture cannot quietly stop being the real one. */
+  const NEX_SRC = fs.readFileSync(path.join(__dirname, '..', 'src/longterm/pricing/quote-shape.js'), 'utf8');
+  const nexFn = NEX_SRC.slice(NEX_SRC.indexOf('function programsFromLoanNex'));
+  ok(/basePoints:\s*null,\s*adjustmentPoints:\s*null/.test(nexFn.slice(0, 2000)),
+    'E5a the LoanNEX producer really publishes a priceBuild whose two itemised figures are null');
+  ok(/priceBuild:\s*\{/.test(nexFn.slice(0, 2000)),
+    'E5b …on every row it publishes, so the object is always truthy');
+
+  const LOANNEX_ROW = {
+    priceBuild: {
+      noteRate: 7.375, price: 101.965, adjustedPoints: -1.965,
+      pointsDerivedFromPrice: true, basePoints: null, adjustmentPoints: null,
+    },
+  };
+
   /* ⛔ THE ROW'S OWN ADD BUTTON, which is the door the audit found unguarded. One of
      the two rate sheets explains a row ON DEMAND, so the itemisation lands in the
-     panel's local state and the row above goes on holding an option with no build.
+     panel's local state and the row above goes on holding a build with holes in it.
      The board remembers what was explained and `landingOf` reads it, or every option
      collected into a comparison reaches the document unchecked. */
-  const remembered = send({ priceBuild: null }, FETCHED);
-  ok(remembered && remembered.adjustedPoints === -1.965,
-    `E5 a row the board has been SHOWN a build for sends it, even though its own option carries none (${JSON.stringify(remembered)})`);
+  const remembered = send(LOANNEX_ROW, FETCHED);
+  ok(remembered && remembered.adjustedPoints === -1.965 && remembered.basePoints === -0.34,
+    `E5 a REAL LoanNEX row the board has been SHOWN a build for sends it, though its own build has holes (${JSON.stringify(remembered)})`);
+  ok(send(LOANNEX_ROW) == null,
+    'E5c …and the same real row with nothing remembered still sends nothing');
   ok(send(null, FETCHED) != null, 'E6 …with no option at all, the remembered build still answers');
-  /* The option in hand wins: it is the one the caller is talking about. */
+  /* The option in hand wins — but only when it has something to say. */
   const OTHER = { basePoints: 1, adjustmentPoints: 1, adjustedPoints: 2 };
   const both = send({ priceBuild: FETCHED }, OTHER);
   ok(both && both.adjustedPoints === -1.965,
-    'E7 …and an option that carries its own build is never overruled by the remembered one');
+    'E7 …and an option that carries a WHOLE build of its own is never overruled by the remembered one');
   ok(send({ priceBuild: null }, { basePoints: 1, adjustmentPoints: null, adjustedPoints: 2 }) == null,
     'E8 a half-remembered build is as absent as no build — a partial landing never reads as a checked one');
 
@@ -261,8 +284,27 @@ console.log('\nE. the browser actually SENDS it — a server rule nothing feeds 
      fills it and the board passes it. */
   ok(/if \(ts && ts\.noteExplained\) ts\.noteExplained\(/.test(CODE),
     'E9 the price panel tells the board what the rate sheet explained');
-  ok(/priceLanding: landingOf\(o, explained\[/.test(CODE),
-    'E10 …and the selection reads that memory, keyed on the quote');
+  ok(/priceLanding: landingOf\(o, explained\[explainMemoryKey\(o\)\]\)/.test(CODE),
+    'E10 …and the selection reads that memory, keyed on the QUOTE\'s identity');
+  /* ⛔ AND NOT ON ITS SLOT. `${pi}:${oi}` is the row's POSITION on the board, and the
+     memory outlives a search — so a build explained for the top row of one search was
+     offered to the top row of the next, whose three figures agree with each other and
+     therefore PASS. A row nobody checked, recorded as one that was. */
+  ok(!/noteExplained\(quote && quote\.key/.test(CODE),
+    'E10b the memory is not keyed on the row\'s position on the board');
+  ok(/setExplained\(\{\}\);/.test(CODE),
+    'E10c …and a new search forgets what the last board was shown');
+  const keySrc = lift('explainMemoryKey');
+  ok(!!keySrc, 'E10d the key builder was found in the shipped file');
+  // eslint-disable-next-line no-new-func
+  const keyOf = new Function(`${keySrc || 'function explainMemoryKey(){return null;}'}\nreturn explainMemoryKey;`)();
+  const H = { transactionId: 'txn-1', priceHashKey: '23170-1124-22542-4087', productId: 9, lenderId: 4, rate: 7.375, price: 101.965 };
+  ok(keyOf({ explain: H }) && keyOf({ explain: H }) === keyOf({ explain: { ...H } }),
+    'E10e the same quote keys the same way');
+  ok(keyOf({ explain: { ...H, transactionId: 'txn-2' } }) !== keyOf({ explain: H }),
+    'E10f …and the NEXT search, a different transaction, keys differently');
+  ok(keyOf({ explain: { ...H, priceHashKey: null } }) == null && keyOf({}) == null && keyOf(null) == null,
+    'E10g a row with no handle has nothing to remember and nothing to look up');
 
   /* ⛔ AND NOTHING IS ISSUED WHILE THE ANSWER IS IN THE POST. For the second the
      explain call is in flight the option carries no build, so a selection assembled
