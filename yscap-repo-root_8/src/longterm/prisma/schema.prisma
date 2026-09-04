@@ -3306,3 +3306,70 @@ model LtPricingRuleEvent {
   @@index([at(sort: Desc)], map: "lt_pricing_rule_event_recent_idx")
   @@map("lt_pricing_rule_event")
 }
+
+/// ONE RULE'S DAY ON ONE ENGINE — the firing ledger (db/696).
+///
+/// Owner-directed 2026-09-04: *"open audit engines to make sure that every rule
+/// is actually firing."* `LtPricingRuleEvent` beside this records what happened
+/// TO a rule; this records what the rule DID. A rule can be saved, valid,
+/// enabled and correctly ordered and still never touch a board — and without
+/// this table that case is indistinguishable from one working perfectly. It is
+/// dangerous in one direction only: a rule that fires wrongly moves a price and
+/// somebody asks, while a licensing block that never fires is silent until you
+/// have quoted a state you are not licensed in.
+model LtPricingRuleFiring {
+  /// ⛔ NO FOREIGN KEY, same reason as the event log above: the record of what a
+  /// rule DID must outlive the rule itself.
+  ruleId String @map("rule_id") @db.Uuid
+
+  /// The rule's name AS IT WAS on the day, so a row reads with no rule to join to.
+  ruleName String? @map("rule_name")
+
+  /// THE BUCKET, in UTC. `date`, not a timestamp — the two moments below carry
+  /// the times; this column is the roll-up grain.
+  day DateTime @db.Date
+
+  /// Which board actually RAN it: general | combined (CHECK).
+  ///
+  /// ⛔ NOT the same vocabulary as `LtPricingRule.engine`, where 'all' is legal.
+  /// There it is what a rule GOVERNS; here it is the board that ran it, and
+  /// 'all' is not a board — a rule governing both writes two rows.
+  engine String
+
+  /// IN FORCE, BUT NOT NECESSARILY MATCHING — boards where the rule was asked.
+  /// The denominator: "matched 0 times" is unreadable without it, since a rule
+  /// asked 4,000 times and never matching is broken, while one asked zero times
+  /// is simply on a board nobody has priced.
+  boardsSeen BigInt @default(0) @map("boards_seen")
+
+  /// Boards where it reached at least one quote. The numerator.
+  boardsMatched BigInt @default(0) @map("boards_matched")
+
+  /// Quotes it reached, summed across boards.
+  quotesReached BigInt @default(0) @map("quotes_reached")
+
+  /// Quotes whose price it actually MOVED — counted off the FINISHED board, not
+  /// off intent, because a quote a higher-priority rule then refused is not on
+  /// the board and reporting it claims a price the officer cannot see.
+  quotesAdjusted BigInt @default(0) @map("quotes_adjusted")
+
+  /// Quotes it marked ineligible.
+  quotesRefused BigInt @default(0) @map("quotes_refused")
+
+  /// Whole investor rows it took off the board.
+  rowsBlocked BigInt @default(0) @map("rows_blocked")
+
+  /// TIMES IT COULD NOT BE READ. The overlay reports such a rule and never
+  /// applies it — correct, and also silent, since the rule sits in the centre
+  /// looking armed. Non-zero is the screen's cue to say so in red.
+  unreadable BigInt @default(0)
+
+  /// The first and last moment it did anything at all on this day.
+  firstAt DateTime? @map("first_at") @db.Timestamptz(6)
+  lastAt  DateTime? @map("last_at")  @db.Timestamptz(6)
+
+  @@id([ruleId, day, engine])
+  @@index([ruleId, day(sort: Desc)], map: "lt_pricing_rule_firing_rule_idx")
+  @@index([day(sort: Desc)], map: "lt_pricing_rule_firing_day_idx")
+  @@map("lt_pricing_rule_firing")
+}

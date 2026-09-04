@@ -69,6 +69,10 @@ export default function LtPricingRules() {
   const [err, setErr] = useState(null);
   const [editing, setEditing] = useState(null);      // the draft rule, or null
   const [events, setEvents] = useState(null);
+  /* TWO VIEWS OF ONE CENTRE — writing the rules, and checking they work.
+     Owner-directed 2026-09-04: *"open audit engines to make sure that every rule
+     is actually firing."* */
+  const [view, setView] = useState('rules');
 
   const flatFields = useMemo(
     () => (cat ? cat.groups.flatMap((g) => g.fields) : []), [cat]);
@@ -140,6 +144,29 @@ export default function LtPricingRules() {
         <div style={{ ...card, borderColor: 'rgba(138,47,47,.28)', color: DANGER, marginBottom: 14 }}>{err}</div>
       )}
 
+      <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: `1px solid ${LINE}` }}>
+        {[['rules', 'The rules'], ['audit', 'Are they firing?']].map(([k, lbl]) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setView(k)}
+            aria-current={view === k ? 'page' : undefined}
+            style={{
+              border: 0, background: 'none', cursor: 'pointer', padding: '9px 14px',
+              fontSize: 13.5, fontWeight: view === k ? 750 : 600,
+              color: view === k ? INK : SLATE,
+              borderBottom: `2px solid ${view === k ? GOLD : 'transparent'}`, marginBottom: -1,
+            }}
+          >{lbl}</button>
+        ))}
+      </div>
+
+      {view === 'audit' && <AuditView byKey={byKey} cat={cat} onOpenRule={(id) => {
+        const r = rules.find((x) => x.id === id);
+        if (r) { setView('rules'); openRule(r); }
+      }} />}
+
+      {view === 'rules' && (<>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
         <button type="button" style={btnPrimary} onClick={startNew}>Write a rule</button>
         <button type="button" style={btnSoft} onClick={() => setShowArchived((v) => !v)}>
@@ -187,6 +214,7 @@ export default function LtPricingRules() {
       ))}
 
       {events && <History events={events} />}
+      </>)}
 
       {editing && cat && (
         <Editor
@@ -198,6 +226,270 @@ export default function LtPricingRules() {
           onSaved={afterWrite}
           onError={setErr}
         />
+      )}
+    </div>
+  );
+}
+
+/**
+ * THE AUDIT — is every rule actually firing?
+ *
+ * Owner-directed 2026-09-04: *"open audit engines to make sure that every rule
+ * is actually firing."*
+ *
+ * ⛔ IT DERIVES NOTHING. Every verdict, every sentence and every number comes
+ * from the server (`/audit`, `/audit/dry-run`), which reads them from the one
+ * module the board's own overlay reads. A screen that worked out "is this rule
+ * broken?" for itself would be a second opinion, and the one that drifts is the
+ * one somebody acts on.
+ *
+ * ⛔ AN UNREADABLE LEDGER SAYS SO. Every counter would be 0, which is the exact
+ * sentence "this rule has never fired" — so a database hiccup would put the
+ * whole centre on screen as broken. The server reports its own `ledgerProblem`
+ * and this says it could not read the numbers instead of drawing zeroes.
+ */
+const VERDICT = {
+  broken:      { label: 'Cannot run',   bg: 'rgba(138,47,47,.10)',  fg: DANGER },
+  never_fired: { label: 'Never fired',  bg: 'rgba(138,47,47,.08)',  fg: DANGER },
+  stale:       { label: 'Not lately',   bg: 'rgba(176,124,42,.12)', fg: CAUTION },
+  not_asked:   { label: 'No boards yet', bg: '#F3F1EC',             fg: SLATE },
+  off:         { label: 'Switched off', bg: '#F3F1EC',              fg: SLATE },
+  archived:    { label: 'Taken out',    bg: '#F3F1EC',              fg: MUTED },
+  firing:      { label: 'Firing',       bg: 'rgba(47,127,134,.12)', fg: '#1F5C61' },
+};
+
+function AuditView({ byKey, cat, onOpenRule }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(true);
+
+  const load = useCallback(async () => {
+    setBusy(true); setErr(null);
+    try { setData(await ltApi.pricingRuleAudit()); }
+    catch (e) { setErr(String((e && e.message) || e)); }
+    finally { setBusy(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  if (busy && !data) return <div style={{ ...card }}>Reading the audit…</div>;
+  if (err) return <div style={{ ...card, borderColor: 'rgba(138,47,47,.28)', color: DANGER }}>{err}</div>;
+  if (!data) return null;
+
+  const rows = data.rows || [];
+  const needsWork = rows.filter((r) => r.verdict === 'broken' || r.verdict === 'never_fired');
+
+  return (
+    <div>
+      <div style={{ ...card, marginBottom: 14 }}>
+        <div style={{ fontSize: 15, fontWeight: 750, color: INK, marginBottom: 4 }}>{data.summary}</div>
+        <p style={{ ...sub, margin: '0 0 10px' }}>
+          Counted over the last {data.windowDays} days, from what the boards actually did. A rule can be
+          saved, switched on and in the right order and still never touch a board — this is the screen
+          that says so.
+        </p>
+        {data.ledgerProblem && (
+          <div style={{ fontSize: 12.5, color: DANGER, fontWeight: 600 }}>
+            The firing record could not be read, so the numbers below are not the real ones: {data.ledgerProblem}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+          {Object.entries(data.counts || {}).filter(([, n]) => n > 0).map(([k, n]) => (
+            <span key={k} style={{ ...chip, background: (VERDICT[k] || {}).bg || '#F3F1EC', color: (VERDICT[k] || {}).fg || SLATE }}>
+              {n} {(VERDICT[k] || {}).label || k}
+            </span>
+          ))}
+          <button type="button" style={{ ...btnSoft, marginLeft: 'auto' }} onClick={load} disabled={busy}>
+            {busy ? 'Reading…' : 'Read it again'}
+          </button>
+        </div>
+      </div>
+
+      {!!needsWork.length && (
+        <div style={{ ...card, marginBottom: 14, borderColor: 'rgba(138,47,47,.28)' }}>
+          <div style={{ fontSize: 13.5, fontWeight: 750, color: DANGER, marginBottom: 6 }}>
+            {needsWork.length === 1 ? 'This one needs looking at' : 'These need looking at'}
+          </div>
+          <p style={{ fontSize: 12.5, color: SLATE, margin: 0, lineHeight: 1.6 }}>
+            A rule that refuses loans and never fires is the dangerous one: nothing goes wrong that anybody
+            can see, and it is only noticed when a loan we meant to refuse gets quoted.
+          </p>
+        </div>
+      )}
+
+      {rows.map((r) => <AuditRow key={r.ruleId || r.name} row={r} onOpen={() => onOpenRule && onOpenRule(r.ruleId)} />)}
+
+      {!rows.length && (
+        <div style={{ ...card }}>
+          <div style={{ fontSize: 14.5, fontWeight: 700, color: INK, marginBottom: 4 }}>Nothing to audit yet</div>
+          <p style={{ ...sub, margin: 0 }}>Write a rule and this screen will tell you whether it is doing anything.</p>
+        </div>
+      )}
+
+      <FireDrill cat={cat} byKey={byKey} onOpenRule={onOpenRule} />
+    </div>
+  );
+}
+
+/** One rule's standing — its verdict, its own sentence, and what it has done. */
+function AuditRow({ row, onOpen }) {
+  const [open, setOpen] = useState(false);
+  const v = VERDICT[row.verdict] || VERDICT.not_asked;
+  const f = row.firing || {};
+  const nums = [
+    ['Boards it was asked on', f.boardsSeen],
+    ['Boards it matched', f.boardsMatched],
+    ['Quotes it moved the price of', f.quotesAdjusted],
+    ['Quotes it refused', f.quotesRefused],
+    ['Investors it blocked', f.rowsBlocked],
+  ].filter(([, n]) => Number(n) > 0);
+
+  return (
+    <div style={{ ...card, marginBottom: 10 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <span style={{ ...chip, background: v.bg, color: v.fg }}>{v.label}</span>
+        <span style={{ fontSize: 14.5, fontWeight: 700, color: INK }}>{row.name || '(unnamed)'}</span>
+        <span style={{ fontSize: 12, color: MUTED }}>
+          {row.engine === 'all' ? 'Both engines' : row.engine === 'general' ? 'General engine' : 'Combined engine'} · order {row.priority}
+        </span>
+        <button type="button" style={{ ...btnSoft, marginLeft: 'auto' }} onClick={() => setOpen((x) => !x)}>
+          {open ? 'Less' : 'More'}
+        </button>
+        {onOpen && row.ruleId && <button type="button" style={btnSoft} onClick={onOpen}>Open the rule</button>}
+      </div>
+
+      <div style={{ fontSize: 13, color: row.verdict === 'broken' || row.verdict === 'never_fired' ? DANGER : SLATE, marginTop: 7, lineHeight: 1.55 }}>
+        {row.headline}
+      </div>
+
+      {!!(row.problems || []).length && (
+        <ul style={{ margin: '8px 0 0', paddingLeft: 18, color: DANGER, fontSize: 12.5, lineHeight: 1.7 }}>
+          {row.problems.map((p, i) => <li key={i}>{p}</li>)}
+        </ul>
+      )}
+      {!!(row.unreadableRows || []).length && (
+        <ul style={{ margin: '8px 0 0', paddingLeft: 18, color: DANGER, fontSize: 12.5, lineHeight: 1.7 }}>
+          {row.unreadableRows.map((p, i) => <li key={i}>{p}</li>)}
+        </ul>
+      )}
+
+      {open && (
+        <div style={{ marginTop: 10, borderTop: `1px solid ${LINE}`, paddingTop: 10 }}>
+          <div style={{ fontSize: 12.5, color: SLATE, marginBottom: 8, lineHeight: 1.6 }}>
+            <strong style={{ color: INK }}>Says:</strong> {row.says}<br />
+            <strong style={{ color: INK }}>Does:</strong> {row.does}
+          </div>
+          {nums.length ? (
+            <div style={{ display: 'grid', gap: 6, gridTemplateColumns: 'repeat(auto-fit,minmax(min(13rem,100%),1fr))' }}>
+              {nums.map(([k, n]) => (
+                <div key={k} style={{ background: WASH, borderRadius: 8, padding: '8px 10px' }}>
+                  <div style={{ fontSize: 11.5, color: MUTED }}>{k}</div>
+                  <div style={{ fontSize: 16, fontWeight: 750, color: INK }}>{Number(n).toLocaleString()}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12.5, color: MUTED }}>Nothing recorded for this rule in this period.</div>
+          )}
+          {f.lastAt && (
+            <div style={{ fontSize: 12, color: MUTED, marginTop: 8 }}>
+              Last did something {new Date(f.lastAt).toLocaleString()}.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * THE FIRE DRILL — one loan, every rule, and for each one that does not fire,
+ * WHICH condition stopped it.
+ *
+ * The owner's *"make sure that every rule that you fire will actually work"* in
+ * its most direct form: instead of waiting for a board to prove a rule works,
+ * describe a loan and ask.
+ */
+function FireDrill({ cat, byKey, onOpenRule }) {
+  const [open, setOpen] = useState(false);
+  const [scenario, setScenario] = useState({ state: 'NJ', loanAmount: 250000, ltv: 75, dscr: 1.2, fico: 720, prepayMonths: 60 });
+  const [engine, setEngine] = useState('general');
+  const [out, setOut] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const run = async () => {
+    setBusy(true); setErr(null);
+    try { setOut(await ltApi.pricingRuleDryRun({ scenario, engine })); }
+    catch (e) { setErr(String((e && e.message) || e)); }
+    finally { setBusy(false); }
+  };
+
+  const set = (k) => (e) => setScenario((s) => ({ ...s, [k]: e.target.value }));
+
+  return (
+    <div style={{ ...card, marginTop: 16 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 14.5, fontWeight: 750, color: INK }}>Try every rule against one loan</div>
+          <div style={{ ...sub, margin: 0 }}>Describe a loan and see which rules fire — and why the others do not.</div>
+        </div>
+        <button type="button" style={{ ...btnSoft, marginLeft: 'auto' }} onClick={() => setOpen((v) => !v)}>
+          {open ? 'Close' : 'Open'}
+        </button>
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 12, borderTop: `1px solid ${LINE}`, paddingTop: 12 }}>
+          <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(min(9rem,100%),1fr))' }}>
+            <div><label style={label}>State</label><input style={input} value={scenario.state || ''} onChange={set('state')} /></div>
+            <div><label style={label}>Loan amount</label><input style={input} value={scenario.loanAmount ?? ''} onChange={set('loanAmount')} /></div>
+            <div><label style={label}>LTV (%)</label><input style={input} value={scenario.ltv ?? ''} onChange={set('ltv')} /></div>
+            <div><label style={label}>DSCR</label><input style={input} value={scenario.dscr ?? ''} onChange={set('dscr')} /></div>
+            <div><label style={label}>FICO</label><input style={input} value={scenario.fico ?? ''} onChange={set('fico')} /></div>
+            <div><label style={label}>Prepay (months)</label><input style={input} value={scenario.prepayMonths ?? ''} onChange={set('prepayMonths')} /></div>
+            <div>
+              <label style={label}>Board</label>
+              <select style={input} value={engine} onChange={(e) => setEngine(e.target.value)}>
+                <option value="general">General engine</option>
+                <option value="combined">Combined engine</option>
+              </select>
+            </div>
+          </div>
+
+          <button type="button" style={{ ...btnPrimary, marginTop: 10 }} onClick={run} disabled={busy}>
+            {busy ? 'Trying…' : 'Try every rule'}
+          </button>
+
+          {err && <div style={{ fontSize: 12.5, color: DANGER, marginTop: 8 }}>{err}</div>}
+
+          {out && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: INK, marginBottom: 8 }}>{out.summary}</div>
+              {(out.rows || []).map((r) => (
+                <div key={r.ruleId || r.name} style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 10, marginBottom: 8, background: '#fff' }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                    <span style={{ ...chip, background: r.wouldRun ? 'rgba(47,127,134,.12)' : '#F3F1EC', color: r.wouldRun ? '#1F5C61' : SLATE }}>
+                      {r.wouldRun ? 'Fires' : 'Does not fire'}
+                    </span>
+                    <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{r.name || '(unnamed)'}</span>
+                    {!r.enabled && <span style={{ fontSize: 11.5, color: MUTED }}>switched off</span>}
+                    {r.archived && <span style={{ fontSize: 11.5, color: MUTED }}>taken out</span>}
+                    {!r.governs && <span style={{ fontSize: 11.5, color: CAUTION }}>written for the other board</span>}
+                    {onOpenRule && r.ruleId && (
+                      <button type="button" style={{ ...btnSoft, marginLeft: 'auto' }} onClick={() => onOpenRule(r.ruleId)}>Open</button>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12.5, color: r.broken ? DANGER : SLATE, marginTop: 6, lineHeight: 1.55 }}>{r.headline}</div>
+                  {!r.fires && !!(r.blockers || []).length && (
+                    <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: SLATE, fontSize: 12.5, lineHeight: 1.7 }}>
+                      {r.blockers.map((b, i) => <li key={i}>{b.why}</li>)}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
