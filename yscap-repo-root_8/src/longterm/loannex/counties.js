@@ -29,6 +29,10 @@
 const zipCounty = require('../lenderprice/zip-county');
 const CAPTURED = require('./capture/counties.json');
 
+const { singleFlight } = require('./single-flight');
+// In-flight county fetches, one per portal+state — see `single-flight.js`.
+const flight = new Map();
+
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const cache = new Map(); // `${portal}:${ST}` -> { counties, expiresAt }
 
@@ -61,7 +65,23 @@ async function countiesFor(portal, st, fetchLive, opts = {}) {
   if (!/^[A-Z]{2}$/.test(state)) return { source: 'none', byName: new Map(), state: null };
   const key = `${portal || 'default'}:${state}`;
   const ttl = Number(opts.ttlMs) > 0 ? Number(opts.ttlMs) : DEFAULT_TTL_MS;
+  const hit = cache.get(key);
+  if (hit && hit.expiresAt > Date.now()) return hit.entry;
+  /* ⛔ ONE FETCH FOR THE CALLERS THAT MISS AT THE SAME MOMENT — the same reason,
+     and the same lock, as the field registry beside it. The general engine's press
+     fires the immediate board and the first round of banded searches together, all
+     asking about ONE state, so a cold cache paid four identical round trips for one
+     county list. The cache read stays outside the lock: a warm hit must never queue.
+
+     Keyed on PORTAL AND STATE, so a search that crosses a state line still fetches
+     the other state — the lock is about simultaneous callers, never about scope. */
+  return singleFlight(flight, key, () => fetchCounties(key, state, fetchLive, ttl));
+}
+
+/** The cold path — reached by ONE caller per portal+state at a time. */
+async function fetchCounties(key, state, fetchLive, ttl) {
   const now = Date.now();
+  // Re-read: a flight that settled while this one was queued has already filled it.
   const hit = cache.get(key);
   if (hit && hit.expiresAt > now) return hit.entry;
 

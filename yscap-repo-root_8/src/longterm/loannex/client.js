@@ -277,17 +277,10 @@ const _impl = { performLogin, request };
  * it worked while the general engine showed nothing. With the lock, the first
  * caller signs in and the other two await the SAME login.
  */
-function singleFlight(map, key, fn) {
-  const existing = map.get(key);
-  if (existing) return existing;
-  const promise = Promise.resolve().then(fn);
-  map.set(key, promise);
-  // Clear the slot when it settles — success or failure — but only if it is
-  // still ours, so a later attempt that replaced it is never deleted.
-  const clear = () => { if (map.get(key) === promise) map.delete(key); };
-  promise.then(clear, clear);
-  return promise;
-}
+/* THE LOCK ITSELF LIVES IN `single-flight.js` — one definition, now that the
+   field registry and the county list hold it too. Re-exported below unchanged, so
+   every existing reader of `_internals.singleFlight` behaves as it did. */
+const { singleFlight } = require('./single-flight');
 
 /** In-flight logins, one per portal. */
 const loginFlight = new Map();
@@ -356,8 +349,16 @@ async function resolveCounty(portal, sc, opts = {}) {
  */
 async function price(sc, opts = {}) {
   const s = await getSession(opts.portal, opts);
-  const registry = await fieldRegistry(opts.portal, opts);
-  const county = await resolveCounty(opts.portal, sc, opts);
+  /* ⛔ THE TWO LOOKUPS ARE INDEPENDENT OF EACH OTHER, so they are asked TOGETHER
+     (owner-reported 2026-09-04 on the board's speed). Written one after the other
+     they were two round trips in series on a cold cache for two answers that have
+     nothing to say to one another; warm, both are cache hits and this costs
+     nothing either way. `getSession` above still runs FIRST — both of them need
+     its token, so that one really is a dependency. */
+  const [registry, county] = await Promise.all([
+    fieldRegistry(opts.portal, opts),
+    resolveCounty(opts.portal, sc, opts),
+  ]);
   const transactionId = opts.transactionId || newTransactionId();
   const body = scenario.buildQuickPriceBody(sc, registry, { countyKey: county.countyKey, transactionId });
   const raw = await request('POST', `/loans/apps/${s.userGuid}/quick-prices`, { token: s.token, body });
@@ -451,8 +452,16 @@ async function evidence(sc, quote, opts = {}) {
     };
   }
   const s = await getSession(opts.portal, opts);
-  const registry = await fieldRegistry(opts.portal, opts);
-  const county = await resolveCounty(opts.portal, sc, opts);
+  /* ⛔ THE TWO LOOKUPS ARE INDEPENDENT OF EACH OTHER, so they are asked TOGETHER
+     (owner-reported 2026-09-04 on the board's speed). Written one after the other
+     they were two round trips in series on a cold cache for two answers that have
+     nothing to say to one another; warm, both are cache hits and this costs
+     nothing either way. `getSession` above still runs FIRST — both of them need
+     its token, so that one really is a dependency. */
+  const [registry, county] = await Promise.all([
+    fieldRegistry(opts.portal, opts),
+    resolveCounty(opts.portal, sc, opts),
+  ]);
   const transactionId = opts.transactionId || newTransactionId();
   const body = {
     data: {
