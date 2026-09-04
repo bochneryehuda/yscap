@@ -217,6 +217,11 @@ export const ltApi = {
   pricingRuleRestore: (id) => ltPost(lt(`/dscr/pricing-rules/${encodeURIComponent(id)}/restore`), {}),
   pricingRuleTest: (body) => ltPost(lt('/dscr/pricing-rules/test'), body),
   pricingRuleEvents: (ruleId) => ltGet(lt(`/dscr/pricing-rules/events${ruleId ? `?ruleId=${encodeURIComponent(ruleId)}` : ''}`)),
+  /* THE AUDIT — what every rule has actually DONE on real boards, and the fire
+     drill that tries every rule against one loan. Owner-directed 2026-09-04:
+     "open audit engines to make sure that every rule is actually firing." */
+  pricingRuleAudit: (days) => ltGet(lt(`/dscr/pricing-rules/audit${days ? `?days=${encodeURIComponent(days)}` : ''}`)),
+  pricingRuleDryRun: (body) => ltPost(lt('/dscr/pricing-rules/audit/dry-run'), body),
 
   // The signed-in person's COMPENSATION PLAN — what the pricing engine's three-way switch
   // (borrower-paid / raw / lender-paid) overlays on the displayed numbers. Display only:

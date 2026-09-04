@@ -170,6 +170,120 @@ function scenarioFacts(sc) {
 }
 
 /**
+ * WHICH BOX FILLS WHICH FACT — the one definition, and it lives HERE because
+ * `scenarioFacts` above is its only author.
+ *
+ * ── WHY THIS EXISTS ────────────────────────────────────────────────────────
+ *
+ * The rule builder lets somebody try a rule against a sample loan before they
+ * turn it on. To do that it has to put the value they type into the key
+ * `scenarioFacts` actually reads — and that is NOT the fact's own name: the
+ * loan amount arrives as `loan`, the property value as `value`, the bankruptcy
+ * chapter as `bankruptcy.chapter`. A builder that re-typed those spellings
+ * would be a SECOND copy of this mapping, and the copy that drifts is the one
+ * that quietly tests a different loan than the boxes on screen say it is
+ * testing — which is worse than not offering the preview at all.
+ *
+ * So the map is published through the catalog and the browser never guesses.
+ *
+ * ── THE PATH IS A PATH, NOT A NAME ─────────────────────────────────────────
+ *
+ * One fact reads a nested key, so every entry is a dot path and the caller
+ * walks it. Where `scenarioFacts` accepts two spellings (`termYears` or
+ * `term`), the FIRST is the one named here — both work, and publishing one
+ * keeps the preview and the pricer sending the same shape.
+ */
+const SCENARIO_INPUT = Object.freeze({
+  loan_amount: 'loan',
+  loan_purpose: 'purpose',
+  ltv: 'ltv',
+  fico: 'fico',
+  dscr: 'dscr',
+  cashout_amount: 'cashoutAmount',
+  subordinate_loan_amount: 'subordinateLoanAmount',
+  reserves_months: 'reservesMonths',
+  term_years: 'termYears',
+  lock_days: 'lockDays',
+  interest_only: 'io',
+  escrow_waived: 'escrowWaive',
+
+  prepay_months: 'prepayMonths',
+  prepay_structure: 'prepayStructure',
+
+  state: 'state',
+  county: 'county',
+  city: 'city',
+  zip: 'zip',
+  property_type: 'propertyType',
+  units: 'units',
+  attachment_type: 'attachmentType',
+  non_warrantable: 'nonWarrantable',
+  rural: 'rural',
+  mixed_use: 'mixedUse',
+  property_value: 'value',
+  as_is_value: 'asIsValue',
+  rental_term: 'rentalTerm',
+
+  borrower_type: 'borrowerType',
+  citizenship: 'citizenship',
+  first_time_investor: 'firstTimeInvestor',
+  first_time_home_buyer: 'fthb',
+  self_employed: 'selfEmployed',
+  financed_properties: 'financedProperties',
+  number_of_borrowers: 'numberOfBorrowers',
+  income_doc_type: 'incomeDocType',
+  tradelines: 'tradelines',
+  no_mortgage_history: 'noMortgageHistory',
+  living_rent_free: 'livingRentFree',
+  cross_collateral: 'crossCollateral',
+
+  foreclosure: 'foreclosure',
+  short_sale: 'shortSale',
+  deed_in_lieu: 'deedInLieu',
+  charge_off: 'chargeOff',
+  forbearance: 'forbearance',
+  bankruptcy_chapter: 'bankruptcy.chapter',
+  late_in_last_12_months: 'lateInLast12Months',
+});
+
+/**
+ * THE FACTS NOBODY CAN TYPE, because they are WORKED OUT from the ones above.
+ *
+ * Offering a box for one of these would be a box that changes nothing — the
+ * value would be computed straight over the top — which reads as the preview
+ * ignoring what you typed.
+ *
+ * ⛔ EACH ONE NAMES WHAT IT IS WORKED OUT FROM, and that is the load-bearing
+ * half rather than documentation. A rule written purely on `dscr_band` would
+ * otherwise be offered NO box at all and be exactly as untestable as it was
+ * before — so the builder follows these back to the boxes that do exist and
+ * offers those instead. A bare list would have looked complete and left that
+ * rule broken.
+ *
+ * Naming them here also means adding a forty-ninth field forces the decision —
+ * typeable, or worked out from what? — rather than letting it fall silently
+ * into neither.
+ */
+const DERIVED_SCENARIO_FACTS = Object.freeze({
+  dscr_band: Object.freeze(['dscr']),
+  has_prepay: Object.freeze(['prepay_months', 'prepay_structure']),
+});
+
+/** Put `value` at a dot path on a plain object, making the objects on the way. */
+function putAtPath(obj, path, value) {
+  const parts = String(path || '').split('.').filter(Boolean);
+  if (!parts.length) return obj;
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    const k = parts[i];
+    if (!cur[k] || typeof cur[k] !== 'object') cur[k] = {};
+    cur = cur[k];
+  }
+  cur[parts[parts.length - 1]] = value;
+  return obj;
+}
+
+/**
  * THE QUOTED ROW, as facts.
  *
  * ⛔ IT READS THE ROW, NEVER THE SEARCH. `quoted_ltv` and `quoted_dscr` are what
@@ -229,4 +343,8 @@ function factsFor(scenarioFactsBag, row, option, opts) {
   return Object.assign({}, scenarioFactsBag || {}, quoteFacts(row, option, opts));
 }
 
-module.exports = { scenarioFacts, quoteFacts, factsFor, _internals: { flag, bandOf, num, text } };
+module.exports = {
+  scenarioFacts, quoteFacts, factsFor,
+  SCENARIO_INPUT, DERIVED_SCENARIO_FACTS, putAtPath,
+  _internals: { flag, bandOf, num, text },
+};

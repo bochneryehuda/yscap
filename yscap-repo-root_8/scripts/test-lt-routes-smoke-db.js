@@ -323,9 +323,9 @@ async function main() {
       // is asserted separately below, from a loan officer's token.)
       // Both of these are pure config reads that reach no vendor.
       '/api/lt/dscr/combined/health',
-      // THE PRICING RULE CENTER — our own overlay on top of every engine. All four
+      // THE PRICING RULE CENTER — our own overlay on top of every engine. All five
       // GET doors are opened here rather than exempted, because there is nothing to
-      // exempt: they read one small table and the field registry and reach NOBODY.
+      // exempt: they read two small tables and the field registry and reach NOBODY.
       // The smoke session is not a super admin, so each answers 404 (the gate, which
       // is the point — a control the rest of the team may not use should not
       // announce itself); a 404 is not a 500, and a door that started throwing
@@ -333,6 +333,12 @@ async function main() {
       '/api/lt/dscr/pricing-rules',
       '/api/lt/dscr/pricing-rules/catalog',
       '/api/lt/dscr/pricing-rules/events',
+      // ⛔ THE AUDIT DOOR IS LISTED BEFORE `/:id` FOR THE READER'S SAKE, and it is
+      // registered before it in the router for a much sharper reason: `/:id`
+      // matches anything, so an `/audit` declared after it is read as a rule whose
+      // id is the word "audit" — the door answers 404 and the whole audit screen
+      // is empty with nothing anywhere saying why.
+      '/api/lt/dscr/pricing-rules/audit',
       `/api/lt/dscr/pricing-rules/${NO_LOAN}`,
       '/api/lt/dscr/combined/loannex/login-check',
       // The INVESTOR SETTINGS roster — every investor, its white-label name, and

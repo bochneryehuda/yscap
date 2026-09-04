@@ -20,9 +20,12 @@
 const express = require('express');
 const store = require('../pricing/rules/store');
 const fields = require('../pricing/rules/fields');
+const sampleRow = require('../pricing/rules/sample-row');
 const ruleActions = require('../pricing/rules/actions');
 const logic = require('../pricing/rules/logic');
 const overlay = require('../pricing/rules/overlay');
+const audit = require('../pricing/rules/audit');
+const facts = require('../pricing/rules/facts');
 
 /** The REAL staff role, never a long-term override — an override may not hand this out. */
 function isSuperAdmin(req) {
@@ -52,6 +55,13 @@ function attach(router) {
       listOperators: require('../../lib/conditions/rules').LIST_OPS,
       actions: ruleActions.KEYS.map((k) => ruleActions.ACTIONS[k]),
       maxPoints: ruleActions.MAX_POINTS,
+      /* WHICH BOX FILLS WHICH FACT, so the builder's "try it" panel can offer a
+         box for the fields the rule actually reads instead of a fixed four.
+         Published rather than re-typed in the browser: a second copy drifts,
+         and a drifted copy tests a different loan than the screen says. */
+      scenarioInput: facts.SCENARIO_INPUT,
+      quoteInput: sampleRow.QUOTE_INPUT,
+      derivedFacts: facts.DERIVED_SCENARIO_FACTS,
       engines: [
         { v: 'all', label: 'Both engines' },
         { v: 'general', label: 'General Pricing Engine' },
@@ -73,6 +83,69 @@ function attach(router) {
     } catch (e) { res.status(500).json({ error: 'server_error', detail: String(e && e.message || e) }); }
   });
 
+  /* ⛔ EVERY LITERAL PATH IS REGISTERED BEFORE `/:id`, WHICH MATCHES ANYTHING.
+     Express takes the FIRST route that matches, so `/audit` registered after it
+     is read as a rule whose id is the word "audit" — the door 404s and the whole
+     audit screen is empty, with nothing anywhere saying why. */
+  /**
+   * THE AUDIT — IS EVERY RULE ACTUALLY FIRING?
+   *
+   * Owner-directed 2026-09-04: *"open audit engines to make sure that every rule
+   * is actually firing."*
+   *
+   * Every rule the centre holds, worst first, each with what it has actually
+   * DONE on real boards (the db/697 ledger) and, when it cannot run at all, the
+   * reason in the words a person can act on.
+   *
+   * ⛔ AN UNREADABLE LEDGER IS REPORTED, NEVER DRAWN AS ZEROES. Every counter
+   * would read 0, which is the exact sentence "this rule has never fired" — so a
+   * database hiccup would put every rule in the centre on the screen as broken.
+   * `firingSummary` answers its own `problem` and the screen says it could not
+   * read the numbers.
+   */
+  router.get('/audit', async (req, res) => {
+    try {
+      const days = Number(req.query.days) || 90;
+      const rules = await store.listRules({ includeArchived: true });
+      const ledger = await store.firingSummary({ days });
+      const out = audit.auditAll(rules, ledger.byRule, { days: ledger.days });
+      res.json({
+        ok: true,
+        ...out,
+        ledgerProblem: ledger.problem,
+        /* WHAT THE RECORDER ITSELF HAS BEEN DOING. An audit trail that is
+           failing to write must be visible on the screen that reads it, or the
+           numbers quietly become fiction. */
+        recorder: ledgerStats(),
+      });
+    } catch (e) { res.status(500).json({ error: 'server_error', detail: String(e && e.message || e) }); }
+  });
+
+  /**
+   * THE FIRE DRILL — every rule against one scenario, and WHY each one does not
+   * fire. The owner's *"make sure that every rule that you fire will actually
+   * work"* asked directly.
+   *
+   * ⛔ IT JUDGES ARCHIVED AND SWITCHED-OFF RULES TOO, and says which is which.
+   * Trying a rule before turning it on is the whole point; refusing to judge it
+   * would answer a question nobody asked.
+   */
+  router.post('/audit/dry-run', async (req, res) => {
+    try {
+      const b = req.body || {};
+      const scenario = b.scenario || {};
+      const quote = b.quote || {};
+      /* THE SAME FACT BAG THE BOARD BUILDS, through the same module — a drill
+         run against a hand-made bag would answer about a loan the engine never
+         sees, which is worse than no drill at all. */
+      const bag = facts.factsFor(
+        facts.scenarioFacts(scenario), sampleRow.sampleRow(quote), null, {});
+
+      const rules = await store.listRules({ includeArchived: true });
+      const engine = b.engine === 'combined' ? 'combined' : b.engine === 'general' ? 'general' : null;
+      res.json({ ok: true, engine, facts: bag, ...audit.dryRun(rules, bag, { engine }) });
+    } catch (e) { res.status(500).json({ error: 'server_error', detail: String(e && e.message || e) }); }
+  });
   router.get('/:id', async (req, res) => {
     try {
       const rule = await store.getRule(req.params.id);
@@ -129,30 +202,10 @@ function attach(router) {
     if (problems.length) return refuse(res, problems);
 
     const quote = b.quote || {};
-    /* A SAMPLE ROW IN THE BOARD'S OWN SHAPE, so the same code path the board
-       takes is the one the preview takes. */
-    const row = {
-      investorKey: quote.investorKey || 'sample',
-      whiteLabel: quote.whiteLabel || 'Sample program',
-      lender: quote.lender || null,
-      investor: quote.investor || null,
-      program: quote.program || 'Sample',
-      product: quote.product || null,
-      pricedBy: quote.source || null,
-      priceBuild: {
-        noteRate: quote.noteRate == null ? null : Number(quote.noteRate),
-        price: quote.price == null ? 100 : Number(quote.price),
-        borrowerPaidPoints: quote.points == null ? 0 : Number(quote.points),
-      },
-      terms: {
-        ltv: quote.quotedLtv == null ? null : Number(quote.quotedLtv),
-        dscr: quote.quotedDscr == null ? null : Number(quote.quotedDscr),
-        termYears: quote.quotedTermYears == null ? null : Number(quote.quotedTermYears),
-        dayLock: quote.quotedLockDays == null ? null : Number(quote.quotedLockDays),
-        amortizationType: quote.amortization || null,
-      },
-      marginHoldback: quote.marginHoldback == null ? null : Number(quote.marginHoldback),
-    };
+    /* THE SAMPLE ROW IS BUILT BY THE MODULE THAT ALSO PUBLISHES WHICH BOX
+       FILLS WHICH FIELD, so the preview can never test a row that is not the
+       one the builder's own boxes describe. */
+    const row = sampleRow.sampleRow(quote);
 
     const engine = b.engine === 'combined' ? 'combined' : 'general';
     const out = overlay.apply([row], {
@@ -178,6 +231,13 @@ function attach(router) {
       does: ruleActions.summarize(rule.then),
     });
   });
+
+}
+
+/* The recorder's own health, read lazily so this module never pulls the ledger
+   (and its database handle) in for a test that only wants the pure halves. */
+function ledgerStats() {
+  try { return require('../pricing/rules/ledger').stats(); } catch (_) { return null; }
 }
 
 function makeRouter(opts = {}) {

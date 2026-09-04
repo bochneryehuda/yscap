@@ -84,6 +84,7 @@ const investorLinks = require('../pricing/investor-links');
 const { whiteLabelOf } = require('../lenderprice/investor-programs');
 const quoteShape = require('../pricing/quote-shape');
 const houseOverlay = require('../pricing/rules/overlay');
+const ledger = require('../pricing/rules/ledger');
 const rulesStore = require('../pricing/rules/store');
 const loannexHalf = require('../pricing/loannex-half');
 const breakdown = require('../pricing/breakdown');
@@ -519,6 +520,17 @@ async function priceBoth(scenario, opts = {}) {
     scenario,
     engine: 'combined',
   });
+
+  /* WHAT THE RULES ACTUALLY DID, RECORDED — owner-directed 2026-09-04, *"open
+     audit engines to make sure that every rule is actually firing."* Synchronous
+     and unthrowable; see the contract at the top of ledger.js.
+
+     ⛔ RECORDED HERE AND NOT ON THE `?shape=options` OVERLAY BELOW, which is
+     THE SAME BOARD IN A DIFFERENT SHAPE. Recording both would count every board
+     twice and every quote twice — a rule that fired on one board would report as
+     having fired on two, which is exactly the kind of number that makes an audit
+     screen worse than none. */
+  ledger.record(house, { rules: houseLive.rules || [], engine: 'combined' });
 
   /* ⛔ AND THE `?shape=options` ANSWER, WHICH IS THE SAME ENGINE'S OUTPUT IN A
      DIFFERENT SHAPE. No screen asks for it today — it is an API shape — but a rule

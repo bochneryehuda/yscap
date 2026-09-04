@@ -56,6 +56,7 @@ const investorConfig = require('./investor-config');
 const investorLinks = require('./investor-links');
 const nearTier = require('./near-tier');
 const houseRules = require('./rules/overlay');
+const ledger = require('./rules/ledger');
 const rulesStore = require('./rules/store');
 /* ⛔ THE SEARCH MODEL IS REQUIRED, NEVER READ OFF THE INJECTED CLIENT. `wantFrom` mirrors the
    Lender Price request through `mapAmortization` and `resolveSearchTerms`, which live on the
@@ -410,6 +411,20 @@ async function boardForScenario(sc, deps, opts = {}) {
     engine: 'general',
   });
   programs = house.programs;
+
+  /* WHAT THE RULES ACTUALLY DID, RECORDED — owner-directed 2026-09-04, *"open
+     audit engines to make sure that every rule is actually firing."*
+
+     ⛔ SYNCHRONOUS, AND IT CANNOT THROW. `record` folds counters in memory and
+     returns; the database write happens on a timer somewhere else. It is not
+     awaited because awaiting it would put a round trip in front of a board, and
+     it is not `.catch()`ed because it does not return a promise to catch. See
+     the contract at the top of ledger.js — an audit trail that can take down
+     pricing fails on the busiest day, which is the day it matters most. */
+  ledger.record(house, {
+    rules: (opts.houseRules && opts.houseRules.rules) || [],
+    engine: 'general',
+  });
 
   /* THE LENS ROSTER AND THE UNNAMED WARNING, for the board actually shown — the
      initial-board door reads these; the bracket door ignores them and reads the
