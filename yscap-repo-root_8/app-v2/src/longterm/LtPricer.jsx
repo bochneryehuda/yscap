@@ -1222,6 +1222,17 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
             <Row k="…the itemized lines add to" v={pts(summedR)} tone="bad"
               title="The lines shown do not add to the vendor's own total. Nothing is adjusted to hide it — both numbers are shown." />
           )}
+          {/* OUR OWN RULES, NAMED IN THE LADDER THEY MOVED. The overlay deliberately
+              leaves the sheet's own numbers alone and rides beside them — which is
+              what keeps this panel reconcilable — but nothing here READ the key it
+              stamps, so "Adjustments total" and "Adjusted points" simply disagreed
+              by the amount a house rule had moved, with no line accounting for it.
+              `houseAdjustPoints` is the PRICE move; points move the opposite way by
+              the same amount, so it is negated to read correctly in this column. */}
+          {Number.isFinite(Number(b.houseAdjustPoints)) && Number(b.houseAdjustPoints) !== 0 && (
+            <Row k="Our own rules" v={pts(-Number(b.houseAdjustPoints))} indent
+              title="Set in the Pricing Rule Center. The rate sheet's own figures above are untouched — this rides beside them." />
+          )}
           <Row k="Adjusted points" v={pts(b.adjustedPoints)} />
           <Row k="Final price" v={price(b.price)} strong
             title={b.priceDerivedFromPoints

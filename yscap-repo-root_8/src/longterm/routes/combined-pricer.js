@@ -589,7 +589,12 @@ async function priceBoth(scenario, opts = {}) {
        `programs` here would have shown the officer every quote the rule centre
        refused, on the one screen the overlay exists to govern. */
     programs: house.programs,
-    programCount: programs.length,
+    /* COUNTED OFF THE BOARD BEING RETURNED, never the raw one. `programs` is a
+       const here and is the PRE-overlay array, so counting it printed a header
+       reading "2 programs" over a board carrying one — the number contradicting
+       the rows directly beneath it. The general board avoids this only because
+       its `programs` is a `let` the overlay reassigns. */
+    programCount: house.programs.length,
     investorRoster: merged.investors.map((e) => ({ key: e.key, investor: e.investor, whiteLabel: e.whiteLabel || null, programCount: e.programCount })),
     investorsUnmapped: merged.unmapped || [],
     // The side-by-side the owner asked for, computed from what the two boards

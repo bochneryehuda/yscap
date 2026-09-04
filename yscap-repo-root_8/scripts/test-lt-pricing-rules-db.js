@@ -154,6 +154,22 @@ const NJ = { combinator: 'and', rules: [
     check(bad.problems.some((p) => /condition/i.test(p)), 'B13 …the missing conditions');
     check(bad.problems.some((p) => /do/i.test(p)), 'B14 …and the missing actions');
 
+    /* THE INHERITED-NAME HOLE, AT THE REAL DOOR. `ACTIONS` is an object literal,
+       so `ACTIONS['constructor']` walked the prototype chain and came back
+       truthy — the validator only asked whether the spec existed, so the rule
+       SAVED, and the next board threw reading `.label` off `Object`. Both
+       engines call the overlay without a catch, so one such row took down every
+       board on every band. Asserted here rather than only in the pure suite
+       because it is the DOOR that let it through. */
+    for (const verb of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      const poison = await store.createRule(
+        { name: `poison ${verb}`, when: { combinator: 'and', rules: [{ field: 'loan_amount', operator: 'lt', value: 200000 }] }, then: [{ type: verb }] },
+        superId);
+      check(!poison.ok, `B15 a rule whose action is "${verb}" is refused at the door`,
+        poison.ok ? 'IT SAVED' : '');
+      if (poison.ok && poison.rule) made.rules.push(poison.rule.id);
+    }
+
     // ═════════════════════════════════════════════════════════════════════
     console.log('\nC. THE LOG SAYS WHAT HAPPENED, NOT JUST "CHANGED"');
     // ═════════════════════════════════════════════════════════════════════

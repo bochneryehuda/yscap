@@ -102,7 +102,15 @@ function optionsOf(row) {
  * `priceFloor` or `priceCeiling`. Those are the rate sheet's own numbers and the
  * margin step's record of them; a house rule is OURS and rides beside them, so
  * the price-build panel still reconciles the sheet's arithmetic and simply shows
- * one more line at the end.
+ * one more line at the end — the "Our own rules" row in `LtPricer.PriceBuild`,
+ * fed by `houseAdjustPoints` below.
+ *
+ * ⛔ THAT LAST SENTENCE WAS ASPIRATIONAL UNTIL THE POST-MERGE AUDIT. Nothing in
+ * the front end read `houseAdjustPoints`, so "Adjustments total" and "Adjusted
+ * points" simply disagreed by whatever a house rule had moved, with no line
+ * accounting for the gap. A safety note whose reason is wrong is worse than no
+ * note, because the next reader budgets against it: if you change what this
+ * stamps, change the row that renders it in the same commit.
  */
 function movePriceBuild(pb, net) {
   if (!pb || !net) return pb;
@@ -161,9 +169,29 @@ function apply(programs, opts) {
   const list = Array.isArray(programs) ? programs : [];
   const o = opts || {};
   const engine = o.engine === 'combined' ? 'combined' : 'general';
-  const rules = ordered(o.rules).filter((r) => r && r.enabled !== false && governs(r, engine));
+  const governing = ordered(o.rules).filter((r) => r && r.enabled !== false && governs(r, engine));
 
-  const empty = { programs: list, ineligible: [], blocked: [], applied: [], problems: [], ran: false };
+  /* A RULE WHOSE ACTIONS CANNOT BE READ IS REPORTED AND NEVER APPLIED — the
+     same answer the condition side gives a tree it cannot read, and for the same
+     reason: acting on half a rule is worse than not acting on it. It is judged
+     ONCE PER BOARD by the SAME validator the door uses, so "saveable" and
+     "appliable" can never drift into two different opinions; a rule that somehow
+     reached the table before that validator did is caught here on the way out.
+     Silently applying it would have meant a net of zero and no stop — a
+     licensing block that looks armed and is not. */
+  const unreadable = [];
+  const rules = governing.filter((r) => {
+    const bad = actions.validate(r.then);
+    if (!bad.length) return true;
+    unreadable.push({
+      ruleId: r.id,
+      name: r.name,
+      problem: `This rule's actions could not be read, so it was not applied: ${bad[0]}`,
+    });
+    return false;
+  });
+
+  const empty = { programs: list, ineligible: [], blocked: [], applied: [], problems: unreadable, ran: false };
   if (!rules.length || !list.length) return empty;
 
   /* ⛔ ONCE PER BOARD. A board that already carries the overlay is returned
@@ -177,7 +205,7 @@ function apply(programs, opts) {
   const ineligible = [];
   const blocked = [];
   const appliedRules = new Map();   // ruleId -> how many quotes it reached
-  const problems = [];
+  const problems = unreadable;
 
   /* WHICH INVESTORS A RULE HAS BLOCKED. Read on the second pass, because a block
      matched on one row of an investor removes ALL of that investor's rows — the
@@ -248,6 +276,12 @@ function apply(programs, opts) {
   /* ── PASS TWO: build the board the officer sees ───────────────────────── */
   const out = [];
   list.forEach((row, ri) => {
+    /* PASS ONE IS NULL-SAFE AND PASS TWO WAS NOT — `optionsOf` guards the row,
+       this read did not. A row that is not an object is passed through UNTOUCHED
+       rather than dropped: the overlay's job is to refuse quotes by rule, never
+       to quietly lose one it could not read. Not reachable from
+       `programsForBoard` today, which only ever pushes objects. */
+    if (!row || typeof row !== 'object') { out.push(row); return; }
     const per = verdicts.get(ri) || [];
     const key = row.investorKey || row.lender || safeName(row) || `row:${ri}`;
     const investorStop = blockedInvestors.get(key) || null;
@@ -311,7 +345,24 @@ function apply(programs, opts) {
 
   const applied = rules
     .filter((r) => appliedRules.has(r.id))
-    .map((r) => ({ ruleId: r.id, name: r.name, quotes: appliedRules.get(r.id), did: actions.summarize(r.then) }));
+    .map((r) => {
+      const stopper = actions.stopAction(r.then);
+      return {
+        ruleId: r.id,
+        name: r.name,
+        quotes: appliedRules.get(r.id),
+        did: actions.summarize(r.then),
+        /* THE FACTS, so a screen never has to read the SENTENCE to work out what
+           a rule did. The board decided "is this a price adjustment?" by testing
+           `did` for the word "point" — so a rule that both REFUSES a loan and
+           holds back margin (legal: `validate` forbids two STOPS, not a stop
+           beside a holdback) was printed as "Priced with our own adjustment" on
+           a row the same rule had just taken off the board. `stops` is the
+           reason a stopping rule is never an adjustment, whatever its wording. */
+        points: actions.netPoints(r.then),
+        stops: stopper ? stopper.spec.stops : null,
+      };
+    });
 
   return { programs: out, ineligible, blocked, applied, problems, ran: true };
 }
