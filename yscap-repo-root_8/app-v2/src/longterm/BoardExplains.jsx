@@ -101,6 +101,33 @@ export function NearTierFlag({ near, onUse }) {
 }
 
 /**
+ * WHICH SECOND NAME TO PRINT BESIDE OUR OWN — one definition, and it is exported so a
+ * test can call it rather than read a screen.
+ *
+ * Owner-directed 2026-09-04: the board's removals list must carry the investor's real
+ * name beside the white-labelled one, "so it's clear and you understand everything".
+ * Two rules, both of which exist because the alternative reads as a mistake:
+ *
+ *   · IT NEVER REPEATS THE HEADING. An investor nobody has white-labelled yet has ONE
+ *     name, and "Verus (Verus)" reads as a bug in the screen rather than as a fact
+ *     about the loan. The comparison folds case and spacing, because a settings row
+ *     spelled "Blue Lake" beside a registry "BlueLake" is one company, not two.
+ *   · IT NEVER INVENTS ONE. With no real investor name on the row it answers '' — a
+ *     hidden row whose producer could not name the investor must print nothing rather
+ *     than the internal key, which means nothing to a reader.
+ *
+ * PURE, and it never throws: it is handed rows straight off a vendor-derived payload.
+ */
+export function investorAside(h) {
+  const row = h || {};
+  const ours = String(row.whiteLabel || '').trim();
+  const real = String(row.investor || '').trim();
+  if (!ours || !real) return '';                       // one name only — print it once
+  const fold = (x) => x.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return fold(ours) === fold(real) ? '' : real;
+}
+
+/**
  * NOTHING IS SILENTLY DROPPED — the accounting of every investor the router took OFF this board,
  * each with the reason it gave (switched off in settings / the sheet did not answer / the sheet
  * had no quote), and a note when a setting could not be read at all.
@@ -109,9 +136,21 @@ export function NearTierFlag({ near, onUse }) {
  * where the sheets priced nine must always be able to account for the other three, and an officer
  * reading that board needs both halves in front of them before they read it.
  *
- * ⛔ IT PRINTS OUR OWN NAME FOR AN INVESTOR, never the vendor's spelling — `whiteLabel` first, and
- * the raw name only where nobody has white-labelled it yet. The investor name never reaches a
- * client from any surface, and this one is staff-only besides.
+ * ⛔ IT PRINTS BOTH NAMES (owner-directed 2026-09-04: *"when you write the white-labeled name,
+ * you should also write the investor's name so it's clear and you understand everything"*). Our
+ * own name LEADS, because that is the name the rest of PILOT and every term sheet uses; the real
+ * investor is stated beside it, because "Eclipse is switched off" is not something an officer can
+ * act on until they know whose sheet Eclipse is. Where nobody has white-labelled the investor yet
+ * there is only one name and it is printed once — never "Verus (Verus)".
+ *
+ * ⛔ AND THIS IS A STAFF-ONLY SURFACE, WHICH IS WHAT MAKES THAT LEGAL. The standing hard rule is
+ * that the investor's name NEVER reaches a client — not a borrower, not a TPO. Checked three ways
+ * rather than assumed: `/api/lt` is mounted `requireAuth, requireStaff` (`src/server.js`), so a
+ * borrower or broker token cannot fetch this board at all; this module is imported ONLY by
+ * `LtPricer.jsx`, and `BorrowerLongTerm.jsx` does not import it; and the `/engine` shortcut runs
+ * through `StaffPrivate`, which bounces a TPO. `scripts/test-lt-board-explains-itself-pure.js`
+ * asserts those, so the day this engine is promoted to a client surface the build says so instead
+ * of the name simply going out.
  */
 export function NotOnThisBoard({ hidden, settings }) {
   const rows = Array.isArray(hidden) ? hidden : [];
@@ -125,11 +164,21 @@ export function NotOnThisBoard({ hidden, settings }) {
       {rows.length > 0 && (
         <>
           <div style={{ ...eyebrow, marginBottom: 6 }}>Not on this board ({rows.length})</div>
-          {rows.map((h, i) => (
-            <div key={`${h.key || i}`} style={{ fontSize: 12, color: MUTED, lineHeight: 1.6, marginBottom: 4 }}>
-              <strong style={{ color: SLATE }}>{h.whiteLabel || h.investor || h.key}</strong> — {h.reason}
-            </div>
-          ))}
+          {rows.map((h, i) => {
+            /* OUR NAME LEADS, THE REAL ONE FOLLOWS — and the second is dropped when it
+               would repeat the first (no white-label name yet, or the two are the same
+               spelling). `investorAside` is the ONE place that decides, so a screen can
+               never print one name where the other was meant. */
+            const ours = h.whiteLabel || h.investor || h.key;
+            const aside = investorAside(h);
+            return (
+              <div key={`${h.key || i}`} style={{ fontSize: 12, color: MUTED, lineHeight: 1.6, marginBottom: 4 }}>
+                <strong style={{ color: SLATE }}>{ours}</strong>
+                {aside ? <span style={{ color: MUTED }}> ({aside})</span> : null}
+                {' — '}{h.reason}
+              </div>
+            );
+          })}
         </>
       )}
       {problems.length > 0 && (
@@ -166,6 +215,24 @@ export function NotOnThisBoard({ hidden, settings }) {
  *
  * Renders nothing when the centre is empty, which is every board until somebody writes a rule.
  */
+/**
+ * WHICH KIND OF BLOCK A ROW WAS — one definition, so the two sections can never
+ * both claim a row or both drop it.
+ *
+ * A row recorded before `block_program` existed carries no `kind` at all, and
+ * every one of those was an investor block by construction; reading a missing
+ * kind as anything else would silently move the whole back catalogue into the
+ * wrong section. An unrecognised kind reads as an investor block for the same
+ * reason — the wider sentence is the safe one to be wrong with, because it never
+ * promises an officer that other programs are still priced.
+ */
+export function blockedBy(rows, kind) {
+  return (Array.isArray(rows) ? rows : []).filter((b) => {
+    const k = (b && b.kind === 'program') ? 'program' : 'investor';
+    return k === kind;
+  });
+}
+
 export function OurOwnRules({ houseRules }) {
   const h = houseRules || {};
   const refused = Array.isArray(h.ineligible) ? h.ineligible : [];
@@ -196,12 +263,34 @@ export function OurOwnRules({ houseRules }) {
     }}>
       <div style={{ ...eyebrow, color: GOLD_TEXT, marginBottom: 6 }}>Ineligible under our own rules</div>
 
-      {blocked.length > 0 && (
+      {/* ⛔ THE TWO BLOCKS ARE WORDED SEPARATELY, because they are two different
+          facts about the loan (owner-directed 2026-09-04, who asked for both and,
+          asked which a rule should offer, said *"let me choose per rule"*).
+          "We do not place this investor on this loan" and "we do not place this
+          program" send an officer to two different conversations, and the second
+          leaves the investor's OTHER programs on the board — so one sentence
+          covering both would be wrong about half of them. A row from before the
+          program block existed carries no `kind` and was, by construction, an
+          investor block. */}
+      {blockedBy(blocked, 'investor').length > 0 && (
         <>
           <div style={{ fontSize: 12, color: SLATE, fontWeight: 700, marginBottom: 4 }}>
-            {blocked.length} investor{blocked.length === 1 ? '' : 's'} we do not place on this loan
+            {blockedBy(blocked, 'investor').length} investor{blockedBy(blocked, 'investor').length === 1 ? '' : 's'} we do not place on this loan
           </div>
-          {blocked.map((b, i) => line(b.name, b.program, b.rule, b.reason, `b${i}`))}
+          {blockedBy(blocked, 'investor').map((b, i) => line(b.name, b.program, b.rule, b.reason, `bi${i}`))}
+        </>
+      )}
+
+      {blockedBy(blocked, 'program').length > 0 && (
+        <>
+          <div style={{
+            fontSize: 12, color: SLATE, fontWeight: 700,
+            margin: `${blockedBy(blocked, 'investor').length ? 10 : 0}px 0 4px`,
+          }}>
+            {blockedBy(blocked, 'program').length} program{blockedBy(blocked, 'program').length === 1 ? '' : 's'} we do not place on this loan
+            <span style={{ fontWeight: 550, color: MUTED }}> — the investor’s other programs still price</span>
+          </div>
+          {blockedBy(blocked, 'program').map((b, i) => line(b.name, b.program, b.rule, b.reason, `bp${i}`))}
         </>
       )}
 

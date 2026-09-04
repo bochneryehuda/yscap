@@ -88,10 +88,15 @@ function applyRouting(merged, opts = {}) {
         investor: e.investor, key: e.key, why: 'switched_off',
         // ⛔ THE CLIENT-SAFE NAME TRAVELS WITH EVERY HIDDEN ROW TOO (audit F8, 2026-09-02).
         // A SHOWN investor has carried `whiteLabel` since this function was written; a hidden one
-        // did not, and the panel draws `h.whiteLabel || h.investor || h.key` — so the fallback
-        // reached the INVESTOR'S REAL NAME on exactly the rows nobody had thought about. Internal
-        // today, because this engine is super-admin only; a rule-10 breach the day it is promoted,
-        // which is the stated plan. Two shapes for one question is how that day arrives unnoticed.
+        // did not, so a screen reaching for our own name found nothing on exactly the rows nobody
+        // had thought about. Two shapes for one question is how that goes unnoticed.
+        //
+        // BOTH NAMES ARE ON THE ROW ON PURPOSE, and which of them a screen may print is the
+        // SCREEN'S decision, not this function's: the staff board prints our name and states the
+        // real investor beside it (owner-directed 2026-09-04, `BoardExplains.investorAside`),
+        // while any client-facing surface may print `whiteLabel` and nothing else. That is the
+        // standing hard rule — the investor's name never reaches a borrower or a TPO — and it is
+        // enforced where the audience is known, which is not here.
         whiteLabel: row.whiteLabel, whiteLabelMissing: row.whiteLabelMissing,
         /* ⛔ THE REASON MUST NAME AN ACTION THE READER CAN TAKE. 'Switched off in the
            investor settings' is TRUE of every off row and USELESS on the two kinds nobody
