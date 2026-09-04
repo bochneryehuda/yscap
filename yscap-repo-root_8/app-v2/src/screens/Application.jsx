@@ -13,6 +13,9 @@ import ActivityFeed from '../components/ActivityFeed.jsx';
 import StatusTimeline from '../components/StatusTimeline.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import { programLabel, loanTypeLabel, propertyTypeLabel, officerLabel } from '../lib/labels.js';
+// The PRICING program's name (Standard / Gold Standard / Silver / Speed / Manual) —
+// distinct from labels.js programLabel, which titles the deal STRATEGY above.
+import { programLabel as pricingProgramLabel } from '../lib/programLabel.js';
 import { PROPERTY_TYPES } from '../lib/enums.js';
 import { sizesOnAsIsValue, seasoningText } from '../lib/dealBasis.js';
 import ToolModal from '../components/ToolModal.jsx';
@@ -1233,7 +1236,7 @@ export default function Application() {
                   done={isDone(ppItem.status) || !!app.registered_program}
                   title="Products & pricing — register your product"
                   subtitle={app.registered_program
-                    ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : app.registered_program === 'silver' ? 'Silver Program' : app.registered_program === 'manual' ? 'Manual Program' : 'Standard Program')} · ${money(app.registered_total_loan)}`
+                    ? `Registered: ${app.registered_product_label || pricingProgramLabel(app.registered_program)} · ${money(app.registered_total_loan)}`
                     : 'Price your deal in the Term Sheet Studio and register your product — your terms, cash to close and liquidity requirement all come from it.'}
                   status={(isDone(ppItem.status) || app.registered_program) ? conditionStatusLabel('satisfied') : conditionStatusLabel('outstanding')}
                   open={tsDocs.length > 0}
@@ -1380,7 +1383,7 @@ export default function Application() {
                     issue={assetsItem.status === 'issue'}
                     title={q ? 'Assets & liquidity — your registered requirement' : assetsItem.label}
                     subtitle={q
-                      ? `Your ${app.registered_program === 'gold' ? 'Gold Standard' : app.registered_program === 'silver' ? 'Silver' : app.registered_program === 'manual' ? 'Manual Program' : 'Standard'} registration: verify ${money2(liq)} in liquidity`
+                      ? `Your ${pricingProgramLabel(app.registered_program, { short: true })} registration: verify ${money2(liq)} in liquidity`
                         /* The reserve is part of the liquidity total stated one clause
                            earlier and of the cash to close stated one clause later, both
                            of which already showed cents — so rounding this one figure left

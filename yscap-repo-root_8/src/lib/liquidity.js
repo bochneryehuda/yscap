@@ -53,14 +53,17 @@ function loudMonthsBanner() {
   return '⚠️ TWO (2) MONTHS OF BANK STATEMENTS REQUIRED — "This program requires two months of bank statements according to the registration."\n';
 }
 // Borrower-facing: NEVER names a note buyer (frozen rule). Program-named where we have a program,
-// generic otherwise; every branch states two months and carries the printout allowance. Silver and
-// Gold are tested BEFORE "standard" so the label "Gold Standard Program" can never fall through to
-// the Standard branch.
+// generic otherwise; every branch states two months and carries the printout allowance. Silver,
+// Speed and Gold are tested BEFORE "standard" so the label "Gold Standard Program" can never fall
+// through to the Standard branch. The Speed Program (2026-09-03) composes Standard and Silver —
+// both parents ask for two months, so the composition does too, and the borrower reads the
+// program's own name, never a buyer's.
 function bankStatementLine(program, assetMonths, noteBuyer) {
   const loud = loudMonthsBanner();
   const p = String(program || '');
   let ask;
   if (/silver/i.test(p)) ask = 'Provide 2 months of recent bank statements — the Silver Program requires two months.';
+  else if (/speed/i.test(p)) ask = 'Provide 2 months of recent bank statements — the Speed Program requires two months.';
   else if (/gold/i.test(p)) ask = 'Provide 2 months of recent bank statements — the Gold Standard Program requires two months.';
   else if (/standard/i.test(p)) ask = 'Provide 2 months of recent bank statements — the Standard Program requires two months.';
   else ask = 'Provide 2 months of recent bank statements — this loan requires two months.';

@@ -1,5 +1,6 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { moneyNum } from '../lib/money.js';
+import { programLabel } from '../lib/programLabel.js';
 
 /* The REAL static Term Sheet Studio (web/tools/term-sheet.html) embedded in
    the portal through a same-origin iframe. The static page and its frozen
@@ -249,18 +250,22 @@ export function readSnapshot(win) {
   const chk = (id) => { const e = doc.getElementById(id); return !!(e && e.checked); };
   const active = (id) => { const e = doc.getElementById(id); return !!(e && e.classList.contains('pcard-active')); };
   const program = active('pcardGold') ? 'gold' : active('pcardSilver') ? 'silver'
-    : active('pcardManual') ? 'manual' : active('pcardStd') ? 'standard' : null;
+    : active('pcardSpeed') ? 'speed' : active('pcardManual') ? 'manual' : active('pcardStd') ? 'standard' : null;
   const missBox = doc.getElementById('rMissing');
   const ready = !!missBox && missBox.style.display === 'none';
   const missing = missBox ? Array.from(missBox.querySelectorAll('li')).map((li) => li.textContent) : [];
-  let std = null, gold = null, silver = null;
+  let std = null, gold = null, silver = null, speed = null;
   try { std = win.TS._calc(); } catch (_) { /* engine not ready yet */ }
   try { gold = win.TS._calcGold(); } catch (_) { /* gold engine optional */ }
   try { silver = win.TS._calcSilver && win.TS._calcSilver(); } catch (_) { /* silver engine optional */ }
+  // Speed (2026-09-03) is the studio's own composition of Standard and Silver —
+  // read exactly like Silver, from the studio's calc, never recomputed here.
+  try { speed = win.TS._calcSpeed && win.TS._calcSpeed(); } catch (_) { /* speed engine optional */ }
   const d = program === 'gold' && gold && !gold.unavailable ? gold
-    : program === 'silver' && silver && !silver.unavailable ? silver : std;
+    : program === 'silver' && silver && !silver.unavailable ? silver
+    : program === 'speed' && speed && !speed.unavailable ? speed : std;
   return {
-    program, ready, missing, std, gold, silver, d,
+    program, ready, missing, std, gold, silver, speed, d,
     fields: {
       entityName: val('entityName'), borrowerName: val('borrowerName'), coBorrowerName: val('coBorrowerName'), propAddr: val('propAddr'), addrTBD: chk('addrTBD'),
       dealPurpose: val('dealPurpose'), dealType: val('dealType'),
@@ -278,10 +283,10 @@ export function readSnapshot(win) {
       tsTargetLoan: moneyVal('tsTargetLoan'),
       tsLadderPick: val('tsLadderPick'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
-      tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'), tsYspSilver: val('tsYspSilver'),
+      tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'), tsYspSilver: val('tsYspSilver'), tsYspSpeed: val('tsYspSpeed'),
       // Manual GOLD top-tier markup (item 15) — the studio's "manual section for the top tier".
       tsYspGoldT1: val('tsYspGoldT1'),
-      tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'), tsOrigSilver: val('tsOrigSilver'),
+      tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'), tsOrigSilver: val('tsOrigSilver'), tsOrigSpeed: val('tsOrigSpeed'),
       tsOrigManual: val('tsOrigManual'),
       tsFeeUW: moneyVal('tsFeeUW'), tsFeeCredit: moneyVal('tsFeeCredit'),
       /* OUR FEE'S TWO PARTS + the optional New York settlement agent fee (owner-directed
@@ -314,7 +319,9 @@ export function readSnapshot(win) {
       payoff: moneyVal('payoff'), payoffLender: val('payoffLender'), payoffLoanNo: val('payoffLoanNo'),
       cashOutAmt: moneyVal('cashOutAmt'),
       tsAccrual: val('tsAccrual'), tsDeferredOrig: val('tsDeferredOrig'),
-      tsMinIntStd: chk('tsMinIntStd'), tsMinIntGold: chk('tsMinIntGold'), tsMinIntSilver: chk('tsMinIntSilver'), tsMinIntManual: chk('tsMinIntManual'),
+      // Speed's own knobs (owner reversal of D5, 2026-09-03) — read like Silver's, from the
+      // studio's own boxes (`tsYspSpeed` / `tsOrigSpeed` / `tsMinIntSpeed`).
+      tsMinIntStd: chk('tsMinIntStd'), tsMinIntGold: chk('tsMinIntGold'), tsMinIntSilver: chk('tsMinIntSilver'), tsMinIntSpeed: chk('tsMinIntSpeed'), tsMinIntManual: chk('tsMinIntManual'),
     },
   };
 }
@@ -357,9 +364,9 @@ export function adminStateFromEngineInputs(inp) {
   inp = inp || {};
   const v = {};
   const put = (id, val) => { if (val != null && val !== '') v[id] = String(val); };
-  put('tsYspStd', inp.markupStdPct); put('tsYspGold', inp.markupGoldPct); put('tsYspSilver', inp.markupSilverPct);
+  put('tsYspStd', inp.markupStdPct); put('tsYspGold', inp.markupGoldPct); put('tsYspSilver', inp.markupSilverPct); put('tsYspSpeed', inp.markupSpeedPct);
   put('tsYspGoldT1', inp.markupGoldT1Pct);   // manual Gold top-tier markup (item 15)
-  put('tsOrigStd', inp.origStdPct); put('tsOrigGold', inp.origGoldPct); put('tsOrigSilver', inp.origSilverPct);
+  put('tsOrigStd', inp.origStdPct); put('tsOrigGold', inp.origGoldPct); put('tsOrigSilver', inp.origSilverPct); put('tsOrigSpeed', inp.origSpeedPct);
   put('tsOrigManual', inp.origManualPct);
   put('tsFeeUW', inp.lenderFee); put('tsFeeCredit', inp.creditFee);
   put('tsFeeUwPart', inp.underwritingFee); put('tsFeeLegal', inp.legalFee);
@@ -407,7 +414,7 @@ export function selectionFromSnapshot(snap) {
     source: 'term-sheet-studio',
     selectedAt: new Date().toISOString(),
     program: snap.program,
-    programLabel: snap.program === 'gold' ? 'Gold Standard Program' : snap.program === 'silver' ? 'Silver Program' : snap.program === 'manual' ? 'Manual Program' : 'Standard Program',
+    programLabel: programLabel(snap.program),
     strategy: snap.fields.dealType,
     purpose: snap.fields.dealPurpose,
     status: d.status || null,

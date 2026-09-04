@@ -579,7 +579,14 @@
     var effPurchase = totalPP;                        // price used for all leverage/pricing math
     if (isAssignment) {
       var rawFee = Math.max(0, totalPP - sellerPP);   // seller + fee always reconcile to the total
-      var maxFee = 0.15 * sellerPP;                   // 15% of the ORIGINAL (seller's) contract price
+      /* THE FINANCEABLE SHARE IS A LEVER THAT CAN ONLY TIGHTEN (owner-authorized 2026-09-03,
+         the Speed Program build — D1). A program composed ON TOP of this one may finance a
+         SMALLER share of the fee (Speed: 10%). A MIN against the company's 15%, so it can
+         never loosen the rule; unset / 0 / above 15% → exactly 0.15 and every figure below
+         is byte-identical (scripts/test-speed-levers-pure.js). The label prints the share
+         actually applied, which for the default is the same "15%" it always printed. */
+      var maxPct = (input.assignmentMaxPct > 0) ? Math.min(0.15, input.assignmentMaxPct) : 0.15;
+      var maxFee = maxPct * sellerPP;                 // the financeable share of the ORIGINAL (seller's) contract price
       var financeableFee = Math.min(rawFee, maxFee);
       var excessFee = Math.max(0, rawFee - financeableFee);
       effPurchase = sellerPP + financeableFee;        // recognized price
@@ -596,7 +603,7 @@
       assignment = {
         sellerPrice: round2(sellerPP), totalPrice: round2(totalPP), fee: round2(rawFee),
         maxFee: round2(maxFee), financeableFee: round2(financeableFee), excessOOP: round2(excessFee),
-        recognizedPrice: round2(effPurchase), overLimit: excessFee > 0.5, maxPct: 0.15,
+        recognizedPrice: round2(effPurchase), overLimit: excessFee > 0.5, maxPct: maxPct,
         overridden: ovrEff > 0
       };
     }
@@ -677,6 +684,16 @@
        the typed amount with the owner's own split intact — no sizing math changes.
        Inert when unset. */
     if (input.targetLoan && input.targetLoan > 0) capsEff.maxLoan = Math.min(capsEff.maxLoan, input.targetLoan);
+    /* TWO MORE VOLUNTARY CEILINGS, SAME KIND AS THE THREE ABOVE (owner-authorized 2026-09-03,
+       the Speed Program build — D1). The Speed Program is this engine and the Silver engine
+       run under ONE combined ceiling — the lesser of the two on every axis — and until now
+       the after-repair wall (Silver already had this lever) and the acquisition wall (neither
+       engine had it) could not be lowered from outside without the admin basis, which means
+       "manual product". Each is a MIN, so it can only ever REDUCE; the admin basis below
+       still wins; unset they are inert — byte-identical, proven the same way as targetLoan
+       (scripts/test-speed-levers-pure.js, built on scripts/lib/engine-baseline.js). */
+    if (input.targetARLTV && input.targetARLTV > 0) capsEff.maxARLTV = Math.min(capsEff.maxARLTV, input.targetARLTV);
+    if (input.targetAcqLTV && input.targetAcqLTV > 0) capsEff.maxAcqLTV = Math.min(capsEff.maxAcqLTV, input.targetAcqLTV);
     // ---- admin manual override: set the qualifying basis directly (only when > 0; default untouched) ----
     if (input.ovrAcqLTV > 0) capsEff.maxAcqLTV = input.ovrAcqLTV;
     if (input.ovrARLTV > 0) capsEff.maxARLTV = input.ovrARLTV;
@@ -817,8 +834,8 @@
         usd(assignment.financeableFee) + " of the " + usd(assignment.fee) + " assignment fee is financed" +
         (assignment.excessOOP > 0.5 ? ("; " + usd(assignment.excessOOP) + " is brought out of pocket at closing") : "") + ".");
     } else if (assignment && assignment.overLimit) {
-      add("ELIGIBLE", usd(assignment.financeableFee) + " of the " + usd(assignment.fee) + " assignment fee is financed (the 15% cap is " + usd(assignment.maxFee) +
-        ", 15% of the " + usd(assignment.sellerPrice) + " contract price); the loan is sized on the " + usd(assignment.recognizedPrice) + " effective price and the remaining " +
+      add("ELIGIBLE", usd(assignment.financeableFee) + " of the " + usd(assignment.fee) + " assignment fee is financed (the " + pct(assignment.maxPct) + " cap is " + usd(assignment.maxFee) +
+        ", " + pct(assignment.maxPct) + " of the " + usd(assignment.sellerPrice) + " contract price); the loan is sized on the " + usd(assignment.recognizedPrice) + " effective price and the remaining " +
         usd(assignment.excessOOP) + " is brought to closing as extra cash to close. To finance more of the assignment fee, request an exception.");
     }
     // Any assignment excess — over the 15% cap OR under an admin exception that still

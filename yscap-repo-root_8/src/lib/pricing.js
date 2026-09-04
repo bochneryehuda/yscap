@@ -13,11 +13,15 @@
    ===================================================================== */
 'use strict';
 
-let YSP = null, GSP = null, SVP = null, YSTitle = null, loadErr = null;
+let YSP = null, GSP = null, SVP = null, SPP = null, YSTitle = null, loadErr = null;
 try {
   YSP = require('../../web/tools/standard-program.js');
   GSP = require('../../web/tools/gold-standard.js');
   SVP = require('../../web/tools/silver-program.js');
+  // THE SPEED PROGRAM (owner-directed 2026-09-03) is a COMPOSITION of the two above —
+  // the lesser ceiling on every axis, a $1M wall, a 10% assignment share, the higher
+  // rate. It holds no number of its own; see web/tools/speed-program.js.
+  SPP = require('../../web/tools/speed-program.js');
   YSTitle = require('../../web/tools/title-cost.js');
 } catch (e) {
   loadErr = e && e.message ? e.message : String(e);
@@ -33,7 +37,7 @@ try {
    into a `loadErr` string that reads as "the pricing engines are missing". */
 const closingCosts = require('./closing-costs');
 
-function enginesReady() { return !!(YSP && GSP && SVP && YSTitle); }
+function enginesReady() { return !!(YSP && GSP && SVP && SPP && YSTitle); }
 
 /* THE MANUAL SECTION FOR EVERY GOVERNMENT CHARGE (owner-directed 2026-08-23:
    *"All those line items should also be able to be added to the manual section to
@@ -65,7 +69,7 @@ function taxOverridesFrom(input) {
   return out;
 }
 
-const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Program', silver: 'Silver Program', manual: 'Manual Program' };
+const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Program', silver: 'Silver Program', speed: 'Speed Program', manual: 'Manual Program' };
 // Hardcoded fee fallback (used only if the company-settings cache is stone
 // cold). Company defaults (Pricing Admin Center) override these for every
 // not-yet-registered file; a per-file adminPricing override still wins over
@@ -301,6 +305,7 @@ function buildInputs(app, experience, overrides) {
     ...(app.file_markup_std_pct  != null ? { markupStdPct:  num(app.file_markup_std_pct) }  : {}),
     ...(app.file_markup_gold_pct != null ? { markupGoldPct: num(app.file_markup_gold_pct) } : {}),
     ...(app.file_markup_silver_pct != null ? { markupSilverPct: num(app.file_markup_silver_pct) } : {}),
+    ...(app.file_markup_speed_pct != null ? { markupSpeedPct: num(app.file_markup_speed_pct) } : {}),   // db/694
     /* Sticky per-file CONSTRUCTION FEASIBILITY fee (owner-directed 2026-08-21, db/609) — the
        studio's manual box, persisted exactly like the markups above so a re-quote never drops the
        amount an admin typed. NULL/absent → the company default for this deal's kind governs, so
@@ -386,14 +391,14 @@ function buildInputs(app, experience, overrides) {
     // whom. Whitelisted so the studio and the file price the same deal.
     'payoff',
     'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
-    'markupStdPct', 'markupGoldPct', 'markupSilverPct',
+    'markupStdPct', 'markupGoldPct', 'markupSilverPct', 'markupSpeedPct',
     // Per-file GOLD TOP-TIER markup (owner item 15 — the studio's "manual section
     // for the top tier"). A percent; overlays the company per-tier default for the
     // Gold engine's Tier 1 only. Blank/absent leaves the historic Gold Tier 1 = 0
     // (or the company per-tier default if one is set) — so it never changes a file
     // that doesn't use it. See markupTiersFor().
     'markupGoldT1Pct',
-    'origStdPct', 'origGoldPct', 'origSilverPct', 'origManualPct',
+    'origStdPct', 'origGoldPct', 'origSilverPct', 'origSpeedPct', 'origManualPct',
     'lenderFee', 'creditFee', 'appraisalFee', 'titleFee', 'feasibilityFee',
     /* OUR FEE'S TWO PARTS AND THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE (owner-directed
        2026-08-26). Each is a per-file amount typed in the studio's manual section; a BLANK box is
@@ -448,6 +453,7 @@ function buildInputs(app, experience, overrides) {
     if (overrides.markupStdPct === '') delete out.markupStdPct;
     if (overrides.markupGoldPct === '') delete out.markupGoldPct;
     if (overrides.markupSilverPct === '') delete out.markupSilverPct;
+    if (overrides.markupSpeedPct === '') delete out.markupSpeedPct;
     if (overrides.markupGoldT1Pct === '') delete out.markupGoldT1Pct;
     /* OUR FEE'S TWO PARTS, THE OPTIONAL SETTLEMENT FEE AND THE CEMA AMOUNT need the SAME explicit
        delete, and it is not the NUMK loop that provides it. That loop SKIPS a blank, which stops a
@@ -517,13 +523,13 @@ function numberOverride(input, key, fallback) {
 function percentOverride(input, key, fallbackFraction) {
   return hasInput(input, key) ? num(input[key]) / 100 : fallbackFraction;
 }
-function markupKeyFor(program) { return program === 'gold' ? 'markupGoldPct' : program === 'silver' ? 'markupSilverPct' : 'markupStdPct'; }
+function markupKeyFor(program) { return program === 'gold' ? 'markupGoldPct' : program === 'silver' ? 'markupSilverPct' : program === 'speed' ? 'markupSpeedPct' : 'markupStdPct'; }
 function markupOverride(input, program) {
   const key = markupKeyFor(program);
   return hasInput(input, key) ? num(input[key]) / 100 : null;
 }
 function setEngineMarkup(program, value) {
-  const engine = program === 'gold' ? GSP : (program === 'silver' ? SVP : YSP);
+  const engine = program === 'gold' ? GSP : (program === 'silver' ? SVP : (program === 'speed' ? SPP : YSP));
   if (engine && typeof engine.setMarkup === 'function') engine.setMarkup(value);
 }
 
@@ -540,7 +546,7 @@ function setEngineMarkup(program, value) {
    historic behavior byte-for-byte (Gold Tier 1 = 0, every other tier the base/
    override markup). A configured value is what makes Gold Tier 1 controllable —
    exactly the owner's "we don't even have an option to control the best tier". */
-function tierMapKey(program) { return program === 'gold' ? 'gold' : program === 'silver' ? 'silver' : 'standard'; }
+function tierMapKey(program) { return program === 'gold' ? 'gold' : program === 'silver' ? 'silver' : program === 'speed' ? 'speed' : 'standard'; }
 function markupTiersFor(program, input, cd) {
   const out = {};
   const comp = cd && cd.markupTiers && typeof cd.markupTiers === 'object' ? cd.markupTiers[tierMapKey(program)] : null;
@@ -562,10 +568,10 @@ function markupTiersFor(program, input, cd) {
   return Object.keys(out).length ? out : null;
 }
 function setEngineMarkupTiers(program, tiers) {
-  const engine = program === 'gold' ? GSP : (program === 'silver' ? SVP : YSP);
+  const engine = program === 'gold' ? GSP : (program === 'silver' ? SVP : (program === 'speed' ? SPP : YSP));
   if (engine && typeof engine.setMarkupTiers === 'function') engine.setMarkupTiers(tiers);
 }
-function engineFor(program) { return program === 'gold' ? GSP : (program === 'silver' ? SVP : YSP); }
+function engineFor(program) { return program === 'gold' ? GSP : (program === 'silver' ? SVP : (program === 'speed' ? SPP : YSP)); }
 
 /* ── THE RATE BUILD-UP: buy rate → our markup → the borrower's note rate ────────
    Owner-directed 2026-08-07, on the registered-product page: "when I have added
@@ -690,14 +696,26 @@ function attachRateBuildUp(quote, program, input, ev, m, tiers) {
 // per-firm overrides + a broker origination fee WITHOUT any TPO branch in the
 // frozen engine. When absent (every retail caller) this reads current() exactly as
 // before, so a retail quote is byte-identical. See src/lib/tpo-pricing.js.
+/* One parent's origination fraction, resolved exactly as normalize() resolves it for
+   that program on its own: per-file override → company default → engine constant. */
+function resolvedOrigPct(program, input, cd) {
+  const engineOrigPct = (program === 'gold' ? (GSP.constants && GSP.constants.ORIG_PCT)
+    : program === 'silver' ? (SVP && SVP.constants && SVP.constants.ORIG_PCT)
+    : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
+  const companyOrigPct = program === 'gold' ? cd.origGoldPct : program === 'silver' ? cd.origSilverPct : program === 'speed' ? cd.origSpeedPct : cd.origStdPct;
+  const key = program === 'gold' ? 'origGoldPct' : program === 'silver' ? 'origSilverPct' : program === 'speed' ? 'origSpeedPct' : 'origStdPct';
+  return percentOverride(input, key, companyOrigPct != null ? companyOrigPct / 100 : engineOrigPct);
+}
+
 function normalize(program, input, ev, ladder, opts) {
   const s = ev.sizing || {};
   const cd = (opts && opts.settings) || pricingSettings.current();   // company-wide defaults (or literals)
   // Origination default: per-file override → COMPANY default → engine constant.
   const engineOrigPct = (program === 'gold' ? (GSP.constants && GSP.constants.ORIG_PCT)
     : program === 'silver' ? (SVP && SVP.constants && SVP.constants.ORIG_PCT)
+    : program === 'speed' ? (SPP && SPP.constants && SPP.constants.ORIG_PCT)
     : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
-  const companyOrigPct = program === 'gold' ? cd.origGoldPct : program === 'silver' ? cd.origSilverPct : cd.origStdPct;
+  const companyOrigPct = program === 'gold' ? cd.origGoldPct : program === 'silver' ? cd.origSilverPct : program === 'speed' ? cd.origSpeedPct : cd.origStdPct;
   const defaultOrigPct = (companyOrigPct != null ? companyOrigPct / 100 : engineOrigPct);
   /* THE MANUAL PRODUCT HAS ITS OWN ORIGINATION KNOB (owner-directed 2026-07-30:
      "we don't have a word to enter origination fee for the manual program. We only
@@ -710,8 +728,13 @@ function normalize(program, input, ev, ladder, opts) {
      origination onto origStdPct/origGoldPct only). */
   const origKey = program === 'gold' ? 'origGoldPct'
     : program === 'silver' ? 'origSilverPct'
+    : program === 'speed' ? 'origSpeedPct'
     : (program === 'manual' && hasInput(input, 'origManualPct')) ? 'origManualPct'
     : 'origStdPct';
+  /* THE SPEED PROGRAM HAS ITS OWN ORIGINATION KNOB (owner-directed 2026-09-03, second
+     message, reversing D5: "adjust the settings and the pricing of the speed program
+     separately, including … the origination fees"): per-file origSpeedPct → company
+     orig_speed_pct (db/694) → 1.25%, the same chain as every other program. */
   const origPct = percentOverride(input, origKey, defaultOrigPct);
   // Rounding policy (owner-directed 2026-07-09): the financed loan is reported in
   // WHOLE DOLLARS, floored DOWN — never lend more than the engine sized. The
@@ -1208,6 +1231,9 @@ function normalize(program, input, ev, ladder, opts) {
     liquidityRequired,
     assignment: ev.assignment || null,
     ladder: ladder || null,
+    // THE SPEED PROGRAM'S COMPOSITION — who set each ceiling, both parents' rates at this
+    // structure, the rate donor (web/tools/speed-program.js). Null on every other program.
+    speed: (program === 'speed' && ev.speed) ? ev.speed : null,
     liquidity: liquidityRequired,
     guidelines: {
       caps,             // EFFECTIVE — what this deal was sized/priced at (enforcement)
@@ -1257,6 +1283,18 @@ function normalize(program, input, ev, ladder, opts) {
    reserve / markup / origination defaults follow the Standard program (the
    normalize()/markup helpers all treat any non-'gold' program as Standard). Only
    the program TAG and label differ, so the guidelines stay Standard's. */
+/* One program's markup fraction: per-file override → COMPANY default → null (the
+   engine's own built-in markup). Factored out so the Speed branch resolves each
+   parent's markup EXACTLY as that parent's own quote does. */
+function markupFor(program, input, cd) {
+  let m = markupOverride(input, program);
+  if (m == null) {
+    const companyMarkup = program === 'gold' ? cd.markupGoldPct : program === 'silver' ? cd.markupSilverPct : cd.markupStdPct;
+    if (companyMarkup != null) m = num(companyMarkup) / 100;
+  }
+  return m;
+}
+
 function quoteProgram(program, input, opts) {
   if (!enginesReady()) throw new Error('pricing engines unavailable' + (loadErr ? ': ' + loadErr : ''));
   // Markup: per-file override → COMPANY default → engine's built-in markup.
@@ -1265,17 +1303,45 @@ function quoteProgram(program, input, opts) {
   // `opts.settings` (TPO channel/firm defaults) overrides the retail company `cd`
   // for a TPO file only; absent for every retail caller → current() → unchanged.
   const cd = (opts && opts.settings) || pricingSettings.current();
-  let m = markupOverride(input, program);
-  if (m == null) {
-    const companyMarkup = program === 'gold' ? cd.markupGoldPct : program === 'silver' ? cd.markupSilverPct : cd.markupStdPct;
-    if (companyMarkup != null) m = num(companyMarkup) / 100;
-  }
+  const m = program === 'speed' ? null : markupFor(program, input, cd);
   if (m != null) setEngineMarkup(program, m);
   // Per-tier markup overlay (item 15). Inert when nothing is configured, so an
   // unconfigured file prices byte-for-byte as before. Reset in each finally,
   // exactly like setEngineMarkup — the engine is only ever "hot" during a quote.
-  const tiers = markupTiersFor(program, input, cd);
+  const tiers = program === 'speed' ? null : markupTiersFor(program, input, cd);
   if (tiers) setEngineMarkupTiers(program, tiers);
+  if (program === 'speed') {
+    /* THE SPEED PROGRAM HAS ITS OWN MARGIN (owner-directed 2026-09-03, second message,
+       reversing D5: "adjust the settings and the pricing of the speed program separately,
+       including adjusting the margins"). The composition still prices BOTH parents and
+       charges the higher rate — but both parents now run at the SPEED margin (per-file
+       sticky file_markup_speed_pct → company markup_speed_pct → the engines' built-in
+       0.5%) and the Speed per-tier overlay, so the note rate is the higher of the two
+       BUY rates plus the Speed margin. Silver's frozen engine still clamps any margin it
+       is handed at 1.00% (its buyer eats spread above one point), so a Speed margin above
+       1.00% is earned only when Standard donates the rate — stated in the admin hint.
+       SPP.setMarkup / setMarkupTiers forward to both parents; reset in finally, so the
+       engines are only ever "hot" during this quote, like every other branch. */
+    const mSpeed = markupFor('speed', input, cd);
+    const tSpeed = markupTiersFor('speed', input, cd);
+    if (mSpeed != null) setEngineMarkup('speed', mSpeed);
+    if (tSpeed) setEngineMarkupTiers('speed', tSpeed);
+    try {
+      const ev = SPP.evaluate(input);
+      if (input.forcePrice && ev.status === 'INELIGIBLE') { ev.status = 'MANUAL'; ev.exitShortfall = 0; }
+      let ladder = null;
+      try {
+        const pl = SPP.priceLadder(input);
+        if (pl && pl.eligible && pl.rows && pl.rows.length) ladder = { maxLtc: pl.maxLtc, binding: pl.binding, rows: pl.rows };
+      } catch (_) { /* ladder is best-effort */ }
+      // The build-up probes THROUGH the composition (SPP forwards a pinned markup to both
+      // parents) and proves itself or omits; the Speed margin state is restored after it.
+      return attachRateBuildUp(normalize('speed', input, ev, ladder, opts), 'speed', input, ev, mSpeed, tSpeed);
+    } finally {
+      if (mSpeed != null) setEngineMarkup('speed', null);
+      if (tSpeed) setEngineMarkupTiers('speed', null);
+    }
+  }
   if (program === 'silver') {
     // The Silver program prices on its own frozen engine (EMCAP grid). Its
     // ladder varies by LTC band exactly like Standard's, so it ships one too.
@@ -1337,7 +1403,8 @@ function quoteAll(app, experience, overrides, opts) {
   const standard = safeQuote('standard', input, opts);
   const gold = safeQuote('gold', input, opts);
   const silver = safeQuote('silver', input, opts);
-  return { inputs: input, standard, gold, silver };
+  const speed = safeQuote('speed', input, opts);
+  return { inputs: input, standard, gold, silver, speed };
 }
 
 function safeQuote(program, input, opts) {
@@ -1374,7 +1441,7 @@ function econVersionFor(app) {
     // the sticky per-file markups.
     app.rehab_type, app.sqft_pre, app.sqft_post,
     (app.property_address && app.property_address.state) || '',
-    app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct, app.file_feasibility_fee,
+    app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct, app.file_markup_speed_pct, app.file_feasibility_fee,
     // Our fee's two parts + the optional New York settlement fee — fingerprinted siblings of
     // the feasibility fee, so a change to one re-quotes rather than serving a stale answer.
     app.file_underwriting_fee, app.file_legal_fee, app.file_settlement_fee, app.file_cema_fee, app.ny_cema,

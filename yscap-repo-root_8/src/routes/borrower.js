@@ -907,7 +907,7 @@ const BORROWER_HIDDEN_APP_FIELDS = [
   'market_rent',
   // INTERNAL pricing margin + internal valuations — a borrower may see their loan
   // structure but never OUR markup or the internal appraised figures.
-  'file_markup_std_pct', 'file_markup_gold_pct', 'file_markup_silver_pct', 'actual_appraised_value', 'approx_appraised_value',
+  'file_markup_std_pct', 'file_markup_gold_pct', 'file_markup_silver_pct', 'file_markup_speed_pct', 'actual_appraised_value', 'approx_appraised_value',
   // The A/B-piece split (db/579) — how the loan is SOLD, internal knowledge of
   // the same class as the note buyer's name; never a borrower-facing fact
   // (audit 2026-08-18 finding 4: the denylist-over-SELECT-a.* failed open on
@@ -1138,7 +1138,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         code: 'econ_version_conflict',
       }, 'econ_version_conflict', { sent: String(b.econVersion).slice(0, 32) });
     }
-    const program = b.program === 'gold' ? 'gold' : b.program === 'silver' ? 'silver' : 'standard';
+    // ONE normalizer for every door (manual-program.requestedProgramKey) —
+    // standard / gold / silver / speed; anything else is Standard.
+    const program = manualProgram.requestedProgramKey(b.program);
     const overrides = borrowerPricingOverrides(b.overrides || {});
     // A REGISTERED product is authoritative terms. A BORROWER never injects the
     // claimed-experience counts on register — they must not beat the verified
@@ -1207,7 +1209,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         field: 'asIsValue' });
     }
     // Term-sheet options (owner-directed 2026-07-22) — display/record only. A
-    // borrower self-registers Standard/Gold/Silver only (never manual), so
+    // borrower self-registers Standard/Gold/Silver/Speed only (never manual), so
     // min-interest defaults OFF here unless explicitly set.
     const rawTermOptions = (b.termOptions && typeof b.termOptions === 'object') ? b.termOptions : {};
     // Effective closing date = studio's, else the file's existing — so a re-register

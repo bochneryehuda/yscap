@@ -10,8 +10,11 @@
  *    export a provider's tape only when the loan is REGISTERED and BOTH line up:
  *      (a) the loan's capital provider (applications.lender, normalized) matches
  *          the tape's provider, AND
- *      (b) the loan's registered program is the correct one for that provider
- *          (Gold↔Blue Lake, Standard↔Fidelis, Silver↔EMCAP — see program-provider.js).
+ *      (b) the loan's registered program is a correct one for that provider
+ *          (Gold↔Blue Lake, Standard↔Fidelis, Silver↔EMCAP, and — since 2026-09-03 —
+ *          Speed↔Fidelis OR EMCAP; see program-provider.js). Speed is the one
+ *          one-to-many row: a Speed loan implies no single buyer, so its tape is
+ *          whichever buyer is on the file, and NEITHER while the buyer is blank.
  *  - A MANUAL (admin-approved) loan's tape is ADMIN-ONLY: only an admin may export
  *    it, regardless of provider (the manual program is not locked to a provider).
  *
@@ -22,6 +25,22 @@
 const registry = require('./registry');
 const { normNoteBuyer } = require('../conditions/field-registry');
 const pp = require('./program-provider');
+
+// EVERY marketed program a non-admin may export this provider's tape under — the REVERSE
+// of programMatchesBuyer, DERIVED from it over program-availability's PROGRAM_KEYS (never a
+// second hand-kept table): Fidelis → [standard, speed], EMCAP → [silver, speed], Blue Lake
+// → [gold]. `programForProvider` (one program, the 1:1 rows) still answers "which program
+// is this buyer's own"; this answers "which registrations may ship on this tape", which
+// since the Speed Program (2026-09-03) is a list. Manual is never in PROGRAM_KEYS.
+function programsForProvider(buyerKey) {
+  if (!buyerKey) return [];
+  return require('../program-availability').PROGRAM_KEYS.filter((p) => pp.programMatchesBuyer(p, buyerKey));
+}
+// "Standard" / "Silver or Speed" — the labels a mismatch message asks the reader to pick from.
+function programsLabel(keys) {
+  const labels = keys.map(pp.programLabel);
+  return labels.length <= 1 ? (labels[0] || '') : `${labels.slice(0, -1).join(', ')} or ${labels[labels.length - 1]}`;
+}
 
 class BuyerMismatchError extends Error {
   constructor(tape, currentBuyerRaw) {
@@ -56,15 +75,21 @@ class NotRegisteredError extends Error {
 class ProgramMismatchError extends Error {
   constructor(tape, registeredProgram) {
     const have = pp.programLabel(registeredProgram);
-    const want = pp.programLabel(pp.programForProvider(tape.buyerKey));
-    super(`This loan is registered as the ${have} program, but the ${tape.name} tape is for ${want} loans. Register it as ${want}, or switch its capital provider.`);
+    const wants = programsForProvider(tape.buyerKey);
+    const want = programsLabel(wants);
+    // A tape whose buyer has NO program paired for a non-admin export must still read as a
+    // sentence — never "is for  loans" — and must say what actually unblocks it (an admin).
+    super(wants.length
+      ? `This loan is registered as the ${have} program, but the ${tape.name} tape is for ${want} loans. Register it as ${want}, or switch its capital provider.`
+      : `This loan is registered as the ${have} program, and no program is paired with the ${tape.name} tape for a non-admin export. Ask an admin to export it.`);
     this.name = 'ProgramMismatchError';
     this.code = 'program_mismatch';
     this.status = 409;
     this.tapeKey = tape.key;
     this.tapeName = tape.name;
     this.registeredProgram = pp.normProgram(registeredProgram) || null;
-    this.requiredProgram = pp.programForProvider(tape.buyerKey);
+    this.requiredProgram = pp.programForProvider(tape.buyerKey);   // the buyer's OWN program (1:1 rows)
+    this.requiredPrograms = wants;                                  // every program that may ship on it
   }
 }
 // A manual (admin-approved) loan's tape is admin-only.
@@ -150,8 +175,11 @@ function tapeAvailability(buyerKey, currentBuyerRaw, opts = {}) {
         ? `Capital provider is "${cur}" — switch it to ${t.name} to export this tape.`
         : `No capital provider set — set it to ${t.name} to export this tape.`;
     } else if (!pp.programMatchesBuyer(prog, t.buyerKey)) {
-      const want = pp.programLabel(pp.programForProvider(t.buyerKey));
-      reason = `This loan is registered as the ${pp.programLabel(prog)} program; the ${t.name} tape is for ${want} loans. Register it as ${want} (or switch the capital provider).`;
+      const wants = programsForProvider(t.buyerKey);
+      const want = programsLabel(wants);
+      reason = wants.length
+        ? `This loan is registered as the ${pp.programLabel(prog)} program; the ${t.name} tape is for ${want} loans. Register it as ${want} (or switch the capital provider).`
+        : `This loan is registered as the ${pp.programLabel(prog)} program; no program is paired with the ${t.name} tape for a non-admin export — ask an admin.`;
     } else {
       available = true;
     }
@@ -163,4 +191,5 @@ module.exports = {
   BuyerMismatchError, NotRegisteredError, ProgramMismatchError, ManualAdminOnlyError,
   TapeNotFoundError, LoanNotFoundError,
   loanBuyerKey, keyNamesTapeBuyer, buyerMatches, assertBuyer, exportGate, assertExportAllowed, tapeAvailability,
+  programsForProvider, programsLabel,
 };

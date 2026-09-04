@@ -93,14 +93,28 @@ function needsSuperAdminApproval({ program, status, pricingOverrides, needsAppro
 }
 
 /**
+ * The MARKETED program a register door was asked for, normalized. ONE definition for the
+ * six doors (staff register + counter-accept, borrower, TPO, intake, offer): the key comes
+ * from vesting-program-rule.programKey (the repo's one program normalizer) and must be one of
+ * program-availability.PROGRAM_KEYS (standard / gold / silver / speed); anything else — a
+ * blank, junk, or `manual`, which is never REQUESTED but resolved from the overrides below —
+ * falls back to 'standard', exactly as the doors' old `gold ? … : silver ? … : 'standard'`
+ * ternaries did. Adding a program is then a change to those two lists, never to a door.
+ */
+function requestedProgramKey(raw) {
+  const key = require('./vesting-program-rule').programKey(raw);
+  return require('./program-availability').PROGRAM_KEYS.includes(key) ? key : 'standard';
+}
+
+/**
  * The program a registration should be recorded under. A structural override
- * ALWAYS resolves to 'manual', regardless of which card (Standard/Gold) the
- * studio was on — you can't register a structural override under Standard/Gold.
- * A plain markup/fee/rate override keeps the requested program.
+ * ALWAYS resolves to 'manual', regardless of which card (Standard/Gold/Silver/Speed)
+ * the studio was on — you can't register a structural override under a marketed
+ * program. A plain markup/fee/rate override keeps the requested program.
  */
 function resolveProgram(requestedProgram, overrides) {
   if (isManualProduct(overrides)) return 'manual';
-  return requestedProgram === 'gold' ? 'gold' : requestedProgram === 'silver' ? 'silver' : 'standard';
+  return requestedProgramKey(requestedProgram);
 }
 
 // ---------------------------------------------------------------------------
@@ -619,7 +633,7 @@ async function counterEscalation(id, staffId, { counterTerms, counterNote }, cli
 }
 
 module.exports = {
-  STRUCTURAL_OVERRIDE_KEYS, engaged, structuralOverridesEngaged, isManualProduct, needsSuperAdminApproval, resolveProgram,
+  STRUCTURAL_OVERRIDE_KEYS, engaged, structuralOverridesEngaged, isManualProduct, needsSuperAdminApproval, resolveProgram, requestedProgramKey,
   exceptionCoveredByGrant, latestApprovedGrant,
   SETTINGS_DEFAULTS, loadSettings, saveSettings,
   openEscalation, closePendingForApp, pendingForApp, listEscalations, pendingCount, decideEscalation, counterEscalation,

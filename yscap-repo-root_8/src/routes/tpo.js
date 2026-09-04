@@ -120,7 +120,10 @@ async function tpoAudit(req, action, entityType, entityId, detail) {
 // hand-typed) and is NEVER touched, so an RCN file's note buyer is safe.
 const TPO_LEGACY_SHORT_LABELS = ['Blue Lake', 'Fidelis', 'EMCAP'];
 const TPO_OWN_STAMP_KEYS = new Set();
-for (const p of ['gold', 'standard', 'silver']) {
+// Every MARKETED program, from its one definition (program-availability.PROGRAM_KEYS).
+// A program that implies no single buyer (Speed — sold to Fidelis OR EMCAP, chosen by
+// the team later, like Manual) derives null and simply adds no stamp.
+for (const p of require('../lib/program-availability').PROGRAM_KEYS) {
   const canon = require('../lib/note-buyer-for-program').noteBuyerForProgram(p);
   if (canon) TPO_OWN_STAMP_KEYS.add(require('../lib/conditions/field-registry').normNoteBuyer(canon));
 }
@@ -741,7 +744,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         code: 'econ_version_conflict',
       }, 'econ_version_conflict');
     }
-    const program = b.program === 'gold' ? 'gold' : b.program === 'silver' ? 'silver' : 'standard';
+    // ONE normalizer for every door (manual-program.requestedProgramKey) —
+    // standard / gold / silver / speed; anything else is Standard.
+    const program = manualProgram.requestedProgramKey(b.program);
     const overrides = borrowerPricingOverrides(b.overrides || {});
     // A broker never injects the claimed-experience counts on register — the
     // registered basis uses the file's experience of record (funding stays gated
@@ -780,7 +785,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         field: 'asIsValue' });
     }
     // Term-sheet options (display/record only). A broker registers Standard/Gold/
-    // Silver only (never manual), so min-interest defaults OFF unless set.
+    // Silver/Speed only (never manual), so min-interest defaults OFF unless set.
     const rawTermOptions = (b.termOptions && typeof b.termOptions === 'object') ? b.termOptions : {};
     const closingForDates = rawTermOptions.estClosingDate || f.app.est_closing_date || f.app.expected_closing || null;
     const kd = termOpts.keyDates(closingForDates, inputs.term);

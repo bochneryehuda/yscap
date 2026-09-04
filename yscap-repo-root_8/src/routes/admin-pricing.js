@@ -18,7 +18,7 @@ router.get('/', async (req, res) => {
   try {
     const cur = await pricingSettings.load();
     const hist = await db.query(
-      `SELECT cps.id, cps.markup_std_pct, cps.markup_gold_pct, cps.markup_silver_pct, cps.orig_std_pct, cps.orig_gold_pct, cps.orig_silver_pct,
+      `SELECT cps.id, cps.markup_std_pct, cps.markup_gold_pct, cps.markup_silver_pct, cps.markup_speed_pct, cps.orig_std_pct, cps.orig_gold_pct, cps.orig_silver_pct, cps.orig_speed_pct,
               cps.lender_fee, cps.credit_fee, cps.appraisal_fee, cps.title_fee, cps.extra_fees, cps.markup_tiers, cps.program_availability, cps.lender_fees, cps.note,
               cps.is_current, cps.created_at, s.full_name AS updated_by_name
          FROM company_pricing_settings cps
@@ -47,8 +47,14 @@ router.put('/', async (req, res) => {
   const cols = {
     markup_std_pct: numOrNull(b.markupStdPct), markup_gold_pct: numOrNull(b.markupGoldPct),
     markup_silver_pct: numOrNull(b.markupSilverPct),
+    // The Speed Program's own knobs (db/694 — the owner's reversal of decision D5,
+    // 2026-09-03: "editable and managed like a real program"). No 1.00% cap of its own:
+    // Speed charges the HIGHER of the two parents' rates with both run at this margin,
+    // and Silver's frozen engine clamps whatever it is handed at 1.00% — so a margin
+    // above one point is simply earned on the deals where Standard sets the rate.
+    markup_speed_pct: numOrNull(b.markupSpeedPct),
     orig_std_pct: numOrNull(b.origStdPct), orig_gold_pct: numOrNull(b.origGoldPct),
-    orig_silver_pct: numOrNull(b.origSilverPct),
+    orig_silver_pct: numOrNull(b.origSilverPct), orig_speed_pct: numOrNull(b.origSpeedPct),
     lender_fee: numOrNull(b.lenderFee), credit_fee: numOrNull(b.creditFee),
     appraisal_fee: numOrNull(b.appraisalFee), title_fee: numOrNull(b.titleFee),
     note: b.note ? String(b.note).slice(0, 300) : null,
@@ -103,8 +109,12 @@ router.put('/', async (req, res) => {
   // contract as extraFees/markupTiers: a caller that does NOT send
   // programAvailability keeps the current switches (the legacy V1 pricing screen
   // never sends it); an explicit value replaces them. Cleaning lives in the ONE
-  // rule module (src/lib/program-availability.js): only the three real programs,
-  // only explicit OFF rows, note capped — so junk can never switch a program off.
+  // rule module (src/lib/program-availability.js): only the marketed programs
+  // (its PROGRAM_KEYS — Standard / Gold / Silver / Speed; never Manual), only
+  // explicit OFF rows, note capped — so junk can never switch a program off.
+  // The Speed Program has NO markup / origination knob of its own (owner decision
+  // 2026-09-03: it prices on its two parents' settings) — availability is the
+  // only Speed setting this endpoint carries, and it arrives through that list.
   let programAvailability;
   if (b.programAvailability !== undefined) {
     programAvailability = require('../lib/program-availability').cleanProgramAvailability(b.programAvailability);
@@ -155,8 +165,8 @@ function shapeTpoChannel(row) {
   row = row || {};
   const n = (v) => (v == null || v === '' ? null : Number(v));
   return {
-    markupStdPct: n(row.markup_std_pct), markupGoldPct: n(row.markup_gold_pct), markupSilverPct: n(row.markup_silver_pct),
-    origStdPct: n(row.orig_std_pct), origGoldPct: n(row.orig_gold_pct), origSilverPct: n(row.orig_silver_pct),
+    markupStdPct: n(row.markup_std_pct), markupGoldPct: n(row.markup_gold_pct), markupSilverPct: n(row.markup_silver_pct), markupSpeedPct: n(row.markup_speed_pct),
+    origStdPct: n(row.orig_std_pct), origGoldPct: n(row.orig_gold_pct), origSilverPct: n(row.orig_silver_pct), origSpeedPct: n(row.orig_speed_pct),
     markupTiers: pricingSettings.cleanMarkupTiers(row.markup_tiers),
   };
 }
@@ -184,7 +194,7 @@ router.get('/tpo', async (req, res) => {
   try {
     const retail = await pricingSettings.load();
     const row = (await db.query(
-      `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct, markup_tiers
+      `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, markup_speed_pct, orig_std_pct, orig_gold_pct, orig_silver_pct, orig_speed_pct, markup_tiers
          FROM tpo_pricing_settings WHERE id = 1 LIMIT 1`)).rows[0];
     res.json({ tpo: shapeTpoChannel(row), retail });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -196,8 +206,8 @@ router.put('/tpo', async (req, res) => {
   // retail". Same guardrails as the retail defaults: percents 0-100, Silver markup
   // hard-capped at 1.00% (the engine clamps too; keep the stored default honest).
   const cols = {
-    markup_std_pct: numOrNull(b.markupStdPct), markup_gold_pct: numOrNull(b.markupGoldPct), markup_silver_pct: numOrNull(b.markupSilverPct),
-    orig_std_pct: numOrNull(b.origStdPct), orig_gold_pct: numOrNull(b.origGoldPct), orig_silver_pct: numOrNull(b.origSilverPct),
+    markup_std_pct: numOrNull(b.markupStdPct), markup_gold_pct: numOrNull(b.markupGoldPct), markup_silver_pct: numOrNull(b.markupSilverPct), markup_speed_pct: numOrNull(b.markupSpeedPct),
+    orig_std_pct: numOrNull(b.origStdPct), orig_gold_pct: numOrNull(b.origGoldPct), orig_silver_pct: numOrNull(b.origSilverPct), orig_speed_pct: numOrNull(b.origSpeedPct),
   };
   for (const [k, v] of Object.entries(cols)) {
     if (v == null) continue;
@@ -238,7 +248,7 @@ router.put('/tpo', async (req, res) => {
     await tpoPricing.loadChannel();
     // Verify-after-write (the repo's #1 bug-class guard): re-read + return.
     const saved = shapeTpoChannel((await db.query(
-      `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct, markup_tiers
+      `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, markup_speed_pct, orig_std_pct, orig_gold_pct, orig_silver_pct, orig_speed_pct, markup_tiers
          FROM tpo_pricing_settings WHERE id = 1`)).rows[0]);
     try {
       await db.query(

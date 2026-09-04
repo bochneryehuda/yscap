@@ -13,8 +13,8 @@ const db = require('../db');
 // The exact literals the system used before this feature — the cold-cache and
 // missing-row fallback, so an unwarmed process prices identically to before.
 const SYSTEM_DEFAULTS = Object.freeze({
-  markupStdPct: 0.5, markupGoldPct: 0.5, markupSilverPct: 0.5,
-  origStdPct: 1.25, origGoldPct: 1.25, origSilverPct: 1.25,
+  markupStdPct: 0.5, markupGoldPct: 0.5, markupSilverPct: 0.5, markupSpeedPct: 0.5,
+  origStdPct: 1.25, origGoldPct: 1.25, origSilverPct: 1.25, origSpeedPct: 1.25,
   // OUR OWN FEE. `lenderFee` is the TOTAL and is now DERIVED from `lenderFees`
   // below (1,200 + 995 = 2,195, byte-for-byte the number it always was) — it is
   // kept as the literal every pre-split reader and the approval detector compare
@@ -50,7 +50,7 @@ const SYSTEM_DEFAULTS = Object.freeze({
   extraFees: [],
   // Per-experience-tier markup control (owner-directed item 15). null = OFF —
   // every program/tier keeps its historic markup (Gold Tier 1 = 0, etc.). When
-  // set, shaped { standard:{1?,2?,3?}, gold, silver } of PERCENTS. pricing.js
+  // set, shaped { standard:{1?,2?,3?}, gold, silver, speed } of PERCENTS. pricing.js
   // reads it in markupTiersFor(). Default null so behavior is byte-identical
   // until an admin fills a tier in the Pricing Center.
   markupTiers: null,
@@ -89,9 +89,11 @@ function shape(row) {
     markupStdPct:  n(row.markup_std_pct, SYSTEM_DEFAULTS.markupStdPct),
     markupGoldPct: n(row.markup_gold_pct, SYSTEM_DEFAULTS.markupGoldPct),
     markupSilverPct: n(row.markup_silver_pct, SYSTEM_DEFAULTS.markupSilverPct),
+    markupSpeedPct: n(row.markup_speed_pct, SYSTEM_DEFAULTS.markupSpeedPct),   // db/694 — Speed's own knobs (owner 2026-09-03)
     origStdPct:    n(row.orig_std_pct, SYSTEM_DEFAULTS.origStdPct),
     origGoldPct:   n(row.orig_gold_pct, SYSTEM_DEFAULTS.origGoldPct),
     origSilverPct: n(row.orig_silver_pct, SYSTEM_DEFAULTS.origSilverPct),
+    origSpeedPct:  n(row.orig_speed_pct, SYSTEM_DEFAULTS.origSpeedPct),
     // The TOTAL is DERIVED from the parts (see SYSTEM_DEFAULTS) so a company that
     // configures its parts can never show a total that disagrees with them. The
     // stored `lender_fee` column stays the fallback for a row with no parts yet.
@@ -134,7 +136,7 @@ function withDerivedTotals(shaped, row) {
 }
 
 // Normalize a per-tier markup map (jsonb column or an API body) into
-// { standard:{1?,2?,3?}, gold, silver } of numeric PERCENTS (e.g. 0.75). A tier
+// { standard:{1?,2?,3?}, gold, silver, speed } of numeric PERCENTS (e.g. 0.75). A tier
 // left blank/absent is simply omitted (that program/tier keeps its historic
 // markup). Returns null when nothing valid remains, so an unconfigured company
 // prices byte-for-byte as before. Keys are kept as strings ('1'/'2'/'3'); a
@@ -144,7 +146,7 @@ function cleanMarkupTiers(v) {
   if (typeof obj === 'string') { try { obj = JSON.parse(obj); } catch (_) { return null; } }
   if (!obj || typeof obj !== 'object') return null;
   const out = {};
-  for (const prog of ['standard', 'gold', 'silver']) {
+  for (const prog of ['standard', 'gold', 'silver', 'speed']) {
     const src = obj[prog];
     if (!src || typeof src !== 'object') continue;
     const tiers = {};
@@ -171,7 +173,7 @@ function extraFeesTotalForState(fees, state) {
 async function load() {
   try {
     const r = await db.query(
-      `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct,
+      `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, markup_speed_pct, orig_std_pct, orig_gold_pct, orig_silver_pct, orig_speed_pct,
               lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability,
               feasibility_fees, lender_fees
          FROM company_pricing_settings WHERE is_current LIMIT 1`);
@@ -226,7 +228,7 @@ async function asOf(when, client = db) {
          Widening by 1ms cannot reach any other row: two settings rows written inside one
          millisecond of each other would need two saves in the same instant, and even then the
          later one is the one in force at that instant, which is what this returns. */
-      `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct,
+      `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, markup_speed_pct, orig_std_pct, orig_gold_pct, orig_silver_pct, orig_speed_pct,
               lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability,
               feasibility_fees, lender_fees
          FROM company_pricing_settings

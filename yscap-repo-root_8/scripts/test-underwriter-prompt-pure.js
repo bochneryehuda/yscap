@@ -65,4 +65,11 @@ assert.strictEqual(up.validateResult(null).ok, false);
 assert.strictEqual(up.validateResult('nope').ok, false);
 ok('a non-object model response is rejected');
 
+// --- the Speed Program (2026-09-03) is grounded: composed of Standard + Silver, never "unknown" ---
+assert.ok(/Speed Program, which composes Standard and Silver/.test(up.SYSTEM_PROMPT), 'Speed is described as the composition');
+assert.ok(/Silver and Speed are real, valid programs/.test(up.SYSTEM_PROMPT), 'Speed is never treated as unknown');
+assert.ok(/\$1,000,000 maximum/.test(up.SYSTEM_PROMPT) && /10% financeable assignment fee/.test(up.SYSTEM_PROMPT), 'the $1,000,000 maximum and the 10% assignment fee are stated');
+assert.ok(/blank note buyer on a Speed file is not a finding/.test(up.SYSTEM_PROMPT), 'a blank buyer on a Speed file is not a finding');
+ok('the system prompt grounds the Speed Program');
+
 console.log(`\nR6.19 underwriter-prompt pure — ${passed} checks passed`);

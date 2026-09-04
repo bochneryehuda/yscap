@@ -172,4 +172,20 @@ const { computeMetrics, capsFromRegistration, DEFAULT_CAPS } = require('../src/l
   assert.ok(ltp.over > 0, '300k initial over the 280k tight cap');
 }
 
+// ---- the Speed Program (2026-09-03): its fallback ceiling is DERIVED — the elementwise MIN of
+//      the Standard and Silver rows — never a hand-typed fourth row. ----
+{
+  const { PROGRAM_HIGHEST_CAPS: H } = require('../src/lib/underwriting/metrics')._internals;
+  assert.ok(H.speed, 'a speed row exists');
+  for (const k of Object.keys(H.standard)) {
+    assert.strictEqual(H.speed[k], Math.min(H.standard[k], H.silver[k]), `speed.${k} = min(standard.${k}, silver.${k})`);
+  }
+  assert.ok(Object.isFrozen(H.speed), 'the derived row is frozen — nothing hand-edits it later');
+  const speedCaps = capsFromRegistration(null, 'speed');
+  assert.strictEqual(speedCaps.ltc.cap, Math.min(H.standard.maxLtc, H.silver.maxLtc), 'Speed fallback LTC = the tighter parent');
+  assert.strictEqual(speedCaps.ltp.cap, H.speed.maxAcqLtv, 'Speed fallback acq cap maps onto LTP');
+  assert.strictEqual(speedCaps.ltv.cap, H.speed.maxAcqLtv, '…and onto as-is LTV');
+  assert.strictEqual(capsFromRegistration({ maxLtc: 0.85 }, 'speed').ltc.cap, 0.85, 'a registered Speed cap still wins over the fallback');
+}
+
 console.log('test-underwriting-metrics: initial-advance LTP/LTV vs total-loan LTC/ARV, binding, over-leverage, holdback regression pass');

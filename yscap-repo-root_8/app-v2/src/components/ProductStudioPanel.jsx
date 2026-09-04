@@ -8,6 +8,7 @@ import TermSheetStudio, {
 import { fullNameOf } from '../lib/personName.js';
 import { moneyNum } from '../lib/money.js';
 import { fmtRatePct, fmtRatePctFromPct } from '../lib/rateFormat.js';
+import { programLabel, PROGRAM_SHORT } from '../lib/programLabel.js';
 import { askConfirm, askPrompt } from '../lib/dialog.js';
 
 /* Product registration on a loan file — borrower AND staff logins. The panel
@@ -171,7 +172,7 @@ export function overridesFromSnapshot(snap, mode) {
       asIsValue: f.asIs,
       arv: f.arv,
       rehabBudget: f.construction,
-      origStdPct: f.tsOrigStd, origGoldPct: f.tsOrigGold, origSilverPct: f.tsOrigSilver,
+      origStdPct: f.tsOrigStd, origGoldPct: f.tsOrigGold, origSilverPct: f.tsOrigSilver, origSpeedPct: f.tsOrigSpeed,
       origManualPct: f.tsOrigManual,
       lenderFee: f.tsFeeUW, creditFee: f.tsFeeCredit, appraisalFee: f.tsFeeAppr,
       /* OUR FEE'S TWO PARTS and the optional New York settlement agent fee (owner-directed
@@ -253,6 +254,9 @@ export function overridesFromSnapshot(snap, mode) {
     ...(f.tsYspStd === '' ? { markupStdPct: '' } : f.tsYspStd != null ? { markupStdPct: f.tsYspStd } : {}),
     ...(f.tsYspGold === '' ? { markupGoldPct: '' } : f.tsYspGold != null ? { markupGoldPct: f.tsYspGold } : {}),
     ...(f.tsYspSilver === '' ? { markupSilverPct: '' } : f.tsYspSilver != null ? { markupSilverPct: f.tsYspSilver } : {}),
+    // Speed's own margin — same explicit-blank contract as its siblings (a blank CLEARS
+    // the sticky per-file value so the company default governs again).
+    ...(f.tsYspSpeed === '' ? { markupSpeedPct: '' } : f.tsYspSpeed != null ? { markupSpeedPct: f.tsYspSpeed } : {}),
     // Manual GOLD top-tier markup (item 15): a blank clears the sticky per-file
     // value (company/historic default governs); a value overrides Gold Tier 1.
     ...(f.tsYspGoldT1 === '' ? { markupGoldT1Pct: '' } : f.tsYspGoldT1 != null ? { markupGoldT1Pct: f.tsYspGoldT1 } : {}),
@@ -269,9 +273,14 @@ export function termOptionsFromSnapshot(snap) {
   const f = (snap && snap.fields) || {};
   const gold = snap && snap.program === 'gold';
   const silver = snap && snap.program === 'silver';
+  // Speed (2026-09-03) is the composition of Standard and Silver and has NO
+  // checkbox of its own — no knobs, by owner decision — so it carries the
+  // minimum interest when EITHER donor program was given it.
+  const speed = snap && snap.program === 'speed';
   let minInterestEnabled;
   if (f.tsManualOn) minInterestEnabled = f.tsMinIntManual !== false;      // manual: on unless explicitly unchecked
-  else minInterestEnabled = gold ? !!f.tsMinIntGold : silver ? !!f.tsMinIntSilver : !!f.tsMinIntStd;    // Standard/Gold/Silver: off unless added
+  else minInterestEnabled = gold ? !!f.tsMinIntGold : silver ? !!f.tsMinIntSilver
+    : speed ? (!!f.tsMinIntStd || !!f.tsMinIntSilver) : !!f.tsMinIntStd;    // Standard/Gold/Silver/Speed: off unless added
   return {
     accrualType: f.tsAccrual === 'dutch' ? 'dutch' : 'non_dutch',
     minInterestEnabled,
@@ -284,6 +293,86 @@ export function termOptionsFromSnapshot(snap) {
        payoff work exists to end. Display/record only; no engine reads it. */
     estimatedCashOut: f.cashOutAmt == null ? '' : String(f.cashOutAmt),
   };
+}
+
+/* HOW SPEED WAS COMPOSED (owner-directed 2026-09-03). Speed is not an engine: it
+   is the lesser of the Standard and Silver programs on every ceiling, under its own
+   maximum loan, priced at the higher of the two rates, with a 10% assignment
+   share. The engine hands back `quote.speed` — both donors' own figures plus who
+   set each enforced one — so a Speed registration is auditable against either
+   program's guidelines without re-running anything. Hoisted (stable identity),
+   and it names our two PROGRAMS, never a note buyer. Ceilings arrive as
+   fractions and rates as fractions, exactly as the engines hold them. */
+const SPEED_DONOR = { standard: 'Standard', silver: 'Silver', both: 'Both (equal)', speed: 'A Speed overlay' };
+export function SpeedComposition({ sp }) {
+  if (!sp || !sp.standard || !sp.silver) return null;
+  const st = sp.standard, sv = sp.silver;
+  const donor = sp.capDonor || {};
+  /* THE TWO PARENT COLUMNS ARE THEIR OWN PUBLISHED GUIDELINE ROWS, never the ceilings
+     they were PINNED to — those carry this program's overlays, which is what made the
+     panel claim Standard and Silver each cap a loan at Speed's own maximum
+     (owner-reported 2026-09-03). `ceiling` is what each parent priced; `ownCeiling` is
+     what that program allows. The enforced figure is the minimum of the two priced
+     ceilings and the overlay for that axis — never the maximum-loan overlay reused on
+     every row, which is what printed a dollar amount in the loan-to-cost row. */
+  const cS = st.ownCeiling || st.ceiling || {}, cV = sv.ownCeiling || sv.ceiling || {};
+  const pS = st.ceiling || {}, pV = sv.ceiling || {};
+  const OVERLAY = { maxLoan: Number(sp.maxLoanCap) || Infinity, maxLTC: Number(sp.maxLtcCap) || Infinity };
+  const enforced = (k) => Math.min(
+    Number(pS[k]) > 0 ? Number(pS[k]) : Infinity,
+    Number(pV[k]) > 0 ? Number(pV[k]) : Infinity,
+    OVERLAY[k] || Infinity,
+  );
+  const pct1 = (v) => pct(v, 1);
+  const rows = [
+    { k: 'maxLoan', label: 'Max loan', fmt: money },
+    { k: 'maxAcqLTV', label: 'Acquisition LTV', fmt: pct1 },
+    { k: 'maxARLTV', label: 'After-repair LTV', fmt: pct1 },
+    { k: 'maxLTC', label: 'Loan-to-cost', fmt: pct1 },
+  ];
+  const rate = (r) => (Number(r) > 0 ? fmtRatePct(r) + '%' : 'unpriced');
+  const chargedRate = sp.rateDonor === 'silver' ? sv.noteRate : st.noteRate;
+  return (
+    <section className="sos" data-speed-composition="1">
+      <p className="sos-h">How Speed was composed</p>
+      <p className="sos-sub">
+        Section 1 — what each program allows and the lesser of the two. Each row shows both
+        programs’ own limits, then the figure enforced and who set it.
+      </p>
+      {rows.map((r) => (
+        <div key={r.k} className="metrow">
+          <span className="k">{r.label} — Standard {r.fmt(cS[r.k])} · Silver {r.fmt(cV[r.k])}</span>
+          <span className="v">{r.fmt(enforced(r.k))} · {SPEED_DONOR[donor[r.k]] || '—'}</span>
+        </div>
+      ))}
+      {Array.isArray(sp.overlays) && sp.overlays.length > 0 && (
+        <>
+          <p className="sos-sub" style={{ marginTop: '.5rem' }}>
+            Section 2 — the Speed Program’s own overlays, applied on top of the lesser above.
+          </p>
+          {sp.overlays.map((o) => (
+            <div key={o.key} className="metrow" data-speed-overlay={o.key}>
+              <span className="k">{o.label}</span>
+              <span className="v">{o.value}</span>
+            </div>
+          ))}
+        </>
+      )}
+      <div className="metrow">
+        <span className="k">Rate — Standard {rate(st.noteRate)} · Silver {rate(sv.noteRate)}</span>
+        <span className="v">{rate(chargedRate)} · {SPEED_DONOR[sp.rateDonor] || '—'}</span>
+      </div>
+      {Number(sp.assignmentMaxPct) > 0 && (
+        <div className="metrow"><span className="k">Assignment fee financeable</span><span className="v">{pct(sp.assignmentMaxPct, 0)} of the seller’s contract price</span></div>
+      )}
+      {(Number(st.totalLoan) > 0 || Number(sv.totalLoan) > 0) && (
+        <div className="metrow sos-sub-row">
+          <span className="k">Each program on its own</span>
+          <span className="v">Standard {Number(st.totalLoan) > 0 ? money(st.totalLoan) : '—'} · Silver {Number(sv.totalLoan) > 0 ? money(sv.totalLoan) : '—'}</span>
+        </div>
+      )}
+    </section>
+  );
 }
 
 /* Every detail of the registered product, laid out in the file. `reg` is a
@@ -304,6 +393,13 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
   const caps = (q.guidelines && q.guidelines.caps) || null;
   const cappedWhy = (q.guidelines && q.guidelines.leverageCappedWhy) || null;
   const progMax = (q.guidelines && q.guidelines.programCaps) || caps;
+  // Speed (2026-09-03): the engine's own account of the composition — both donor
+  // programs' figures and who set each enforced one. Present only on a Speed quote.
+  const speedMix = (reg.program === 'speed' || q.program === 'speed') ? (q.speed || null) : null;
+  // The financeable share of an assignment fee is a PROGRAM fact the quote carries
+  // (10% on Speed, 15% everywhere else) — read, never assumed. A quote registered
+  // before the field existed can only have been sized at 15%.
+  const asgMaxPct = (q.assignment && Number(q.assignment.maxPct) > 0) ? Number(q.assignment.maxPct) : 0.15;
   const pricedLower = !!(progMax && caps && (
     caps.maxLtc < progMax.maxLtc - 1e-9 || caps.maxArvLtv < progMax.maxArvLtv - 1e-9 || caps.maxAcqLtv < progMax.maxAcqLtv - 1e-9));
   const Row = ({ k, v, sub = false }) => (
@@ -339,7 +435,7 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
   return (
     <div className={compactView ? '' : 'panel'} style={compactView ? {} : { background: 'var(--ink-2)', marginTop: 10 }}>
       <div className="row" style={{ alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
-        <strong>{q.programLabel || (reg.program === 'gold' ? 'Gold Standard Program' : reg.program === 'silver' ? 'Silver Program' : reg.program === 'manual' ? 'Manual Program' : 'Standard Program')}</strong>
+        <strong>{q.programLabel || programLabel(reg.program)}</strong>
         {q.productLabel && <span className="muted small">· {q.productLabel}</span>}
         {q.tierLabel && <span className="muted small">· {q.tierLabel}</span>}
         {reg.status && reg.status !== 'ELIGIBLE' && <span className="ts-badge warn">{statusWord(reg.status)}</span>}
@@ -430,6 +526,8 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
               </p>
             )}
           </Sec>
+
+          {speedMix && <SpeedComposition sp={speedMix} />}
 
           {/* CLOSING COSTS, WITH THE TOTAL THE OWNER ASKED FOR BY NAME: "a total of
               the closing costs, with the origination fee, legal fee, and title fees
@@ -565,7 +663,7 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           {inp.loanType !== 'Refinance' && <Row k="Purchase price" v={money(inp.purchasePrice)} />}
           {inp.isAssignment && <Row k="Seller price / assignment fee" v={`${money(inp.sellerPrice)} / ${money(Math.max(0, (inp.purchasePrice || 0) - (inp.sellerPrice || 0)))}`} />}
           {inp.isAssignment && q.assignment && (q.assignment.overLimit || q.assignment.overridden) &&
-            <Row k={`Effective purchase price ${q.assignment.overridden ? '(admin exception)' : q.assignment.dollarCap ? '(fee capped at the program limit)' : '(fee capped at 15%)'}`} v={money(q.assignment.recognizedPrice)} />}
+            <Row k={`Effective purchase price ${q.assignment.overridden ? '(admin exception)' : q.assignment.dollarCap ? '(fee capped at the program limit)' : `(fee capped at ${Math.round(asgMaxPct * 100)}%)`}`} v={money(q.assignment.recognizedPrice)} />}
           <Row k="As-is value / ARV" v={`${money(inp.asIsValue)}${inp.asIsDefaulted ? ' (= purchase, defaulted)' : ''} / ${money(inp.arv)}`} />
           {/* THE PAYOFF, which the owner asked for by name. It is a real pricing
               input on a refinance (cash-to-close is sized off it), and it was on no
@@ -1219,7 +1317,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     const s = studioRef.current && studioRef.current.snapshot();
     if (!s) { setErr('The Term Sheet Studio is still loading.'); return; }
     if (!s.ready) { setErr('Complete the required pricing fields first: ' + s.missing.join(', ')); return; }
-    if (!s.program) { setErr('No program selected yet — tap one of the four program cards (Standard, Gold Standard, Silver or Manual) in the studio first, then register.'); return; }
+    if (!s.program) { setErr('No program selected yet — tap a program card in the studio first, then register.'); return; }
     const dd = s.d;
     if (!dd || dd.status === 'INELIGIBLE' || !(dd.totalLoan > 0)) {
       setErr("This scenario isn't eligible as entered — adjust it in the studio, or contact your loan team for a manual review.");
@@ -1468,8 +1566,8 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   }
 
   const statusLine = snap && !snap.ready ? 'Missing: ' + snap.missing.join(', ')
-    : snap && !snap.program ? 'Tap a program card above to choose Standard, Gold Standard, Silver or Manual.'
-    : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : snap.program === 'manual' ? 'Manual Program' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? fmtRatePctFromPct(d.rate) + '%' : '—'} · cash to close ${money2(d.cashToClose)} · liquidity ${money2(d.liquidity)}`
+    : snap && !snap.program ? 'Tap a program card above to choose your product.'
+    : d && d.totalLoan > 0 ? `${programLabel(snap.program, { short: true })} · ${money(d.totalLoan)} @ ${d.rate ? fmtRatePctFromPct(d.rate) + '%' : '—'} · cash to close ${money2(d.cashToClose)} · liquidity ${money2(d.liquidity)}`
     : '';
   // A PLAIN-LANGUAGE reason the product can't be registered yet — shown as a
   // prominent banner in the studio so the Register action never silently
@@ -1491,10 +1589,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const blockReason = busy ? ''
     : !snap ? 'The Term Sheet Studio is still loading — give it a moment, then register.'
     : !snap.ready ? 'To register, add the required pricing fields: ' + ((snap.missing && snap.missing.join(', ')) || 'see the highlighted fields in the studio') + '.'
-    : !snap.program ? 'No program selected yet — tap one of the four program cards (Standard, Gold Standard, Silver or Manual) to choose your product. Register unlocks once a program is selected.'
+    : !snap.program ? 'No program selected yet — tap a program card to choose your product. Register unlocks once a program is selected.'
     : (d && d.status === 'INELIGIBLE') ? "This scenario isn't eligible as entered — adjust it in the studio, or contact your loan team for a manual review."
     : (d && !(d.totalLoan > 0)) ? "This scenario didn't size a loan yet — check the purchase price, ARV / as-is value and rehab budget in the studio."
-    : (scenarioManual && !manualLive) ? `This scenario isn’t eligible as-is on the ${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : snap.program === 'manual' ? 'Manual' : 'Standard'} program — it needs a manual-review exception. Submit an exception request${isStaff ? ' — an admin reviews it and the borrower isn’t sent terms unless it’s approved.' : ' and your loan team will review it.'}`
+    : (scenarioManual && !manualLive) ? `This scenario isn’t eligible as-is on the ${programLabel(snap.program, { short: true })} program — it needs a manual-review exception. Submit an exception request${isStaff ? ' — an admin reviews it and the borrower isn’t sent terms unless it’s approved.' : ' and your loan team will review it.'}`
     : '';
 
   // (manualLive — whether the live scenario is a manual product — is computed
@@ -1512,9 +1610,11 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     let ov = {};
     try { ov = overridesFromSnapshot(snap, 'staff') || {}; } catch (_) { return []; }
     const DEFAULTED = {
-      markupStdPct: 'rate markup (Standard)', markupGoldPct: 'rate markup (Gold)',
-      origStdPct: 'origination points (Standard)', origGoldPct: 'origination points (Gold)',
-      origSilverPct: 'origination points (Silver)', origManualPct: 'origination points (Manual)',
+      markupStdPct: `rate markup (${PROGRAM_SHORT.standard})`, markupGoldPct: `rate markup (${PROGRAM_SHORT.gold})`,
+      origStdPct: `origination points (${PROGRAM_SHORT.standard})`, origGoldPct: `origination points (${PROGRAM_SHORT.gold})`,
+      origSilverPct: `origination points (${PROGRAM_SHORT.silver})`, origSpeedPct: `origination points (${PROGRAM_SHORT.speed})`, origManualPct: `origination points (${PROGRAM_SHORT.manual})`,
+      // (No Speed row: Speed has no markup or origination knob — it inherits both
+      // donors' through the composition, owner decision 2026-09-03.)
       lenderFee: 'underwriting / legal fee', creditFee: 'credit-report fee',
       appraisalFee: 'appraisal fee', titleFee: 'title / escrow fee',
       // Our fee's underwriting half has one flat company default, so it is compared
@@ -1594,7 +1694,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
         <h3 style={{ margin: 0 }}>Product registration & term sheet</h3>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
-          {cur && <span className={`ts-badge ${escPending ? 'warn' : 'ok'}`}>Registered · {cur.program === 'gold' ? 'Gold Standard' : cur.program === 'silver' ? 'Silver' : cur.program === 'manual' ? 'Manual Program' : 'Standard'} · {money(cur.total_loan)} @ {fmtRatePct(cur.note_rate)}%</span>}
+          {cur && <span className={`ts-badge ${escPending ? 'warn' : 'ok'}`}>Registered · {programLabel(cur.program, { short: true })} · {money(cur.total_loan)} @ {fmtRatePct(cur.note_rate)}%</span>}
           <button className="btn primary small" onClick={() => setOpenStudio(true)}
             title="Opens the full-screen Term Sheet Studio — everything you enter autosaves to the file; leaving resumes where you left off.">
             {cur ? 'Reprice / re-register' : 'Open Products & Pricing'}
@@ -1756,8 +1856,8 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
 
       {!cur && data && (
         <p className="muted small" style={{ margin: '10px 0 0' }}>
-          No product registered yet. Price the deal in the Term Sheet Studio, pick the Standard, Gold
-          Standard or Silver program and your leverage, then register — the terms, cash to close and
+          No product registered yet. Price the deal in the Term Sheet Studio, pick a program and your
+          leverage, then register — the terms, cash to close and
           liquidity requirement all flow onto this file.
         </p>
       )}
@@ -1846,7 +1946,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       {superseded.length > 0 && (
         <p className="muted small" style={{ margin: '8px 0 0' }}>
           {superseded.length} previous registration{superseded.length === 1 ? '' : 's'} on this file (superseded):{' '}
-          {superseded.map((h) => `${h.program === 'gold' ? 'Gold' : h.program === 'silver' ? 'Silver' : h.program === 'manual' ? 'Manual' : 'Standard'} ${money(h.total_loan)} @ ${fmtRatePct(h.note_rate)}% on ${when(h.created_at)}`).join(' · ')}
+          {superseded.map((h) => `${programLabel(h.program, { short: true })} ${money(h.total_loan)} @ ${fmtRatePct(h.note_rate)}% on ${when(h.created_at)}`).join(' · ')}
         </p>
       )}
 

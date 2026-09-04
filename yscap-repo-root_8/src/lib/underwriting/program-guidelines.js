@@ -29,12 +29,16 @@ const { SOW_CONTINGENCY_PCT } = require('../rehab-budget');
 // The canonical program keys the AUS recognizes. Anything else (an unregistered file, a free-text
 // application strategy) resolves to `null` — an unknown program, where we state only the baseline
 // (KYC 25% fallback) and never assert a program-specific requirement we can't justify.
-const PROGRAM_KEYS = { standard: 'Standard', gold: 'Gold Standard', silver: 'Silver', manual: 'Manual' };
+// SPEED (2026-09-03) is a COMPOSITION of Standard and Silver and, like every row here, holds
+// no number of its own: its owner threshold comes from entity-chain (where the Speed rule is
+// DERIVED as the stricter of its two parents) and its bank-statement months from liquidity.js.
+const PROGRAM_KEYS = { standard: 'Standard', gold: 'Gold Standard', silver: 'Silver', speed: 'Speed', manual: 'Manual' };
 
 function canonProgram(program) {
   const p = String(program || '').toLowerCase().trim();
   if (p === 'gold' || /gold/.test(p)) return 'gold';
   if (p === 'silver' || /silver/.test(p)) return 'silver';
+  if (p === 'speed' || /speed/.test(p)) return 'speed';
   if (p === 'standard' || /standard/.test(p)) return 'standard';
   if (p === 'manual' || /manual/.test(p)) return 'manual';
   return null;
@@ -42,7 +46,7 @@ function canonProgram(program) {
 
 /**
  * Compose the program guideline snapshot for a file.
- * @param {string|null} program  the REGISTERED program key ('gold'|'standard'|'manual') or null
+ * @param {string|null} program  the REGISTERED program key ('gold'|'standard'|'silver'|'speed'|'manual') or null
  * @param {{assetMonths?:number, sowContingencyRequired?:boolean, noteBuyer?:string}} [opts]
  *   assetMonths — manual-program stated liquidity months (ignored for Gold/Standard);
  *   noteBuyer — the file's note buyer (applications.lender). A buyer may RAISE the bank-statement

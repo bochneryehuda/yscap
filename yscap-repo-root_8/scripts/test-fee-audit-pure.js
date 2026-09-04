@@ -65,10 +65,10 @@ eq('A3 the roster and the closing sum are the same size', rosterKeys.length, ser
 ok('A4 …and there are enough of them for that to mean something', serverAddends.length >= 10);
 
 /* THE STUDIO'S BROWSER MIRROR. It cannot require server code, so it keeps its own copy of the sum
-   — three of them, one per program — and a fee present in one and not another means the printed
-   term sheet is short on that program alone. */
+   — four of them, one per program (Speed joined 2026-09-03) — and a fee present in one and not
+   another means the printed term sheet is short on that program alone. */
 const mirrors = R.studioClosingAddends();
-eq('A5 the studio keeps one closing sum per program', mirrors.length, 3);
+eq('A5 the studio keeps one closing sum per program', mirrors.length, R.STUDIO_MIRRORS);
 for (let i = 0; i < mirrors.length; i++) {
   eq(`A6.${i} …and mirror #${i} carries the same number of fees as the server`, mirrors[i].length, serverAddends.length);
   for (const k of rosterKeys) {
@@ -76,7 +76,7 @@ for (let i = 0; i < mirrors.length; i++) {
       `mirror #${i} = ${mirrors[i].join(' + ')}`);
   }
 }
-ok('A8 all three mirrors are identical to each other',
+ok('A8 all the mirrors are identical to each other',
   new Set(mirrors.map((m) => m.join('+'))).size === 1, mirrors.map((m) => m.join('+')).join(' || '));
 
 /* ── B. EVERY FEE IS NAMED ON EVERY SURFACE ─────────────────────────────────────────────────── */
@@ -345,7 +345,7 @@ ok('H1 every surface token is a regular expression, never a bare string',
    three spreadsheet columns are the case that matters: they are near-identical text, told apart
    only by their own data variable. */
 {
-  const cols = ['xlsxStd', 'xlsxGold', 'xlsxSilver'];
+  const cols = ['xlsxStd', 'xlsxGold', 'xlsxSilver', 'xlsxSpeed'];
   for (const [key, fee] of Object.entries(R.CLOSING_FEES)) {
     if (key === 'brokerFee' || key === 'govChargesTotal') continue;  // spliced / helper-built — one shared expression by design
     for (const a of cols) for (const b of cols) {
