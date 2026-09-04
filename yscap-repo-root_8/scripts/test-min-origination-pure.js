@@ -249,8 +249,32 @@ t('F2 a BLANK box clears the sticky, which is what makes the owner\'s re-registr
   assert.ok(/hasOwnProperty\.call\(overrides,\s*'minOrigFee'\)/.test(src),
     'the write must be guarded on the key being SENT, not on it being truthy — a blank sends "" and '
     + 'must write NULL over any stale value, or a re-registered file stays locked in at yesterday\'s number');
-  assert.ok(/file_min_orig_fee=\$2[\s\S]{0,120}stickyMk\(overrides\.minOrigFee\)/.test(src),
-    'the sticky helper maps "" to NULL and keeps a typed 0 (the waiver)');
+  /* RE-POINTED 2026-09-04, not loosened. This pinned the literal `stickyMk(...)`, and the
+     writer now goes through `stickyMinOrig`, which DELEGATES to it and additionally refuses a
+     value the column's CHECK would reject (db/695: 0..25000). The subject is unchanged — a
+     blank still writes NULL and a typed 0 still survives, because both come from `stickyMk`
+     — so the guard asserts the DELEGATION rather than the helper's name, and gains the bound
+     it did not know about. */
+  const writer = /file_min_orig_fee=\$2[\s\S]{0,140}?(sticky[A-Za-z]*)\(overrides\.minOrigFee\)/.exec(src);
+  assert.ok(writer, 'the write is fed by a sticky helper, not a raw request value');
+  const helper = new RegExp('const ' + writer[1] + '\\s*=\\s*\\([\\s\\S]{0,400}?\\};').exec(src);
+  assert.ok(helper, `the ${writer[1]} helper is defined in this file`);
+  assert.ok(/stickyMk\(/.test(helper[0]),
+    'it delegates to stickyMk, which is what maps "" to NULL and keeps a typed 0 (the waiver)');
+  assert.ok(/applicationColumnProblem\(\s*'file_min_orig_fee'/.test(helper[0]),
+    'and it asks the COLUMN before storing: db/695\'s CHECK is far narrower than numeric(12,2), '
+    + 'so an unbounded value is refused by Postgres inside the registration transaction and '
+    + 'surfaces as a 500 that names nothing');
+});
+
+t('F2b the register door REFUSES an out-of-range minimum in plain words, before any work', () => {
+  const src = stripComments(read('src/routes/staff.js'));
+  /* The sticky guard above makes a 500 impossible; this is what makes the officer TOLD.
+     Silently dropping a typed number is the swallowed-refusal class — they would re-open the
+     file and find the box empty with no explanation. */
+  assert.ok(/overrides\.minOrigFee[\s\S]{0,400}?applicationColumnProblem\(\s*'file_min_orig_fee'[\s\S]{0,200}?res\.status\(400\)/.test(src),
+    'the register route judges a typed minOrigFee against the column and answers 400 with the reason');
+  assert.ok(/field:\s*'minOrigFee'/.test(src), 'and the refusal names the box, so the screen can point at it');
 });
 
 t('F3 a BORROWER and a TPO broker can never send it', () => {

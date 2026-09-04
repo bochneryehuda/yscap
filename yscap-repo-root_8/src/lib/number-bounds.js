@@ -211,6 +211,16 @@ function columnProblem(key, n, kind, label) {
    on a column that is missing or carries the wrong kind, so this cannot drift.
    ===================================================================== */
 const IR_MONTHS = Object.freeze({ min: 0, max: 24, what: 'months' });
+/* db/695's CHECK (0..25000) is far narrower than numeric(12,2)'s ceiling, so the
+   CONSTRAINT is the real limit and numeric(12,2)'s number would be the wrong one
+   to quote at a human. The 25000 is `min-origination.MAX_MIN_ORIGINATION_FEE` —
+   an OWNER-SET guard against a decimal slip — and it is DERIVED here rather than
+   retyped so the column bound, the resolver's own refusal and the admin route's
+   refusal can never drift into three different answers. `min-origination` is pure
+   with no requires of its own, so this costs nothing and closes no cycle. */
+const MIN_ORIG_FEE = Object.freeze({
+  min: 0, max: require('./min-origination').MAX_MIN_ORIGINATION_FEE, what: 'dollars',
+});
 const COLUMN_KIND = Object.freeze({
   applications: Object.freeze({
     // numeric(14,2)
@@ -240,6 +250,11 @@ const COLUMN_KIND = Object.freeze({
     /* int4 with a CHECK narrower than the type (db/030), so the CONSTRAINT is
        the ceiling and int4's number would be the wrong one to quote. */
     requested_ir_months: IR_MONTHS,
+    /* numeric(12,2) with a CHECK narrower than the type (db/695). The company-wide
+       twin lives on `company_pricing_settings`, which this table does not cover —
+       the admin route refuses an out-of-range value there against the same
+       constant. */
+    file_min_orig_fee: MIN_ORIG_FEE,
   }),
   borrowers: Object.freeze({
     /* int4. The 300–850 rule is business policy (fields.sanitizeFico), not a
@@ -296,6 +311,7 @@ const COLUMN_LABEL = Object.freeze({
   assignment_fee: 'Assignment fee',
   requested_ir_amount: 'Interest reserve amount',
   requested_ir_months: 'Interest reserve (months)',
+  file_min_orig_fee: 'Minimum origination fee',
   estimated_rental_income: 'Estimated rental income',
   units: 'Number of units', sqft_pre: 'Square footage before',
   sqft_post: 'Square footage after', ltv: 'LTV', rate_pct: 'Rate',
