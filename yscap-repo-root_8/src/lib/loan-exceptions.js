@@ -103,6 +103,17 @@ const PRICING_EXCEPTION_REASONS = Object.freeze({
   experience_tier:  'Price off a higher experience tier than verified',
   fico_liquidity:   'FICO / liquidity outside the program guideline',
   program_fit:      'Deal shape the program doesn’t cover (city, exit, budget, term…)',
+  /* THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695: "You need to add to the general
+     exception pad an exception for the minimum and all the exception routes should have an added
+     option to make exceptions for the minimum fee").
+
+     ONE ENTRY REACHES EVERY ROUTE AND EVERY SCREEN, which is the whole point of this registry:
+     `reasonCodesByType` is DERIVED from it at all three route sites and `ProductStudioPanel`
+     renders the picker from `Object.entries(excMaps.pricingReasonCodes)`, so nothing else has to
+     be edited. The RECORD is decided here; the GRANT stays what it is for every other pricing
+     exception — an admin sets the per-file minimum in the studio's manual section and re-registers.
+     This module never touches a fee. */
+  min_orig_fee:     'Reduce or waive the program minimum origination fee on this file',
   other:            'Other (see note)',
 });
 

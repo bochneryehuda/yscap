@@ -482,6 +482,14 @@ function buildInputs(app, experience, overrides) {
     if (overrides.legalFee === '') delete out.legalFee;
     if (overrides.settlementFee === '') delete out.settlementFee;
     if (overrides.cemaFee === '') delete out.cemaFee;
+    /* THE MINIMUM ORIGINATION FEE needs the same explicit delete, and it is the owner's own rule
+       that makes it load-bearing (db/695): *"any file, even if it's already in the system, by the
+       next registration, it should follow the rules of the new registration if it gets
+       re-registered again. Shouldn't be locked in where the fee was already locked in."* MEASURED
+       before this line existed: a file registered with an approved WAIVER (a typed 0) and then
+       re-registered with the box cleared went on being priced at the waived fee, because the NUMK
+       loop SKIPS a blank while `fileInputs` has already handed the base object the sticky 0. */
+    if (overrides.minOrigFee === '') delete out.minOrigFee;
     if (overrides.irMonths === '') out.irMonths = 0;
   }
   out.strategy = engineStrategy(out.strategy);   // override labels get the same normalization

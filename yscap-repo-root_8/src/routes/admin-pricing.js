@@ -19,7 +19,7 @@ router.get('/', async (req, res) => {
     const cur = await pricingSettings.load();
     const hist = await db.query(
       `SELECT cps.id, cps.markup_std_pct, cps.markup_gold_pct, cps.markup_silver_pct, cps.markup_speed_pct, cps.orig_std_pct, cps.orig_gold_pct, cps.orig_silver_pct, cps.orig_speed_pct,
-              cps.lender_fee, cps.credit_fee, cps.appraisal_fee, cps.title_fee, cps.extra_fees, cps.markup_tiers, cps.program_availability, cps.lender_fees, cps.note,
+              cps.lender_fee, cps.credit_fee, cps.appraisal_fee, cps.title_fee, cps.extra_fees, cps.markup_tiers, cps.program_availability, cps.lender_fees, cps.min_orig_fee, cps.note,
               cps.is_current, cps.created_at, s.full_name AS updated_by_name
          FROM company_pricing_settings cps
          LEFT JOIN staff_users s ON s.id = cps.updated_by
@@ -59,6 +59,37 @@ router.put('/', async (req, res) => {
     appraisal_fee: numOrNull(b.appraisalFee), title_fee: numOrNull(b.titleFee),
     note: b.note ? String(b.note).slice(0, 300) : null,
   };
+  /* THE COMPANY-WIDE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695: "also in the admin
+     section where we pre-set everything for the entire program where we can increase and decrease
+     the minimum accordingly").
+
+     PRESERVE-IF-ABSENT, unlike the scalars above, and for two reasons rather than tidiness. The
+     legacy V1 pricing screen sends none of the newer keys, so treating this one like the other
+     scalars would silently reset a minimum the owner deliberately raised. And it is preserved from
+     the RAW COLUMN, not from `pricingSettings.load()`, because that reader resolves a NULL to the
+     system $2,500 — preserving the resolved value would STAMP a copy of the default into the
+     column, and "never configured" would stop being distinguishable from "set to the default",
+     which is the whole design of db/695. */
+  if (b.minOrigFee !== undefined) {
+    cols.min_orig_fee = numOrNull(b.minOrigFee);
+  } else {
+    let prev = null;
+    try {
+      const r = await db.query('SELECT min_orig_fee FROM company_pricing_settings WHERE is_current LIMIT 1');
+      prev = r.rows[0] ? r.rows[0].min_orig_fee : null;
+    } catch (_) { prev = null; }
+    cols.min_orig_fee = prev == null ? null : Number(prev);
+  }
+  /* The ceiling is the ONE rule module's, restated as a plain refusal so an admin reads why. The
+     generic /fee/ guardrail below would pass 900,000 straight into db/695's CHECK and turn a typo
+     into an unexplained 500 — and a minimum of a few thousand dollars mis-keyed by a factor of ten
+     would make every small loan unquotable, silently. */
+  if (cols.min_orig_fee != null) {
+    const MAXMIN = require('../lib/min-origination').MAX_MIN_ORIGINATION_FEE;
+    if (cols.min_orig_fee < 0 || cols.min_orig_fee > MAXMIN) {
+      return res.status(400).json({ error: `The minimum origination fee must be between $0 and $${MAXMIN.toLocaleString('en-US')}.` });
+    }
+  }
   // Guardrails: markup/orig are percents 0-100; fees are non-negative dollars.
   for (const [k, v] of Object.entries(cols)) {
     if (k === 'note' || v == null) continue;

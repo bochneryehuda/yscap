@@ -3,6 +3,14 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { PROGRAM_SHORT } from '../lib/programLabel.js';
 
+/* THE MINIMUM ORIGINATION FEE's system default and ceiling (owner-directed 2026-09-04, db/695).
+   Restated here rather than imported: this is a browser screen and `src/lib/min-origination.js` is
+   server code it cannot require (the `lib/payoff.js` arrangement). COPY ONLY — the server refuses
+   an out-of-range value itself, so a drift here can never price a loan or store a bad number; the
+   worst it can do is describe the box wrongly. */
+const MIN_ORIG_SYSTEM_DEFAULT = 2500;
+const MAX_MIN_ORIG = 25000;
+
 /* Pricing Admin Center (super admin / manage_pricing capability).
  *
  * Company-wide markup, origination and fee defaults. A change saved here flows
@@ -19,7 +27,9 @@ import { PROGRAM_SHORT } from '../lib/programLabel.js';
  */
 
 // camelCase keys shared by GET .current / .systemDefaults and the PUT body.
-const KEYS = ['markupStdPct', 'markupGoldPct', 'markupSilverPct', 'markupSpeedPct', 'origStdPct', 'origGoldPct', 'origSilverPct', 'origSpeedPct', 'lenderFee', 'creditFee', 'appraisalFee', 'titleFee'];
+const KEYS = ['markupStdPct', 'markupGoldPct', 'markupSilverPct', 'markupSpeedPct', 'origStdPct', 'origGoldPct', 'origSilverPct', 'origSpeedPct', 'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
+  // The company-wide MINIMUM origination fee (owner-directed 2026-09-04, db/695).
+  'minOrigFee'];
 
 // THE MARKETED PROGRAMS, and which of them carry pricing knobs. ONE list drives
 // three things — the program ON/OFF switches, the discontinued-note default and
@@ -342,6 +352,23 @@ export default function StaffCompanyPricing() {
     .catch((e) => flash(false, e.message || 'could not load pricing settings'));
   useEffect(() => { if (isAdmin) load(); /* eslint-disable-next-line */ }, [isAdmin]);
 
+  /* PLAIN MONEY, FOR THE EXPLANATORY COPY ON THIS SCREEN. `lf` and `form` hold FORM STRINGS, so a
+     blank box reads as the system default rather than as "$NaN". */
+  const money = (n, dflt) => {
+    const x = Number(n === '' || n == null ? dflt : n);
+    return Number.isFinite(x) ? '$' + x.toLocaleString('en-US') : '\u2014';
+  };
+  const sysLf = (data && data.systemDefaults && data.systemDefaults.lenderFees) || {};
+  const lfTotal = (Number(lf.underwriting === '' ? sysLf.underwriting : lf.underwriting) || 0)
+    + (Number(lf.legal === '' ? sysLf.legal : lf.legal) || 0);
+  /* WHERE THE MINIMUM ORIGINATION FEE STOPS BINDING — the loan at which the percentage first
+     reaches it. DERIVED from the two boxes above it rather than stated, so the sentence stays true
+     the moment either is changed and can never become a stale literal. */
+  const minOrigVal = Number(form.minOrigFee === '' ? MIN_ORIG_SYSTEM_DEFAULT : form.minOrigFee);
+  const origStdVal = Number(form.origStdPct === '' ? (data && data.systemDefaults && data.systemDefaults.origStdPct) : form.origStdPct);
+  const minCrossover = (Number.isFinite(minOrigVal) && Number.isFinite(origStdVal) && origStdVal > 0)
+    ? Math.round(minOrigVal / (origStdVal / 100)) : null;
+
   if (!isAdmin) return <div className="panel">You don’t have access to the Pricing Admin Center.</div>;
   if (!data) return <div className="panel">Loading pricing…</div>;
 
@@ -466,11 +493,29 @@ export default function StaffCompanyPricing() {
           <Field form={form} set={set} k="titleFee" label="Title fee ($)" hint="Blank = auto-estimate per state" />
         </div>
 
+        <h3 style={{ margin: '18px 0 0' }}>Minimum origination fee</h3>
+        <p className="muted small" style={{ margin: '2px 0 10px' }}>
+          The floor under our own origination fee, on <strong>every</strong> program — Standard,
+          Gold, Silver, Speed and Manual. A loan pays the origination percentage or this, whichever
+          is more.{minCrossover ? <> At {origStdVal}% the minimum is reached at a{' '}
+          <strong>{money(minCrossover)}</strong> loan, so it applies below that and on nothing above
+          it.</> : null} Raising it on a single file needs no approval; lowering it \u2014 or waiving
+          it with a 0 \u2014 goes to an admin.
+        </p>
+        <div className="grid cols-2">
+          <Field form={form} set={set} k="minOrigFee" label="Minimum origination fee ($)"
+            hint={`Blank = the system default of $${MIN_ORIG_SYSTEM_DEFAULT.toLocaleString('en-US')}. Maximum $${MAX_MIN_ORIG.toLocaleString('en-US')}.`} />
+        </div>
+
         <h3 style={{ margin: '18px 0 0' }}>Our fee — the two parts, and the New York ladder</h3>
         <p className="muted small" style={{ margin: '2px 0 10px' }}>
           Our own fee is quoted as <strong>underwriting &amp; processing</strong> plus a
           <strong> legal fee</strong>, and the legal fee depends on the deal. A general file is
-          ${'{'}fmtMoney(lf.underwriting){'}'} + ${'{'}fmtMoney(lf.legal){'}'} = <strong>${'{'}fmtMoney(lfTotal){'}'}</strong>.
+          {/* THESE WERE PRINTING AS LITERAL TEXT on the owner's own Pricing Center — the dollar
+              figures had been escaped into JSX string literals, and `fmtMoney` was never defined in
+              this file, so the sentence rendered the source of its own expressions. Found
+              2026-09-04 while adding the box below. */}
+          {money(lf.underwriting, sysLf.underwriting)} + {money(lf.legal, sysLf.legal)} = <strong>{money(lfTotal)}</strong>.
           Every number here is a <em>pre-fill</em> — an officer can change it on any single file from
           the manual section of Products &amp; Pricing.
         </p>

@@ -192,11 +192,6 @@ export function overridesFromSnapshot(snap, mode) {
       // The manual construction feasibility fee (owner-directed 2026-08-21) — blank means "use the
       // deal's own fee"; a typed amount (0 included, which waives it) is a per-file override.
       feasibilityFee: f.tsFeasFee,
-      /* The per-file MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695) — blank means
-         "use the company minimum" (and CLEARS any stale sticky, which is what makes a re-registered
-         file follow today's rules); a typed amount is an approved exception and a typed 0 waives
-         the minimum outright. */
-      minOrigFee: f.tsMinOrigFee,
       titleFee: f.tsFeeTitle,
       /* THE GOVERNMENT CHARGES — the county, the contract's transfer-tax split, and
          a per-charge manual amount (owner-directed 2026-08-23). The keys are the
@@ -265,6 +260,26 @@ export function overridesFromSnapshot(snap, mode) {
     // Manual GOLD top-tier markup (item 15): a blank clears the sticky per-file
     // value (company/historic default governs); a value overrides Gold Tier 1.
     ...(f.tsYspGoldT1 === '' ? { markupGoldT1Pct: '' } : f.tsYspGoldT1 != null ? { markupGoldT1Pct: f.tsYspGoldT1 } : {}),
+    /* THE PER-FILE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695) sits OUT HERE with
+       the markups rather than inside `compact()` above, and that placement is the owner's own rule
+       rather than a style choice: *"any file, even if it's already in the system, by the next
+       registration, it should follow the rules of the new registration if it gets re-registered
+       again. Shouldn't be locked in where the fee was already locked in."*
+
+       `compact()` DROPS `''`, so a key inside it never reaches the server when its box is blank —
+       and the register's `hasOwnProperty` guard therefore never fires and the stale per-file value
+       survives forever. MEASURED before this was moved: a file registered with an approved waiver
+       (a typed 0) and then re-registered with the box CLEARED went on being charged the waived
+       fee. The explicit-blank form sends `''`, which `buildInputs` drops, the approval detector
+       reads as not-an-override, and the register path writes NULL over the sticky — which is the
+       whole chain the 2026-07-16 markup fix put in place for exactly this failure.
+
+       AN OPEN FINDING, recorded rather than swept up: `feasibilityFee`, `legalFee`,
+       `settlementFee`, `cemaFee` and `titleFee` are all still INSIDE `compact()` while their own
+       notes say a blank box clears them. Widening the contract to them would change how live files
+       re-register — blanks would start clearing stickies that currently survive — so it is its own
+       audited pass and its own owner call, not a drive-by here. */
+    ...(f.tsMinOrigFee === '' ? { minOrigFee: '' } : f.tsMinOrigFee != null ? { minOrigFee: f.tsMinOrigFee } : {}),
   };
 }
 

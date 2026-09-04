@@ -280,6 +280,17 @@ t('F5 restating the company number normalizes to the studio\'s explicit-blank co
     'and a real exception is left completely alone');
 });
 
+t('F7 the studio sends an EXPLICIT BLANK, outside compact(), or the blank can never clear anything', () => {
+  /* `compact()` drops `''`, so a key placed inside it never reaches the server when its box is
+     empty — and the register's `hasOwnProperty` guard therefore never fires. That is why the
+     markups sit outside it, and why this one has to. */
+  const src = stripComments(read('app-v2/src/components/ProductStudioPanel.jsx'));
+  assert.ok(/f\.tsMinOrigFee === ''\s*\?\s*\{ minOrigFee: '' \}/.test(src),
+    'an empty box must send minOrigFee:"" explicitly');
+  assert.ok(!/^\s*minOrigFee: f\.tsMinOrigFee,\s*$/m.test(src),
+    'and it must NOT be a plain entry inside compact(), where a blank is silently dropped');
+});
+
 t('F6 the staff file OVERVIEW states the EFFECTIVE percentage, or its own row contradicts itself', () => {
   /* A TENTH SURFACE, outside the nine `scripts/lib/fee-roster.js` tracks, found by grepping for a
      second server-side origination derivation while wiring this. `file-overview.js` prints the
@@ -465,6 +476,19 @@ if (!pricing.enginesReady || !pricing.enginesReady()) {
       Math.round((raised.liquidityRequired - plain.liquidityRequired) * 100) / 100,
       Math.round((raised.closingCosts.origination - plain.closingCosts.origination) * 100) / 100,
       'and the liquidity to show rose by exactly the difference');
+  });
+
+  t('H7b an EXPLICIT BLANK clears a stale per-file exception — the owner\'s re-registration rule', () => {
+    /* THIS IS TWO SEPARATE MECHANISMS AND BOTH WERE MISSING, found by the end-to-end suite rather
+       than by reading: the studio's payload has to SEND `''` (a key inside `compact()` is dropped
+       when blank and can never clear anything — F7 pins that), and `buildInputs` has to DELETE the
+       key rather than merely skip it, because `fileInputs` has already handed the base object the
+       sticky value. MEASURED before the fix: a file registered with an approved WAIVER (a typed 0)
+       and re-registered with the box cleared went on being charged the waived fee. */
+    const app = { ...APPS.find((a) => a.purchase_price === 60000 && a.__program === 'standard'), file_min_orig_fee: 0 };
+    assert.strictEqual(pricing.buildInputs(app, exp, {}).minOrigFee, 0, 'the control: the sticky governs when nothing is sent');
+    assert.ok(!('minOrigFee' in pricing.buildInputs(app, exp, { minOrigFee: '' })),
+      'an explicit blank must DELETE the key, not merely fail to overwrite it');
   });
 
   t('H8 a re-registered file with a BLANK box follows today\'s company minimum, never yesterday\'s', () => {
