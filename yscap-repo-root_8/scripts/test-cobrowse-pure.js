@@ -467,8 +467,25 @@ ok(/kind: 'file_picked'/.test(libNow) && /chose a file on their computer/.test(v
 // ── THE GUEST IS NEVER CAGED (owner-directed: they must be able to do everything) ────────
 ok(/const bannerRef = useRef\(null\)/.test(hostNow) && /document\.body\.style\.paddingTop = `\$\{h\}px`/.test(hostNow) && /ResizeObserver/.test(hostNow),
   "the fixed banner pushes the page down by its MEASURED height — otherwise it buries the app's own top bar, and with it the phone's nav toggle");
-ok(/top: 'var\(--cobrowse-bar, 0px\)'/.test(read('app-v2/src/lib/useStaleBuild.jsx')) && (read('app-v2/src/components/StaffLayout.jsx').match(/top: 'var\(--cobrowse-bar, 0px\)'/g) || []).length === 2,
-  'the other fixed top banners stack under it rather than behind it (the Refresh button stays clickable)');
+/* THE OFFSET IS COUNTED ACROSS EVERY FILE THAT DRAWS ONE, not inside a single
+   screen. It used to require exactly two occurrences in StaffLayout.jsx — the
+   staff-view bar and the stale-build bar. The staff-view bar moved into its own
+   component (so the Pilot Engine shell could mount the same one rather than a
+   second copy), and Pilot Engine's own sticky header needs the offset too. The
+   subject is unchanged: nothing fixed to the top may sit BEHIND the co-browse
+   bar, or the way out of a session stops being clickable. */
+{
+  const OFFSET = /top: 'var\(--cobrowse-bar, 0px\)'/;
+  const wants = [
+    'app-v2/src/lib/useStaleBuild.jsx',
+    'app-v2/src/components/StaffLayout.jsx',
+    'app-v2/src/components/StaffViewBanner.jsx',
+    'app-v2/src/components/EngineLayout.jsx',
+  ];
+  const missing = wants.filter((f) => !OFFSET.test(read(f)));
+  ok(missing.length === 0,
+    `the other fixed top banners stack under it rather than behind it (the Refresh button stays clickable)${missing.length ? ` — missing in ${missing.join(', ')}` : ''}`);
+}
 ok(!/autoFocus/.test(hostNow) && /askRef/.test(hostNow) && /e\.key === 'Enter' \|\| e\.key === ' '/.test(hostNow),
   'a prompt focuses the DIALOG, never an answer — a stray Enter can never share somebody\'s screen, and their sentence keeps its letters');
 ok(/const routePoll = setInterval/.test(libNow) && /popstate', onRoute/.test(libNow),

@@ -32,21 +32,40 @@ const SAFE_SEGMENT = /[^A-Za-z0-9_-]/g;
  * @returns {string} a path on THIS origin, always beginning with the portal
  *                   path, always naming an `/engine` route.
  */
+/** A portal path we are willing to emit: one leading slash, then path characters. */
+const SAFE_BASE = /^\/[A-Za-z0-9_\-/]*$/;
+
 function engineRedirectTarget(portalPath, sub) {
-  const portal = String(portalPath || '/portal').replace(/\/+$/, '');
-  const base = portal.startsWith('/') ? portal : `/${portal}`;
+  /* ⛔ THE PORTAL PATH IS SANITISED HERE TOO, not only the tail. It comes from
+     config rather than from the request, and `src/config.js` does strip it — but
+     the promise this module makes ("a path on THIS origin") then depended on a
+     DIFFERENT file, which is the two-definitions shape that goes wrong the day
+     somebody edits the other one. A pre-merge audit demonstrated the gap:
+     `engineRedirectTarget('//evil.example.com', '/x')` answered
+     `//evil.example.com/#/engine/x` — a protocol-relative URL, i.e. a redirect
+     off this origin. Refused now, with the real portal path as the fallback. */
+  const raw = String(portalPath == null ? '' : portalPath).replace(/\/+$/, '');
+  const withSlash = raw && !raw.startsWith('/') ? `/${raw}` : raw;
+  const base = SAFE_BASE.test(withSlash) && !withSlash.startsWith('//') ? withSlash : '/portal';
 
   /* Split on the separator and rebuild segment by segment, so a segment can
-     never carry a separator of its own back into the result. `..` is dropped
-     outright rather than sanitised — it is a real path, not a bad character,
-     and stripping its dots would silently turn it into an empty segment. */
+     never carry a separator of its own back into the result.
+
+     THE DOT TEST RUNS BEFORE THE STRIP, and that ordering is the whole of it. A
+     pre-merge audit found it running AFTER, where it was DEAD CODE saying the
+     opposite of what happened: `.` and `..` are not in the allowlist, so the
+     strip had already turned them into empty segments and the truthiness check
+     was quietly doing the work. Harmless then, wrong the moment somebody widens
+     the allowlist to include a dot — at which point `..` would survive. Asked
+     first, it is a real refusal. */
   const tail = String(sub == null ? '' : sub)
     .split(/[/\\]+/)
-    .map((seg) => seg.replace(SAFE_SEGMENT, ''))
     .filter((seg) => seg && seg !== '.' && seg !== '..')
+    .map((seg) => seg.replace(SAFE_SEGMENT, ''))
+    .filter(Boolean)
     .join('/');
 
   return tail ? `${base}/#/engine/${tail}` : `${base}/#/engine`;
 }
 
-module.exports = { engineRedirectTarget, _internals: { SAFE_SEGMENT } };
+module.exports = { engineRedirectTarget, _internals: { SAFE_SEGMENT, SAFE_BASE } };

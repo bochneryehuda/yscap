@@ -149,14 +149,23 @@ function Private({ children }) {
   return <Layout>{children}</Layout>;
 }
 
-/* Internal-only area. Borrowers who land here are bounced to their dashboard. */
-function StaffPrivate({ children }) {
+/* Internal-only area. Borrowers who land here are bounced to their dashboard.
+ *
+ * ⛔ THE SHELL IS A PARAMETER, AND THAT IS THE WHOLE POINT. Pilot Engine mounts
+ * the same screens in a menu-less shell, and the first cut of it COPIED these
+ * four checks into a second function — with a comment saying that copying the
+ * checks is how two doors drift. A pre-merge audit named it: the mirror was
+ * detected by a test rather than made impossible, and of the two halves to
+ * duplicate, the door is the wrong one. There is now ONE definition of who may
+ * come in, and a shell can never disagree with it because there is nothing to
+ * disagree with. */
+function StaffPrivate({ children, Shell = StaffLayout }) {
   const { isAuthed, isStaff, isTpo } = useAuth();
   const loc = useLocation();
   if (!isAuthed) return <Navigate to="/internal/login" state={{ from: loc.pathname + loc.search }} replace />;
   if (isTpo) return <Navigate to="/tpo" replace />;
   if (!isStaff) return <Navigate to="/dashboard" replace />;
-  return <StaffLayout>{children}</StaffLayout>;
+  return <Shell>{children}</Shell>;
 }
 
 /**
@@ -165,23 +174,17 @@ function StaffPrivate({ children }) {
  * engine… same logins, same passwords, same usernames, same team members, same
  * everything"*).
  *
- * ⛔ THIS IS `StaffPrivate` WITH ONE LINE CHANGED — the shell. Every check is
- * the same check, deliberately: there is no engine login, no engine session and
- * no engine permission, so a person who can price in the console can price here
- * and a person who cannot, cannot. Copying the checks instead of matching them
- * is how two doors drift into disagreeing about who may open one.
+ * ⛔ IT RESTATES NO CHECK. It is `StaffPrivate` wearing a different shell, so
+ * there is no engine login, no engine session and no engine permission: a person
+ * who can price in the console can price here, and a person who cannot, cannot —
+ * not because two lists were kept in step, but because there is only one list.
+ * `scripts/test-pilot-engine-pure.mjs` fails the build if this ever grows a
+ * check of its own.
  *
  * The unauthenticated bounce carries `from`, so the existing login returns you
  * to the engine rather than the console — no second sign-in and no new code.
  */
-function EnginePrivate({ children }) {
-  const { isAuthed, isStaff, isTpo } = useAuth();
-  const loc = useLocation();
-  if (!isAuthed) return <Navigate to="/internal/login" state={{ from: loc.pathname + loc.search }} replace />;
-  if (isTpo) return <Navigate to="/tpo" replace />;
-  if (!isStaff) return <Navigate to="/dashboard" replace />;
-  return <EngineLayout>{children}</EngineLayout>;
-}
+const EnginePrivate = ({ children }) => <StaffPrivate Shell={EngineLayout}>{children}</StaffPrivate>;
 
 /* Broker (TPO) area. Anyone who is not a signed-in external broker is bounced to
    their own door — a borrower to their dashboard, a staffer to the console. */

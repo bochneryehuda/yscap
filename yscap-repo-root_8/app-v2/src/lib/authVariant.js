@@ -22,13 +22,24 @@
  * Which sign-in panel a variant draws.
  * @param {string} variant  'borrower' | 'staff' | 'tpo' | 'engine'
  */
+const KNOWN = ['borrower', 'staff', 'tpo', 'engine'];
+
 export function authVariantFlags(variant) {
+  /* ⛔ AN UNKNOWN VARIANT FAILS CLOSED TO THE STAFF PANEL, NEVER THE BORROWER
+     ONE. A pre-merge audit caught this returning borrower flags for 'ENGINE',
+     'enginee' and undefined — so a one-character typo at a call site quietly
+     told a loan officer this is the borrower platform, which is the precise
+     outcome the rest of this file exists to prevent. Every caller today is one
+     of the four internal/external doors; if a fifth is added, it announces
+     itself here rather than silently rendering the wrong panel. */
+  const known = KNOWN.includes(variant);
   const engine = variant === 'engine';
   return {
     engine,
     // Pilot Engine IS the staff console's own sign-in, named differently.
-    staff: variant === 'staff' || engine,
+    staff: variant === 'staff' || engine || !known,
     tpo: variant === 'tpo',
+    known,
   };
 }
 

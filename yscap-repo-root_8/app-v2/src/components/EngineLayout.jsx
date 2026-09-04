@@ -1,6 +1,8 @@
 import React from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
+import { useStaleBuild, StaleBuildBanner } from '../lib/useStaleBuild.jsx';
+import StaffViewBanner from './StaffViewBanner.jsx';
 
 /**
  * PILOT ENGINE — the pricing engine on its own, at its own address.
@@ -77,11 +79,23 @@ const tabStyle = ({ isActive }) => ({
 export default function EngineLayout({ children }) {
   const { signOut } = useAuth();
   const nav = useNavigate();
+  /* ⛔ EVERY SHELL MOUNTS THE STALE-BUILD WATCHDOG (CLAUDE.md, by name), and this
+     shell needs it more than the others do: the owner asked for a BOOKMARK, which
+     is a long-lived tab, and a long-lived tab running yesterday's bundle is the
+     exact incident the watchdog was built after. */
+  const staleBuild = useStaleBuild();
 
   return (
     <div style={{ minHeight: '100vh', background: '#F6F3EC' }}>
+      {/* A staff-view token IS a staff token, so a super admin standing inside a
+          teammate's console is admitted here. Without this they would have had no
+          banner and no way back — the shell's only other exits are "Full system"
+          and "Sign out", and signing out of somebody else's session is the wrong
+          action. Shared component, never a second copy of the bar. */}
+      <StaffViewBanner />
+      <StaleBuildBanner stale={staleBuild} />
       <header style={{
-        position: 'sticky', top: 0, zIndex: 30, background: '#FFFFFF',
+        position: 'sticky', top: 'var(--cobrowse-bar, 0px)', zIndex: 30, background: '#FFFFFF',
         borderBottom: `1px solid ${LINE}`, padding: '10px 18px',
         display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
       }}>
