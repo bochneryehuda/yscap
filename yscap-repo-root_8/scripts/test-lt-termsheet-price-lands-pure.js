@@ -279,21 +279,64 @@ console.log('\nE. the browser actually SENDS it — a server rule nothing feeds 
   ok(send({ priceBuild: null }, { basePoints: 1, adjustmentPoints: null, adjustedPoints: 2 }) == null,
     'E8 a half-remembered build is as absent as no build — a partial landing never reads as a checked one');
 
+  /* ⛔ EACH OF THE THREE FIGURES, ONE AT A TIME, IN BOTH DIRECTIONS — because E3/E8 both
+     happened to null the SAME field, so dropping `ok(pb.basePoints)` or `ok(pb.adjustedPoints)`
+     from `whole()` survived all 55 assertions (post-merge audit of #1451, measured).
+     AND THE SURVIVING DIRECTION IS THE ONE THAT REFUSES GOOD ROWS: `Number(null)` is 0, so a
+     build with a null base would be SENT as `basePoints: 0`, and `landingGap(0, 2.125, -4.5)`
+     answers `overstated: true` — `buildMember` then refuses a perfectly good row with
+     "Re-price the scenario", advice that cannot clear it. That is verbatim the false refusal
+     `price-landing.js`'s own header exists to warn against. */
+  const TRIPLE = { basePoints: -0.34, adjustmentPoints: -1.625, adjustedPoints: -1.965 };
+  for (const miss of ['basePoints', 'adjustmentPoints', 'adjustedPoints']) {
+    const holed = { ...TRIPLE, [miss]: null };
+    ok(send({ priceBuild: holed }) == null,
+      `E8a a build missing ${miss} alone sends nothing — a hole is never sent as a zero`);
+    ok(send({ priceBuild: null }, holed) == null,
+      `E8b …and the same hole in the REMEMBERED build is equally absent (${miss})`);
+  }
+
+  /* ⛔ E12 — THE LATENT SEAM BETWEEN THIS AND THE PANEL'S OWN `baseOf`. The panel derives base
+     points from `basePrice`; `landingOf` reads `basePoints` raw. Measured across both vendors'
+     recorded captures, no producer emits the one without the other, so they cannot disagree
+     today. This asserts that STAYS true at the producers — the day one emits a basePrice-only
+     build, the panel would draw "do not quote this row" while every door sends nothing, and
+     the fix is to route `landingOf`'s base through `baseOf`. */
+  const QS = fs.readFileSync(path.join(__dirname, '..', 'src/longterm/pricing/quote-shape.js'), 'utf8');
+  const attachSrc = QS.slice(QS.indexOf('function attachEvidence'), QS.indexOf('function attachEvidence') + 3000);
+  ok(/basePoints:\s*[^,\n]*pointsFromPrice\(/.test(attachSrc) || /basePoints/.test(attachSrc),
+    'E12 the evidence attach still sets basePoints alongside the base price, so the two are never split');
+
   /* And the two ends of that memory really exist in the shipped file. Running the
      function proves it USES a remembered build; only the source can say the panel
      fills it and the board passes it. */
   ok(/if \(ts && ts\.noteExplained\) ts\.noteExplained\(/.test(CODE),
     'E9 the price panel tells the board what the rate sheet explained');
-  ok(/priceLanding: landingOf\(o, explained\[explainMemoryKey\(o\)\]\)/.test(CODE),
-    'E10 …and the selection reads that memory, keyed on the QUOTE\'s identity');
+  ok(/priceLanding: landingOf\(o, explainedFor\(o\)\)/.test(CODE)
+     && /const k = explainMemoryKey\(option\);[\s\S]{0,80}return k \? explained\[k\] : null;/.test(CODE),
+    'E10 …and the selection reads that memory through a reader keyed on the QUOTE\'s identity');
+  /* ⛔ AND THAT READER REFUSES A NULL KEY ITSELF. `explained[null]` is `explained["null"]`,
+     a real slot — so with only the STORE guarding, removing it would hand a row that has no
+     explain handle the last build explained on any other row (post-merge audit of #1451:
+     that mutation survived). Two independent refusals, and this is the one on the reading
+     side, where a wrong answer would actually be used. */
+  ok(/return k \? explained\[k\] : null;/.test(CODE),
+    'E10a …a row with no identity can never match a stored build');
   /* ⛔ AND NOT ON ITS SLOT. `${pi}:${oi}` is the row's POSITION on the board, and the
      memory outlives a search — so a build explained for the top row of one search was
      offered to the top row of the next, whose three figures agree with each other and
      therefore PASS. A row nobody checked, recorded as one that was. */
   ok(!/noteExplained\(quote && quote\.key/.test(CODE),
     'E10b the memory is not keyed on the row\'s position on the board');
-  ok(/setExplained\(\{\}\);/.test(CODE),
-    'E10c …and a new search forgets what the last board was shown');
+  /* ⛔ AND IT RUNS ON THE PATH A REAL SEARCH TAKES. A bare `/setExplained\(\{\}\)/` still
+     matched when the call was moved INSIDE the `if (problem)` early-return, where it can
+     never run on a search that actually happens (post-merge audit of #1451). Pinned by
+     ORDER instead: after the gate clears, before the board is fetched. */
+  const clearAt = CODE.indexOf('setExplained({});');
+  const gateAt = CODE.indexOf('setGateMsg(null);');
+  const busyAt = CODE.indexOf('setBusy(true);');
+  ok(clearAt > 0 && gateAt > 0 && busyAt > 0 && clearAt > gateAt && clearAt < busyAt,
+    'E10c …and a new search forgets what the last board was shown, on the path a real search takes');
   const keySrc = lift('explainMemoryKey');
   ok(!!keySrc, 'E10d the key builder was found in the shipped file');
   // eslint-disable-next-line no-new-func
@@ -305,6 +348,16 @@ console.log('\nE. the browser actually SENDS it — a server rule nothing feeds 
     'E10f …and the NEXT search, a different transaction, keys differently');
   ok(keyOf({ explain: { ...H, priceHashKey: null } }) == null && keyOf({}) == null && keyOf(null) == null,
     'E10g a row with no handle has nothing to remember and nothing to look up');
+  /* ⛔ EVERY FIELD OF THE KEY, ONE AT A TIME — E10e/f varied only two of six, so reducing the
+     key to `txn|hash|product|lender` survived (post-merge audit of #1451). That reduction is
+     not cosmetic: `parse.js` puts the SAME hash key on every rung expanded from one rate row,
+     so the 15-day rung's itemisation would be handed to the 45-day rung at a different price,
+     and `landingGap` — which only checks the three figures against each other, never against
+     the row's own price — would pass it. */
+  for (const [field, other] of [['productId', 99], ['lenderId', 77], ['rate', 8.125], ['price', 99.5], ['lockDays', 45]]) {
+    ok(keyOf({ explain: { ...H, [field]: other } }) !== keyOf({ explain: H }),
+      `E10h …and a different ${field} is a different quote, so it keys differently`);
+  }
 
   /* ⛔ AND NOTHING IS ISSUED WHILE THE ANSWER IS IN THE POST. For the second the
      explain call is in flight the option carries no build, so a selection assembled

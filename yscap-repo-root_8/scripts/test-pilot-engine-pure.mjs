@@ -416,6 +416,57 @@ ok(!/\.catch\(\(\) => \{\}\)/.test(SVB),
   'C10a2 …and an unreadable probe is never swallowed into silence');
 ok(/setUnknown\(true\)/.test(SVB) && /could not check whose screen this is/.test(SVB),
   'C10a3 …it says it cannot tell, in words, rather than showing nothing');
+
+/* ⛔ AND THE DECIDING IS RUN, NOT READ. The three checks above are source regexes, and a
+   post-merge audit walked FIVE mutations straight through them — the retry disarmed, both
+   `alive` guards deleted, and `setUnknown` wrapped in a dead branch — all green, all
+   fail-OPEN in production. There is no DOM in CI (no jsdom in app-v2), and `renderToString`
+   does not run effects, so nothing could ever have exercised a probe living inside one.
+   `probeStaffView` is that decision lifted OUT of the effect so it can be called. */
+{
+  const src = SVB.slice(SVB.indexOf('export async function probeStaffView'));
+  /* Start at the BODY brace, not the first `{` in the file — the signature carries
+     `opts = {}`, which is balanced, so a naive matcher closes on it and lifts a
+     truncated function. (It did, on the first cut of this guard.) */
+  const bodyAt = src.search(/\)\s*\{/);
+  let depth = 0; let end = -1;
+  for (let i = src.indexOf('{', bodyAt); i < src.length; i += 1) {
+    if (src[i] === '{') depth += 1;
+    else if (src[i] === '}') { depth -= 1; if (depth === 0) { end = i + 1; break; } }
+  }
+  const body = end > 0 ? src.slice(0, end) : '';
+  ok(!!body, 'C10a4 the probe decision was found in the shipped file');
+  // eslint-disable-next-line no-new-func
+  const probe = new Function(`${body.replace('export async function', 'async function')}\nreturn probeStaffView;`)();
+  const noSleep = { sleep: async () => {} };
+
+  const inView = await probe(async () => ({ active: true, viewing: { name: 'Malky' } }), noSleep);
+  ok(inView.viewing && inView.viewing.name === 'Malky' && inView.unknown === false,
+    'C10a5 a session that says you are in a view reports whose');
+
+  const notInView = await probe(async () => ({ active: false }), noSleep);
+  ok(notInView.viewing === null && notInView.unknown === false,
+    'C10a6 …a session that says you are not reports nothing, and is NOT "cannot tell"');
+
+  let calls = 0;
+  const blip = await probe(async () => { calls += 1; if (calls === 1) throw new Error('502'); return { active: true, viewing: { name: 'Malky' } }; }, noSleep);
+  ok(calls === 2 && blip.viewing && blip.viewing.name === 'Malky',
+    'C10a7 …one blip is retried, and the retry\'s answer is used — a blip never puts a notice on screen');
+
+  let tries = 0;
+  const dead = await probe(async () => { tries += 1; throw new Error('down'); }, noSleep);
+  ok(tries === 2 && dead.unknown === true && dead.viewing === null,
+    'C10a8 …and an answer we cannot get AT ALL says so, after exactly one retry');
+
+  let once = 0;
+  const noRetry = await probe(async () => { once += 1; throw new Error('down'); }, { ...noSleep, retries: 0 });
+  ok(once === 1 && noRetry.unknown === true,
+    'C10a9 …the retry count is real — with none configured it asks once and reports it cannot tell');
+
+  let threw = false;
+  try { await probe(async () => { throw new Error('x'); }, noSleep); } catch (_) { threw = true; }
+  ok(!threw, 'C10a10 …and it never throws — its caller is an effect with no catch of its own');
+}
 ok(/api\.staffViewSession\(\)/.test(SVB) && /setViewing\(/.test(SVB),
   'C10b …it asks the server whose screen this is, so a shell holds no state and cannot wire it wrong');
 ok(/You are seeing/.test(SVB) && /viewing\.name/.test(SVB),

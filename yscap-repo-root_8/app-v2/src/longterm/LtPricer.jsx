@@ -1036,6 +1036,18 @@ export function landingOf(option, rememberedBuild) {
    * the three-figure test — returning null on exactly the vendor this exists for, while the
    * board had the itemisation in hand. The first cut of this shipped that way.
    */
+  /**
+   * ⛔ LATENT SEAM, RECORDED RATHER THAN GUESSED AT (post-merge audit of #1451). The panel
+   * draws its own landing through `baseOf`, which DERIVES base points from `basePrice` when
+   * the sheet stated only a price; this reads `basePoints` raw. Today the two cannot differ:
+   * `attachEvidence` sets `basePoints` from `ev.basePrice` so they are null together, and
+   * Lender Price's `priceBuildOf` never emits `basePrice` at all — MEASURED across both
+   * vendors' recorded captures, zero rows carry a `basePrice` with no `basePoints`. The day
+   * a producer emits that pair the panel would draw "do not quote this row" while all four
+   * doors send nothing, which is the very "the board had SEEN the build and then said it had
+   * none" this exists to end. `test-lt-termsheet-price-lands-pure` E12 fails if that pair
+   * ever becomes reachable, which is the signal to route this through `baseOf`.
+   */
   const whole = (pb) => !!pb && ok(pb.basePoints) && ok(pb.adjustmentPoints) && ok(pb.adjustedPoints);
   const own = option && option.priceBuild;
   const pb = whole(own) ? own : (whole(rememberedBuild) ? rememberedBuild : null);
@@ -1060,9 +1072,25 @@ export function landingOf(option, rememberedBuild) {
  *
  * ⛔ AND THE HASH KEY ALONE IS NOT AN IDENTITY. `loannex/README` states it plainly:
  * "a `priceHashKey` is a handle INTO a transaction, not a global name for a quote."
- * So the transaction is part of the key, and the row's own priced content behind it —
- * a collision then needs the same product, lender, rate AND price, at which point the
- * remembered itemisation genuinely describes that quote.
+ * So the transaction leads the key, and the row's own priced content follows it.
+ *
+ * ⛔ THE LOCK IS PART OF A QUOTE, AND LEAVING IT OUT COLLIDED 43% OF A REAL BOARD
+ * (post-merge audit of #1451, MEASURED on `loannex/capture/quick-prices.json`: 726
+ * colliding keys covering 2,261 of 5,286 options, every one of them differing ONLY in
+ * lock days). `parse.js` writes the same `priceHashKey` onto every rung expanded from
+ * one rate row, so a rate's 15/30/45/60-day rungs share it — and `quote-shape` states
+ * the rule this breaks in its own words: "LoanNEX quotes the same rate at 15/30/45/60
+ * days and the prices differ, so folding them together would let a 60-day quote be
+ * read as a 30-day one." The collisions were benign only because `price` is in the key
+ * too, so a colliding pair happened to share the same figures; that is a coincidence of
+ * this data, not a property of the key. `lockDays` is in it now.
+ *
+ * ⛔ HONEST NOTE ON "the transaction leads the key": `explainHandle` OMITS
+ * `transactionId` when the board builder passes null, which both callers do when the
+ * LoanNEX call did not fulfil or carried no id. The first segment is then '' for that
+ * whole board and the transaction is doing no work — so the belt is intermittent and
+ * `setExplained({})` on a new search is what actually holds. Do not read the first
+ * segment as a guarantee.
  *
  * Returns null when there is no handle, which is not a gap: the panel only ever asks
  * a sheet to explain a row that HAS one, so a row with no handle has nothing to
@@ -1074,7 +1102,7 @@ export function explainMemoryKey(option) {
   const part = (v) => (v === null || v === undefined ? '' : String(v));
   return [
     part(h.transactionId), part(h.priceHashKey), part(h.productId),
-    part(h.lenderId), part(h.rate), part(h.price),
+    part(h.lenderId), part(h.rate), part(h.price), part(h.lockDays),
   ].join('|');
 }
 
@@ -2313,6 +2341,11 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
      a landing: it stores the option the server explained and `selectionFor`
      reads the three figures off it, exactly as the panel does. */
   const [explained, setExplained] = useState({});
+  /* Reading side of the memory: a row with no identity can never match a stored one. */
+  const explainedFor = useCallback((option) => {
+    const k = explainMemoryKey(option);
+    return k ? explained[k] : null;
+  }, [explained]);
   const noteExplained = useCallback((key, option) => {
     const k = key == null ? null : String(key);
     const pb = option && option.priceBuild;
@@ -2588,7 +2621,13 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
          monthly payment. Sent ONLY when the breakdown has actually been fetched — a row nobody
          opened sends nothing and is issued exactly as before, because refusing those would stop
          the desk working over a check nobody asked for. */
-      priceLanding: landingOf(o, explained[explainMemoryKey(o)]),
+      /* ⛔ THE LOOKUP REFUSES A NULL KEY ITSELF, rather than trusting the store's guard.
+         `explained[null]` is `explained["null"]` — a real slot — so if the store ever stopped
+         refusing a null key, a row with NO explain handle would be handed the last build
+         explained on any other row (post-merge audit of #1451: removing that guard survived
+         the suite). Two independent refusals now, and this one is on the reading side, where
+         the wrong answer would actually be used. */
+      priceLanding: landingOf(o, explainedFor(o)),
       pricedAt: (o && o.rateSheet && o.rateSheet.effectiveAt) || (res && res.pricedAt) || null,
       /* ⛔ THE RATIO THIS OPTION WAS PRICED AT — the bracket board's own stamp on the
          option (`o.dscr`), never the form's figure. On a banded board the form's DSCR

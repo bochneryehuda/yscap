@@ -30,32 +30,68 @@ import { api } from '../lib/api.js';
  * session drop the token and make them sign in rather than leave them sitting
  * inside somebody else's console. Never a fourth hand-rolled copy of that dance.
  */
+/**
+ * ⛔ WHAT THE PROBE DECIDES, AS A FUNCTION SOMEBODY CAN CALL.
+ *
+ * Three outcomes and they are NOT two: a session that says "you are in a view"
+ * (show whose), a session that says you are not (show nothing), and an answer we
+ * could not get at all (say so). The third is the whole point — swallowing it
+ * rendered nothing, which reads as the second, and on the engine shell this bar is
+ * the ONLY thing that says whose session you are in.
+ *
+ * Retried once, because a single blip should not put a notice on anybody's screen;
+ * `sleep` is injectable so a test does not wait a real second and a half.
+ * NEVER throws — the caller is an effect with no catch of its own.
+ */
+export async function probeStaffView(ask, opts = {}) {
+  const retries = Number.isFinite(opts.retries) ? opts.retries : 1;
+  const delay = Number.isFinite(opts.delay) ? opts.delay : 1500;
+  const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  /* ⛔ THE LOOP IS BOUNDED BY ITS HEAD, NOT ONLY BY THE RETURN INSIDE IT. An unbounded
+     `for (;;)` whose sole exit is a branch means any mutation of that branch spins forever —
+     and a hung suite is not a clean red, it is a suite that never answers (this file's own
+     "a CRASHING test also fails and looks like proof"). Measured: it hung the run. */
+  for (let left = retries; left >= 0; left -= 1) {
+    let answered = null;
+    try {
+      answered = { s: await ask() };
+    } catch (_) {
+      if (left <= 0) return { viewing: null, unknown: true };
+      await sleep(delay);
+    }
+    if (answered) {
+      const s = answered.s;
+      if (s && s.active) return { viewing: s.viewing || {}, unknown: false };
+      return { viewing: null, unknown: false };
+    }
+  }
+  /* Fell out of the loop without an answer: we could not get one. Saying so is the
+     honest state and is what the bar renders; the loop above can only reach here by
+     exhausting its retries. */
+  return { viewing: null, unknown: true };
+}
+
 export default function StaffViewBanner({ inFlow = false, hint = '' }) {
   const { exitStaffView } = useAuth();
   const [viewing, setViewing] = useState(null);
   const [unknown, setUnknown] = useState(false);
 
   /* Probed once per mount: the answer cannot change without the token changing,
-     and a token change remounts the app.
-
-     ⛔ A FAILED PROBE IS A THIRD STATE, NOT A "NO". The first cut swallowed the
-     error and rendered nothing, so a blip or a 502 read as "you are not in a staff
-     view" — fail-OPEN on the one rule this component exists for, which is that a
-     session belonging to somebody else says so unmissably on every screen. On the
-     console that was survivable; on the engine shell this bar is the ONLY thing
-     that says it. It is retried once (a single blip should not put a notice on
-     anybody's screen) and, if it still cannot tell, it SAYS it cannot tell. */
+     and a token change remounts the app. The DECIDING is `probeStaffView` below —
+     a plain function a test can call — because the properties that matter here
+     (it retries once; an exhausted retry reports "cannot tell"; a resolved
+     "not in a view" reports nothing) live in a `useEffect`, and this project has
+     no DOM in CI, so a source regex was the only thing holding them. Five
+     mutations walked straight through that regex (post-merge audit of #1451):
+     the retry disarmed, both `alive` guards deleted, and `setUnknown` wrapped in
+     a dead branch — all green, all fail-OPEN in production. */
   useEffect(() => {
     let alive = true;
-    const ask = (retriesLeft) => api.staffViewSession().then((s) => {
+    probeStaffView(() => api.staffViewSession()).then((r) => {
       if (!alive) return;
-      if (s && s.active) setViewing(s.viewing || {});
-    }).catch(() => {
-      if (!alive) return;
-      if (retriesLeft > 0) { setTimeout(() => { if (alive) ask(retriesLeft - 1); }, 1500); return; }
-      setUnknown(true);
+      if (r.viewing) setViewing(r.viewing);
+      else if (r.unknown) setUnknown(true);
     });
-    ask(1);
     return () => { alive = false; };
   }, []);
 
@@ -99,7 +135,14 @@ export default function StaffViewBanner({ inFlow = false, hint = '' }) {
          Pinned as E10 in `scripts/render-pilot-engine.mjs`, the only thing that
          can hold a geometry claim; a note whose reason is wrong is worse than no
          note, because the next person budgets against it. */
-      ...(inFlow
+      /* ⛔ THE "CANNOT TELL" BAR IS ALWAYS IN FLOW, wherever it is mounted. The console
+         reserves no space for a fixed bar (no paddingTop, no [data-top-banner] rule), so a
+         fixed one overlays the top of its sidebar and content — pre-existing for the navy
+         bar, but this grey one is a NEW trigger for it: it appears for an ordinary staff
+         user whose probe fails, a state that previously rendered nothing at all. Taking
+         space is right for it anyway; it is a notice, not a persistent "this is not your
+         session" marker that must stay pinned. The navy bar's behaviour is unchanged. */
+      ...((inFlow || !viewing)
         ? { position: 'static', flexWrap: 'wrap' }
         : { position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1001 }),
       /* The unsure bar is a QUIETER colour on purpose: it reports that PILOT could
