@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**969 objects**, and a database rebuilt from the Prisma
+**971 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 691 numbered migrations in `db/` (highest `db/694`) remain the only thing that builds this database.
+rebuild a database from them.** The 692 numbered migrations in `db/` (highest `db/695`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -20,10 +20,10 @@ the live database.
 | | |
 |---|---|
 | Tables | 412 |
-| Columns | 6618 |
+| Columns | 6620 |
 | Triggers | 39 |
 | Functions | 144 |
-| CHECK constraints | 354 |
+| CHECK constraints | 356 |
 | Generated columns | 12 |
 | Partial indexes | 420 |
 | Primary keys | 412 |
@@ -660,7 +660,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (354)
+## CHECK constraints (356)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -670,6 +670,7 @@ the live database.
 - **application_assignees_role_check** on `application_assignees`
 - **applications_a_piece_amount_chk** on `applications`
 - **applications_closing_handling_chk** on `applications`
+- **applications_file_min_orig_fee_chk** on `applications`
 - **applications_pa_read_state_chk** on `applications`
 - **applications_requested_ir_months_check** on `applications`
 - **applications_sold_source_chk** on `applications`
@@ -778,6 +779,7 @@ the live database.
 - **cobrowse_sessions_not_self_chk** on `cobrowse_sessions`
 - **cobrowse_sessions_status_chk** on `cobrowse_sessions`
 - **cobrowse_sessions_target_chk** on `cobrowse_sessions`
+- **company_pricing_settings_min_orig_fee_chk** on `company_pricing_settings`
 - **condition_clearance_proofs_result_check** on `condition_clearance_proofs`
 - **condition_intents_materiality_check** on `condition_intents`
 - **condition_links_one_owner** on `condition_links`
