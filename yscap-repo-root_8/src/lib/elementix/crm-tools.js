@@ -166,6 +166,71 @@ function vendorJsonb(v, max = JSONB_MAX) {
   });
 }
 
+/**
+ * FIT A ROWS PAYLOAD UNDER THE jsonb CEILING BY DROPPING ROWS, NOT THE LOT.
+ *
+ * `vendorJsonb` refuses to slice a serialized document -- a truncated one is not
+ * valid JSON and Postgres rejects the whole write -- so over the ceiling it
+ * REPLACES the payload with a marker. That is right for a raw copy nothing
+ * renders, and catastrophic for a cached SECTION, whose `rows` ARE what the
+ * screen draws: the section stores a marker, the reader computes a row count of
+ * zero from the missing array, and the biggest record draws an EMPTY tab with no
+ * error anywhere. It happens only to the records worth reading.
+ *
+ * ONE DEFINITION, used by every cached section on this plane -- the person
+ * profile and the address profile alike. It shipped on the person side first and
+ * was then reintroduced verbatim in the brand-new address module, which is the
+ * argument for it living here rather than in one of them.
+ *
+ * Halving rather than dropping one row at a time: a row is not a fixed size, and
+ * walking down from a thousand is hundreds of serialisations of a 400 KB string
+ * on the write path.
+ */
+function fitRowsPayload(payload, max = JSONB_MAX) {
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.rows)) return payload;
+  const fits = (v) => { try { return JSON.stringify(v).length <= max; } catch (_) { return false; } };
+  if (fits(payload)) return payload;
+
+  let lo = 0;
+  let hi = payload.rows.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fits({ ...payload, rows: payload.rows.slice(0, mid) })) lo = mid; else hi = mid - 1;
+  }
+  const kept = payload.rows.slice(0, lo);
+  return {
+    ...payload,
+    rows: kept,
+    // The count the vendor reported is DELIBERATELY left alone: it is still the
+    // truth about how many exist, and it is what makes "N of M" honest.
+    rowsDropped: payload.rows.length - kept.length,
+  };
+}
+
+/**
+ * Drop the vendor's inline logos before anything is stored.
+ *
+ * `_logoDataUri` is a base64 JPEG, 8-12 KB EACH, carried on lender rows and
+ * nested inside person and transaction rows. Nothing on any screen uses one, and
+ * a single page of them can put a megabyte of pictures into one jsonb row --
+ * which is also the fastest way to hit the ceiling above and lose real rows to
+ * make room for pictures.
+ *
+ * Recursive because they are nested; bounded in depth so a self-referencing
+ * payload cannot spin.
+ */
+const HEAVY_KEYS = new Set(['_logoDataUri', '_logoDataURI', 'logoDataUri']);
+function stripHeavy(v, depth = 0) {
+  if (depth > 6 || !v || typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v.map((x) => stripHeavy(x, depth + 1));
+  const out = {};
+  for (const [k, val] of Object.entries(v)) {
+    if (HEAVY_KEYS.has(k)) continue;
+    out[k] = (val && typeof val === 'object') ? stripHeavy(val, depth + 1) : val;
+  }
+  return out;
+}
+
 const str = (v) => String(v == null ? '' : v).trim();
 
 /**
@@ -259,5 +324,5 @@ function totalOf(d) {
   return null;
 }
 
-module.exports = { call, rowsOf, totalOf, vendorJsonb, TOOLS, PAID, UNVERIFIED_SHAPE, FORBIDDEN_ARGS,
+module.exports = { call, rowsOf, totalOf, vendorJsonb, fitRowsPayload, stripHeavy, TOOLS, PAID, UNVERIFIED_SHAPE, FORBIDDEN_ARGS,
   _internals: { isUuid, stateCode, JSONB_MAX } };

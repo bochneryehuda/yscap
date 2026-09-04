@@ -700,10 +700,14 @@ function refuseSeen(res, v) {
 async function addressSeenByActor(req, addressId, personId) {
   if (!isUuid(addressId)) return { seen: false, bad: true };
   const v = await seenByActor(req, personId);
-  if (!v.seen) return v;
+  if (!v.seen) return v.bad ? { seen: false, bad: true, badPerson: true } : v;
   try {
     const prof = await profile.readProfile(personId);
     if (!prof || prof.ok !== true) return { seen: false, unreadable: true };
+    // NOTHING READ YET is a different answer from NOT THIS PERSON'S PROPERTY,
+    // and only one of them means somebody opened it from the wrong place.
+    const anyRows = Object.values(prof.sections || {}).some((sec) => (sec.rows || []).length > 0);
+    if (!anyRows) return { seen: false, notRead: true };
     const want = String(addressId).toLowerCase();
     const hit = (row) => {
       if (!row || typeof row !== 'object') return false;
@@ -724,8 +728,17 @@ async function addressSeenByActor(req, addressId, personId) {
 }
 
 function refuseAddress(res, v) {
+  /* `bad` arrives from TWO checks — a malformed address id here, and a
+     malformed personId inside seenByActor — so it must say which. Answering
+     "that is not a property" about a perfectly good property, because the
+     person id beside it was wrong, sends somebody looking in the wrong place. */
+  if (v.badPerson) return res.status(400).json({ error: 'That is not a person from an Elementix record.' });
   if (v.bad) return res.status(400).json({ error: 'That is not a property from an Elementix record.' });
   if (v.unreadable) return res.status(503).json({ error: 'PILOT could not check who that record belongs to. Try again in a moment.' });
+  if (v.notRead) {
+    return res.status(404).json({ reason: 'not_read',
+      error: 'This person’s Elementix record has not been read into PILOT yet — press Refresh data on their profile first.' });
+  }
   if (v.notOnPerson) {
     return res.status(404).json({ reason: 'not_found',
       error: 'That property is not on this person’s record in PILOT. Open it from one of their own rows.' });

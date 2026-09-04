@@ -161,7 +161,21 @@ async function fetchSection(section, addressId, ctx) {
 }
 
 async function writeSection(addressId, key, out, client = db) {
-  const payload = out.error ? null : { rows: out.rows, object: out.object || null, total: out.rows.length };
+  /* THE CEILING, AND THE PICTURES — both through the SHARED definitions in
+     crm-tools, not a private copy. Over 400,000 characters `vendorJsonb`
+     replaces the whole document with a marker, and `payload.rows` IS what the
+     screen draws: without this a property with a long recorded history stores a
+     marker, reads back with an empty `rows`, and renders as "Elementix has none
+     on record" — the exact defect the person profile had fixed one commit
+     earlier, reintroduced verbatim in this module. A page of transactions can
+     reach it on its own if the vendor carries its inline logos, which is why
+     they are stripped BEFORE the fit rather than after: pictures must never
+     take a real row's place. */
+  const payload = out.error ? null : crmTools.fitRowsPayload({
+    rows: crmTools.stripHeavy(out.rows),
+    object: crmTools.stripHeavy(out.object || null),
+    total: out.rows.length,
+  });
   await client.query(
     `INSERT INTO elementix_address_sections
        (address_id, section, payload, row_count, truncated, fetched_at, calls_spent, last_error, unverified)
@@ -209,21 +223,42 @@ async function ensureAddressRow(addressId, detail, staffId, client = db) {
  */
 async function buildAddress(addressId, opts = {}) {
   const client = opts.client || db;
-  const id = str(addressId);
+  /* LOWER-CASED ONCE, HERE. `isUuid` is case-insensitive and the route's scope
+     check compares case-insensitively, but `address_id` is plain `text` — so an
+     upper-case id would pass every gate and then MISS the row it already has:
+     a second header row for one property, a fresh 3-5 requests out of the
+     organisation's shared hourly allowance, and a cache read answering "not
+     looked up yet" about a property that has been. */
+  const id = str(addressId).toLowerCase();
   if (!isUuid(id)) return { ok: false, reason: 'bad_args', detail: 'That is not a property from an Elementix record.' };
   const staffId = str(opts.staffId);
   if (!staffId) return { ok: false, reason: 'no_actor', detail: 'A property lookup is always somebody’s — it is recorded against them.' };
 
   // Fresh enough? A recorded instrument does not change, so a week is generous
   // and still lets somebody force a re-read.
+  /* FRESH ENOUGH — PER SECTION, NEVER ONE `max()` ACROSS THEM ALL. A recorded
+     instrument does not change, so a week is generous; but a global max over the
+     sections that SUCCEEDED means one refused section is never retried, because
+     its siblings keep the watermark fresh. The officer presses "Read it again",
+     nothing is spent, nothing changes, and nothing says why — for a week. So a
+     section carrying an error is always due, exactly as the person profile does
+     it ("a stale error is not information worth preserving, and the person
+     clicked"), and the read goes ahead if ANY section is missing or due.
+     Wrapped like `readAddress`'s own reads: an un-migrated instance degrades to
+     a sentence rather than a 500 on one path and a sentence on the other. */
   if (!opts.force) {
-    const { rows } = await client.query(
-      `SELECT max(fetched_at) AS at FROM elementix_address_sections
-        WHERE address_id = $1 AND last_error IS NULL`, [id]);
-    const at = rows[0] && rows[0].at;
-    if (at && (Date.now() - new Date(at).getTime()) < FRESH_HOURS * 3600 * 1000) {
-      return { ok: true, cached: true, ...(await readAddress(id, { client })) };
-    }
+    try {
+      const { rows } = await client.query(
+        `SELECT section, fetched_at, last_error FROM elementix_address_sections
+          WHERE address_id = $1`, [id]);
+      const cutoff = Date.now() - FRESH_HOURS * 3600 * 1000;
+      const freshOk = (r) => !r.last_error && r.fetched_at && new Date(r.fetched_at).getTime() >= cutoff;
+      const allFresh = SECTIONS.every((d) => {
+        const r = rows.find((x) => x.section === d.key);
+        return r && freshOk(r);
+      });
+      if (allFresh) return { ok: true, cached: true, ...(await readAddress(id, { client })) };
+    } catch (_) { /* unreadable: fall through and read it properly */ }
   }
 
   const ctx = { staffId, spent: 0 };
@@ -244,7 +279,7 @@ async function buildAddress(addressId, opts = {}) {
 /** THE CACHE ONLY. This function cannot reach Elementix. */
 async function readAddress(addressId, opts = {}) {
   const client = opts.client || db;
-  const id = str(addressId);
+  const id = str(addressId).toLowerCase();   // see buildAddress: one property, one row
   if (!isUuid(id)) return { ok: false, reason: 'bad_args', detail: 'That is not a property from an Elementix record.' };
 
   /* AN UNREADABLE STORE IS NOT A PROPERTY WITH NO HISTORY, and it is not a 500

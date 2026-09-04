@@ -437,25 +437,10 @@ const SECTION_STATE = '';
  * 400 KB string on the write path.
  */
 function fitSectionPayload(payload) {
-  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.rows)) return payload;
-  const MAX = crmTools._internals.JSONB_MAX;
-  const fits = (v) => { try { return JSON.stringify(v).length <= MAX; } catch (_) { return false; } };
-  if (fits(payload)) return payload;
-
-  let lo = 0;
-  let hi = payload.rows.length;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (fits({ ...payload, rows: payload.rows.slice(0, mid) })) lo = mid; else hi = mid - 1;
-  }
-  const kept = payload.rows.slice(0, lo);
-  return {
-    ...payload,
-    rows: kept,
-    // The count the vendor reported is DELIBERATELY left alone: it is still the
-    // truth about how many exist, and it is what makes "N of M" honest.
-    rowsDropped: payload.rows.length - kept.length,
-  };
+  // ONE DEFINITION, in crm-tools beside `vendorJsonb` itself -- this was written
+  // here first and then the brand-new address module reintroduced the very bug
+  // it fixes, which is the argument for it living with the ceiling it respects.
+  return crmTools.fitRowsPayload(payload);
 }
 
 async function writeSection(personId, section, out, client = db) {

@@ -2715,7 +2715,7 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   padding-bottom:12px;margin-bottom:12px;border-bottom:1px solid #E4DECF}
 @media(max-width:767px){.elx-head{grid-template-columns:minmax(0,1fr)}}
 .elx-head .who{font-family:var(--serif);font-size:24px;line-height:1.15;color:#141B22;margin:0}
-.elx-head .facts{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:6px;font-size:13.5;color:#4B585C}
+.elx-head .facts{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:6px;font-size:13.5px;color:#4B585C}
 .elx-head .facts b{color:#141B22;font-weight:600}
 .elx-head .acts{display:flex;gap:8px;flex-wrap:wrap}
 .elx-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid #E4DECF;border-radius:20px;
