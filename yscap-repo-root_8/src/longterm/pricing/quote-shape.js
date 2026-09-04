@@ -829,8 +829,16 @@ function reapplyHouseMove(option) {
   const net = Number(pb.houseAdjustPoints);
   if (!Number.isFinite(net) || net === 0) return option;
   const next = { ...pb };
-  if (Number.isFinite(Number(pb.price))) next.housePrice = Number(pb.price);
-  if (Number.isFinite(Number(pb.adjustedPoints))) next.houseAdjustedPoints = Number(pb.adjustedPoints);
+  /* ⛔ `numOrNull`, NEVER `Number.isFinite(Number(x))` — `handlePatch` writes these
+     as a number OR NULL, and `Number(null)` is 0, which is finite. Testing it that
+     way stamped `housePrice: 0` on a priceless handle, `movePriceBuild` anchored on
+     zero, and the panel's Final price came out as literally the house delta
+     (-0.500) instead of an em dash. That is the SAME `Number(null) === 0` class
+     this file's own commit fixed in `overlay.ordered()` — reintroduced two files
+     over, in the fix for it. Fixing a class in one place is not fixing the class:
+     grep for the shape before you call it closed. */
+  if (numOrNull(pb.price) !== null) next.housePrice = Number(pb.price);
+  if (numOrNull(pb.adjustedPoints) !== null) next.houseAdjustedPoints = Number(pb.adjustedPoints);
   return { ...option, priceBuild: houseRules.movePriceBuild(next, net) };
 }
 

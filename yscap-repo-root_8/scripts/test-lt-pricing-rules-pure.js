@@ -655,7 +655,22 @@ console.log('\nI. WHAT THE SECOND POST-MERGE AUDIT FOUND');
   eq('I5a a re-quote wins the base the house move rides on', rq.price, r3n(98.5 + Number(rq.houseAdjustPoints)));
   ok('I5b …so the board\'s older price is not shown instead', rq.price !== row.priceBuild.price);
 
+  /* A PRICELESS HANDLE MUST NOT ANCHOR ON ZERO. `handlePatch` writes `price` as a
+     number OR NULL, and `Number(null)` is 0 — which is finite. Tested that way the
+     re-anchor stamped `housePrice: 0` and the panel's Final price came out as the
+     house delta itself (-0.500) instead of the board's figure. Same
+     `Number(null) === 0` class the commit that added this fixed in
+     `overlay.ordered()`, reintroduced two files over by the fix for it. */
+  const priceless = { priceHashKey: 'K', vendor: 'loannex', rate: 7.5, lockDays: 30 };
+  const pl = quoteShape.optionForExplain(priceless, row).priceBuild;
+  eq('I5c a handle carrying no price never anchors on zero', pl.housePrice, row.priceBuild.housePrice);
+  eq('I5d …and shows the board\'s own price, never the bare delta', pl.price, row.priceBuild.price);
+  eq('I5d2 …and the POINTS anchor keeps the board\'s value, never a coerced zero',
+    pl.houseAdjustedPoints, row.priceBuild.houseAdjustedPoints);
+
   const clean = overlay.apply(flatBoard(), { rules: [], scenario: {}, engine: 'general' }).programs[0];
+  eq('I5e CONTROL: with no house rule a priceless handle still reads as no price',
+    quoteShape.optionForExplain(priceless, clean).priceBuild.price, null);
   const untouched = quoteShape.optionForExplain(clean.explain, clean).priceBuild;
   eq('I6  a board no rule touched rebuilds exactly as before', untouched.price, 99.5);
   eq('I7  …points included', untouched.adjustedPoints, 0.5);
