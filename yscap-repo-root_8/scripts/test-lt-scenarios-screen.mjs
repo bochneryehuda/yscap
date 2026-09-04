@@ -60,8 +60,17 @@ const CODE = SRC.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
     'S2 …and borrows its flattener rather than reading the vendor payload a second time');
   ok(/from '\.\/LtScenarioSave\.jsx'/.test(CODE) && /boardHeadline\(/.test(CODE),
     'S3 …and the headline it compares against is produced by the function that WROTE it');
-  ok(/ltApi\.dscrPrice\(toScenario\(f\)/.test(CODE),
-    'S4 a re-run goes through the same door and the same toScenario the engine uses');
+  /* ⛔ THE ENGINE'S OWN CALL, NOT A HAND-BUILT ONE. This pinned
+     `ltApi.dscrPrice(toScenario(f)` — which was TRUE while the feature was dead,
+     because the defect was not the door's name but the options passed to it: without
+     `full: true` the route takes its Lender-Price-only SUMMARY branch, whose answer
+     carries no `options` at all. So the subject of this check — "a re-run prices the
+     way the engine prices" — is now asserted by pinning the ENGINE'S OWN function,
+     which cannot drift from the engine because it is the engine's. */
+  ok(/GENERAL_ENGINE\.price\(toScenario\(f\)/.test(CODE),
+    'S4 a re-run prices through the general engine\'s own call, not a hand-built one');
+  ok(!/ltApi\.dscrPrice\(/.test(CODE),
+    'S4b …and no bare price call survives on this screen — that bare call IS the defect');
   ok(/searchProblem\(f, zip\.status\)/.test(CODE),
     'S5 …behind the same pre-flight, so a scenario that cannot price never costs a vendor call');
 
@@ -195,6 +204,43 @@ const boardHeadline = globalThis.__boardHeadline;
   const line = movementLine(SAVED, today);
   ok(today && today.bestRate === 6.99 && line && line.tone === 'better' && /13\.5 bps/.test(line.text),
     `S22 a real board compares end to end through the shared functions (${line && line.text})`);
+}
+
+
+/* ── S23. THE SHAPE, NOT THE CALL — the check that would actually have bitten ──
+   S2/S22 proved this screen "borrows the engine's flattener" by feeding
+   `buildRateStack` a HAND-BUILT board. Both passed for months while the button
+   made a real vendor call and then painted nothing, because neither ever drove
+   the flattener over the shape the door it called ACTUALLY returns.
+
+   The summary door answers through `trimPrograms`, which does not carry
+   `options`; `buildRateStack` reads exactly that key. So the two are structurally
+   incompatible, and this asserts that incompatibility from the ROUTE'S OWN SOURCE
+   rather than from a fixture somebody typed — if `trimPrograms` ever starts
+   carrying options, this notices instead of going quietly stale. */
+{
+  const routeSrc = fs.readFileSync(path.join(repo, 'src/longterm/routes/dscr-pricer.js'), 'utf8');
+  const m = routeSrc.match(/function trimPrograms[\s\S]*?\n\}/);
+  ok(!!m, 'S23 the summary door\'s own shaper was found in the route');
+  const trimBody = m ? m[0].replace(/\/\*[\s\S]*?\*\//g, '') : '';
+  const carriesOptions = /\boptions\b/.test(trimBody);
+  ok(!carriesOptions,
+    'S23b the summary door still answers WITHOUT `options` — which is why it can never feed this screen');
+
+  /* And the consequence, run rather than argued: that shape flattens to nothing.
+     This is the defect the owner reported, reproduced in one line. */
+  const summaryShaped = [{ lender: 'A', investor: 'A', program: 'P', minRate: 6.99, maxPrice: 100.1, rungCount: 4 }];
+  const deadStack = buildRateStack(summaryShaped);
+  const deadRates = (deadStack && deadStack.rates) || [];
+  ok(deadRates.length === 0,
+    `S23c a summary-door answer flattens to an EMPTY board (${deadRates.length} rates) — a real vendor call, and nothing drawn`);
+  ok(boardHeadline(deadStack) == null,
+    'S23d …so the headline is null, which is what silently saved `savedBoard: null`');
+
+  /* The general engine's answer carries options, so it flattens to a real board. */
+  const liveStack = buildRateStack([{ lender: 'A', options: [{ priceBuild: { noteRate: 6.99, price: 99.5 } }] }]);
+  ok(((liveStack && liveStack.rates) || []).length > 0 && boardHeadline(liveStack) != null,
+    'S23e …while the general engine\'s own answer draws a board, which is what the fix asks for');
 }
 
 console.log(`\n${failures === 0 ? `OFFLINE: all ${n} passed` : `FAILURES: ${failures} of ${n}`}`);

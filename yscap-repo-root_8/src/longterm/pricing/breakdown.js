@@ -39,6 +39,7 @@
 
 const round3 = (n) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n) * 1000) / 1000);
 const pricePoints = require('./price-points');
+const priceLanding = require('./price-landing');
 const sources = require('./sources');
 const numOrNull = (n) => (n == null || n === '' || !Number.isFinite(Number(n)) ? null : Number(n));
 const strOrNull = (s) => {
@@ -208,6 +209,57 @@ function totalsOf(lines, price) {
 }
 
 /**
+ * DOES THE BUILD LAND ON THE PRICE WE PRINT — the one check that is not a tautology.
+ *
+ * ⛔ WHY THIS EXISTS, AND WHY `totalsOf` ABOVE COULD NEVER ANSWER IT.
+ *
+ * `totalsOf` compares the itemized lines against `adjustmentPoints`. On a LENDER PRICE
+ * row that is a real check: its `adjustmentPoints` is a field off the vendor's own leaf
+ * and its lines come from a different structure, so the two can genuinely disagree. On a
+ * LOANNEX row it is the SAME NUMBERS ADDED TWICE — `quote-shape` derives each line's
+ * `value` from `priceAdjustment` and then derives `adjustmentPoints` by summing those
+ * same values — so it can never be false however wrong a line is. Mutation-proven: a
+ * Purpose line set to +0.125, to 99, and to null all leave `reconciles === true`.
+ *
+ * And LoanNEX is precisely the vendor where a disagreement is POSSIBLE, because its price
+ * and its itemisation come from two different calls: the board rung from the search, the
+ * base and the lines from the on-demand evidence. Nothing compared them, so a panel could
+ * draw a running total that lands 0.875 away from the Final price printed directly beneath
+ * it, in silence.
+ *
+ * So this asks the question the screen actually needs answered: does base + adjustments
+ * equal the points behind the price we are showing? It needs no vendor cooperation, it is
+ * true of every row from every sheet, and it is UNKNOWN rather than false when any half is
+ * missing — a hole must never read as a clean bill of health.
+ *
+ * `vendorReconciles` rides alongside it: the vendor's OWN arithmetic against the vendor's
+ * OWN quoted price, computed in `quote-shape.attachEvidence` and — until now — read by
+ * nothing at all. Every one of the recorded real LoanNEX answers satisfies it, so it is a
+ * free and reliable second opinion on whether the breakdown can be trusted at all.
+ */
+function landingOf(option, price) {
+  const ev = (option && option.evidence) || {};
+  /* ⛔ THE ARITHMETIC IS `pricing/price-landing`'S, NOT THIS FILE'S. It was
+     written out here, again in the browser twin, and a third time in
+     `termsheet/snapshot.js` when the same rule started REFUSING an issue —
+     three copies of one rule, and the one that drifts is the one that stops a
+     document. `overstated` rides with `landsOnPrice` because they answer
+     different questions: "do the two agree" (a panel reporting) and "is the
+     board better than its own itemisation supports" (the one direction worth
+     stopping a document over). */
+  const land = priceLanding.landingGap(price.basePoints, price.adjustmentPoints, price.adjustedPoints);
+  return {
+    checked: land.checked,
+    gapPoints: land.gapPoints,
+    landsOnPrice: land.landsOnPrice,
+    overstated: land.overstated,
+    /* The vendor's own internal check, passed through verbatim — `true`, `false`, or
+       `null` when the sheet stated no price of its own to check against. */
+    vendorReconciles: ev.reconciles === true ? true : (ev.reconciles === false ? false : null),
+  };
+}
+
+/**
  * THE FRESHNESS SIGNAL, HONESTLY.
  *
  * `expired: null` + `stalenessUnknown: true` is a real state and must never be
@@ -265,6 +317,8 @@ function breakdown(option, opts = {}) {
     price,
     lines: lines || [],
     totals: totalsOf(lines, price),
+    /* Whether the arithmetic on this panel lands on the price the panel prints. */
+    landing: landingOf(o, price),
     sheet: sheetOf(o),
     eligibility: eligibilityOf(o),
     // Anything the program said out loud about this quote — a price cap, a soft
@@ -285,5 +339,5 @@ function breakdowns(options, opts = {}) {
 
 module.exports = {
   breakdown, breakdowns, LINE_KEYS, NO_BREAKDOWN, ELIGIBILITY_ABSENT,
-  _internals: { normaliseLine, linesOf, eligibilityOf, priceOf, totalsOf, sheetOf, pointsText },
+  _internals: { normaliseLine, linesOf, eligibilityOf, priceOf, totalsOf, landingOf, sheetOf, pointsText },
 };

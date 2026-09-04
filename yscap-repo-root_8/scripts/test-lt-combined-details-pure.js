@@ -397,8 +397,19 @@ const nexRowOf = (out) => (out.programs || []).find((p) => p.program === 'DSCR 3
       'WIRE-4 the panel reads the explain seam');
     ok(/oProp\.explain && oProp\.explain\.priceHashKey \? oProp\.explain : null/.test(pricer),
       'WIRE-5 …and only asks a row that carries a handle — a row that arrived explained is never asked');
-    ok(/if \(r && r\.option\) setFetched\(r\.option\);/.test(pricer),
+    /* RE-POINTED 2026-09-04, NOT LOOSENED. This pinned the whole statement
+       `if (r && r.option) setFetched(r.option);` — and the panel now also tells
+       the BOARD what was explained (`ts.noteExplained`), so the row's own Add
+       button can send the build the panel was shown, which is what makes the
+       price-landing refusal reachable from the door a comparison is collected
+       through. The subject of this check has never been the statement's shape:
+       it is that what the panel adopts is the OPTION the door handed back,
+       whole, rather than something translated on the way in. So both halves are
+       asserted — the guard, and the adoption of `r.option` itself. */
+    ok(/if \(r && r\.option\)/.test(pricer) && /setFetched\(r\.option\);/.test(pricer),
       'WIRE-6 …and merges the OPTION the door hands back, not a translated breakdown');
+    ok(/ts\.noteExplained\(quote && quote\.key, r\.option\)/.test(pricer),
+      'WIRE-6b …and hands that same option up to the board, so a row collected into a comparison carries the build the panel was shown');
     ok(/\{askErr && \(/.test(pricer) && /setAskErr\(/.test(pricer),
       'WIRE-7 …and a refusal is SAID where the empty table would be — a blank space reads as "this quote has no adjustments", a claim no rate sheet made');
     ok(/<ExplainProvider value=\{explainRow\}>/.test(pricer) && /<\/ExplainProvider>/.test(pricer),

@@ -217,6 +217,29 @@ function apply(programs, opts) {
      the investor on this loan, not about one rate. */
   const blockedInvestors = new Map();
 
+  /* WHICH PROGRAMS A RULE HAS BLOCKED — the same second-pass shape, one step
+     narrower. `block_program` removes ONE program and leaves the investor's
+     other programs priced, which is the whole difference between the two verbs.
+
+     ⛔ THE KEY CARRIES THE INVESTOR AS WELL AS THE PROGRAM, and that is not
+     belt-and-braces: two investors routinely quote programs with the same name
+     ("30 Yr. Fixed" is on nearly every sheet), so a key of the program alone
+     would silently block every investor's copy of it — which is `block_investor`
+     applied to several investors at once, and nobody asked for that. Narrower is
+     the safe direction here: a block that removes too little is visible on the
+     board, one that removes too much looks like the investor simply had no
+     quote.
+
+     ⛔ AND A ROW WITH NO PROGRAM NAME BLOCKS ONLY ITSELF (`row:<i>`), never a
+     group. With nothing to identify the program by, the only thing we know is
+     the row the rule actually matched. */
+  const blockedPrograms = new Map();
+  const programKeyOf = (row, ri) => {
+    const inv = (row && (row.investorKey || row.lender || safeName(row))) || `row:${ri}`;
+    const prog = String((row && row.program) || '').trim();
+    return prog ? `${inv}\u00a7${prog}` : `row:${ri}`;
+  };
+
   const noteApplied = (rule, n) => appliedRules.set(rule.id, (appliedRules.get(rule.id) || 0) + n);
 
   /* ── PASS ONE: decide, per option, what every rule says about it ──────────
@@ -273,6 +296,10 @@ function apply(programs, opts) {
         const key = row.investorKey || row.lender || safeName(row) || `row:${ri}`;
         if (!blockedInvestors.has(key)) blockedInvestors.set(key, stop);
       }
+      if (stop && stop.kind === 'program') {
+        const key = programKeyOf(row, ri);
+        if (!blockedPrograms.has(key)) blockedPrograms.set(key, stop);
+      }
     }
     verdicts.set(ri, per);
   });
@@ -288,16 +315,29 @@ function apply(programs, opts) {
     if (!row || typeof row !== 'object') { out.push(row); return; }
     const per = verdicts.get(ri) || [];
     const key = row.investorKey || row.lender || safeName(row) || `row:${ri}`;
+    /* ⛔ THE INVESTOR BLOCK IS ASKED FIRST, because it is the WIDER of the two:
+       a rule that took the investor off this loan has already answered the
+       question the program block asks, and reporting the row as a blocked
+       PROGRAM would tell an officer the investor's other programs are still
+       priced when they are not. */
     const investorStop = blockedInvestors.get(key) || null;
+    const programStop = investorStop ? null : (blockedPrograms.get(programKeyOf(row, ri)) || null);
+    const stopRow = investorStop || programStop;
 
-    if (investorStop) {
+    if (stopRow) {
       blocked.push({
         investorKey: row.investorKey || null,
         name: safeName(row),
         program: row.program || null,
-        ruleId: investorStop.ruleId,
-        rule: investorStop.rule,
-        reason: investorStop.reason,
+        /* WHICH KIND OF BLOCK THIS WAS, so the board can word the two
+           differently — "we do not place this investor on this loan" and "we do
+           not place this program" are different sentences to whoever has to
+           explain the board, and one wording covering both would be wrong half
+           the time. */
+        kind: investorStop ? 'investor' : 'program',
+        ruleId: stopRow.ruleId,
+        rule: stopRow.rule,
+        reason: stopRow.reason,
         why: 'house_rule',
       });
       return;   // the whole row is off the board

@@ -9,6 +9,7 @@ import { toScenario, searchProblem } from './scenarioFields.js';
    this page computed either one differently, "what moved since you saved it" would be reporting the
    difference between two readings of the same board as though the market had moved. */
 import { buildRateStack } from './LtPricer.jsx';
+import { GENERAL_ENGINE } from './pricerEngine.js';
 import { boardHeadline } from './LtScenarioSave.jsx';
 import { noteRate, price, dayOf, ago, plain } from './format.js';
 import {
@@ -180,10 +181,33 @@ export default function LtScenarios() {
     if (problem) { setGate(problem); return; }
     setGate(null); setBusy(true); setErr(null); setRes(null);
     try {
-      // THE SAME DOOR THE PRICING ENGINE CALLS. Not `full: true`: this page shows
-      // a short ledger and the movement, and asking for every price build to draw
-      // five rows is a bigger answer than the question.
-      const r = await ltApi.dscrPrice(toScenario(f), {});
+      /* ⛔ THE GENERAL ENGINE PRICES THIS, THROUGH ITS OWN ONE DEFINITION — never a
+         hand-built `dscrPrice` call (owner-reported 2026-09-04: *"in the scenario
+         screen, when you click price, it doesn't actually price. It needs to price
+         with all the same general pricing engine … This is a general issue."*).
+
+         WHAT WAS HERE AND WHY IT PAINTED NOTHING. This asked `dscrPrice(scenario, {})`
+         — deliberately without `full: true`, reasoning that a short ledger did not
+         need every price build. But that flag is not a verbosity setting: it selects
+         the DOOR. Without it the route takes its SUMMARY branch (`routes/dscr-pricer.js`,
+         "the SUMMARY door (a saved scenario re-run) stays Lender Price only"), which
+         answers through `trimPrograms` — a shape carrying NO `options`. `buildRateStack`
+         reads exactly that key, so the stack came back EMPTY and every consumer of it
+         returned null in silence: the ledger, the headline, the movement line, and the
+         save, which then stored `savedBoard: null`. The press made a real vendor call,
+         waited, and drew nothing at all — no board, no error. `LtScenarioSave`'s own
+         comment had predicted this shape of failure: "a wrong field reads as an empty
+         board rather than as an error."
+
+         AND THE SUMMARY DOOR IS NOT THIS COMPANY'S ENGINE, which is the owner's real
+         point: it is Lender Price alone — no LoanNEX, no margin holdback, no investor
+         routing, no house-rules overlay, no near-tier, no ineligibility. An investor
+         routed to LoanNEX could never appear on a re-run, so the movement line compared
+         today's half-board against a full one saved earlier.
+
+         Calling `GENERAL_ENGINE.price` fixes both at once and cannot drift from the
+         pricing engine again, because it IS the pricing engine's own call. */
+      const r = await GENERAL_ENGINE.price(toScenario(f), {});
       setRes(r);
     } catch (e) {
       setErr((e && e.message) || 'Could not price that scenario.');

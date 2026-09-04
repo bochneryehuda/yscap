@@ -175,8 +175,34 @@ function vendorQuote(quote, points) {
  * the panel and the board can never disagree about what was taken. A key nobody has saved a setting
  * for resolves to the board-wide answer, and an unresolvable one to nothing at all, which leaves the
  * panel exactly as it is today rather than shifting a base by a number nobody chose.
+ *
+ * ⛔ AND THE PARAGRAPH ABOVE OVERCLAIMED, WHICH IS THE PART THAT WAS ACTUALLY WRONG. A pre-merge
+ * audit read "it can never state an amount" and pointed out that `b` IS the request body, so a
+ * caller CAN post `marginHoldback`, `routes` or `custom` and move the base this panel draws its
+ * running total from. The audit was right about the code and the note; it was the note that
+ * needed fixing, and here is why, measured rather than assumed.
+ *
+ * CLOSING IT WAS TRIED AND REVERTED. `test-lt-combined-details-pure` mounts the REAL router and
+ * drives this door by POSTing exactly those three keys — it is the suite's only way to say "this
+ * board holds nothing back" without standing up a settings store — so the change turned three
+ * assertions red (ASK-9, PRICE-3, WIRE-6) to close a hole that is not one.
+ *
+ * AND IT IS NOT ONE BECAUSE THE TRUST BOUNDARY IS ALREADY THE STAFF BROWSER. This door is staff-
+ * authenticated (super-admin only on the combined engine), it READS and stores nothing, and the
+ * only thing a posted holdback can move is the base drawn on the caller's OWN panel. The same
+ * staff browser already supplies the whole selection the export door judges — `snapshot.js` says
+ * so in as many words ("both figures are the board's") — so a caller who wanted to state a price
+ * build has a far shorter route than this one. Nothing here is a borrower-facing number, and no
+ * browser sends any of the three: `api.combinedExplain` and `api.dscrExplain` send the quote, the
+ * scenario, the option and the key.
+ *
+ * SO: the body is the seam, deliberately, and the sentence above means the caller cannot state an
+ * amount THE BOARD WILL BE PRICED AT — never that the field is unreachable. If this ever needs to
+ * be genuinely closed, the seam has to move to mount time (`attach(router, { seam })`) and that
+ * suite needs a per-call way to vary it; do not simply delete the read and leave the tests red.
  */
-async function holdbackOnRow(investorKey, b = {}) {
+async function holdbackOnRow(investorKey, seam = {}) {
+  const b = seam && typeof seam === 'object' ? seam : {};
   const savedGlobal = b.marginHoldback !== undefined ? b.marginHoldback : await holdbackRaw();
   let extra = null;
   const key = investorKey == null ? '' : String(investorKey).trim();
@@ -260,6 +286,28 @@ function askedOf(sc, vendorQ, ident, opts = {}) {
     dscr: s.dscr == null ? null : Number(s.dscr),
     loan: s.loan == null ? null : Number(s.loan),
     value: s.value == null ? null : Number(s.value),
+    /* ⛔ THE FIELDS THAT DECIDE THE LLPA GRIDS, or this block cannot answer the one
+       question it exists for.
+
+       Owner-reported 2026-09-04: our board and the vendor's own screen disagreed by
+       0.875 on a single "Purpose" line, and hours went into hunting an engine bug that
+       was not there — our engine had been asked about a PURCHASE while the vendor's
+       screen had been set to a CASH-OUT REFINANCE. The owner's verdict afterwards was
+       *"That pricing was not an issue at all. It was perfect. The scenario was
+       different."*
+
+       This block already recorded the rate, the lock and the place — none of which
+       moves an adjustment — so it could not have shown that even if it had been drawn.
+       An adjustment grid is read on the PURPOSE, the credit score, the leverage, the
+       occupancy, the property and the prepay term, so those are what a reader comparing
+       two boards needs in front of them. Every one is a fact about the loan WE asked
+       about; no vendor and no investor is named, and this surface is staff-only. */
+    purpose: s.purpose || null,
+    fico: s.fico == null ? null : Number(s.fico),
+    ltv: s.ltv == null ? null : Number(s.ltv),
+    occupancy: s.occupancy || null,
+    propertyType: s.propertyType || null,
+    prepayMonths: s.prepayMonths == null ? null : Number(s.prepayMonths),
   };
   if (opts.reveal) {
     out.price = q.price == null ? null : Number(q.price);

@@ -384,9 +384,24 @@ function applyToBoard(board, source, opts) {
  * is exactly the mechanic the compensation overlay already uses on this screen (`shiftBuild`) and
  * exactly what the owner described investors themselves doing: *"they show the base price higher"*.
  *
- * `adjustmentPoints` is DELIBERATELY NOT TOUCHED. It is the vendor's own stated LLPA total, and the
- * breakdown reconciles the itemized lines against it — moving it would report "these lines do not
- * add up" on every row, turning a hidden margin into a loud accusation against the rate sheet.
+ * `adjustmentPoints` is DELIBERATELY NOT TOUCHED — moving it would report "these lines do not add
+ * up" on every row, turning a hidden margin into a loud accusation against the rate sheet.
+ *
+ * ⛔ BUT THE REASON THIS NOTE USED TO GIVE WAS ONLY HALF TRUE, AND THE FALSE HALF WAS THE
+ * DANGEROUS ONE. It said `adjustmentPoints` "is the vendor's own stated LLPA total, and the
+ * breakdown reconciles the itemized lines against it". That is exact for LENDER PRICE, which
+ * states the total on its own leaf while the lines come from a different structure — there the
+ * reconciliation is real and does bite. It is FALSE for LOANNEX: `quote-shape.attachEvidence`
+ * derives each line's `value` from the vendor's `priceAdjustment` and then derives
+ * `adjustmentPoints` by summing those same values, so on that vendor the check is the same
+ * numbers added twice and can never fail however wrong a line is (mutation-proven).
+ *
+ * That mattered because LoanNEX is the one vendor where a disagreement is POSSIBLE — its price
+ * comes from the search call and its itemisation from a separate on-demand call — so the row this
+ * note vouched for was exactly the row nothing was checking. CLAUDE.md's own closing lesson: a
+ * safety note whose REASON is wrong is worse than no note, because the next person budgets against
+ * it. The honest check now lives in `breakdown.landingOf` (does base + adjustments land on the
+ * price we print?) and is drawn on the panel; this line no longer claims to be it.
  *
  * The pre-holdback numbers ride along as `vendorPrice` / `vendorBasePoints` for the reveal, and are
  * stripped with the rest of the trail on the ordinary board (`investor-routing.stripSource`).

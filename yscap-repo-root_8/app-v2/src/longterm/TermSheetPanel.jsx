@@ -1254,6 +1254,13 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
     ratePct: (m.program || {}).ratePct,
     rawPrice: (m.program || {}).rawPrice,
     vendorMonthlyPI: (m.program || {}).monthlyPI,
+    /* ⛔ THE PRICE BUILD, BACK OUT OF THE CART. The issue re-derives every member
+       from these selections, so a landing the row carried when it was collected
+       has to be handed back or the refusal — the one that stops a price the rate
+       sheet's own breakdown does not support — is unreachable on the multi-option
+       document, which is the one a borrower compares. Stored by the cart-add
+       route on the same `program` block; nothing here reshapes it. */
+    priceLanding: (m.program || {}).priceLanding || null,
     scenario: m.scenario,
     // db/651 — the cart is where a comparison is assembled, so the staff-only
     // record of who funds each option has to survive the round trip: an option

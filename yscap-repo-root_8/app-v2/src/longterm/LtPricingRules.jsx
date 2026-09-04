@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ltApi } from './api.js';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, card, eyebrow, sub, input, label, LINE, WASH } from './ppeStyles.js';
 import { askConfirm } from '../lib/dialog.js';
@@ -65,6 +65,32 @@ const IDEAS = [
   'Add a margin holdback on a shape of loan we price more conservatively — or give a discount or a credit on one we want.',
 ];
 
+/**
+ * THE ROSTER, LAID OVER THE FIELD REGISTRY — at the ONE place the catalogue
+ * lands, so every consumer below (the flat list, the key index, the builder's
+ * value box) sees the same merged field. Merging at each use site would be four
+ * copies of one decision.
+ *
+ * ⛔ THE SERVER PUBLISHES IT SEPARATELY ON PURPOSE. `rules/fields.js` is pure and
+ * per-deployment; the roster is DB-backed and per-tenant, so it rides as its own
+ * map (`optionsByField`) rather than being frozen into the registry. This is the
+ * only place the two meet.
+ *
+ * ⛔ AN UNREADABLE ROSTER LEAVES THE FIELD EXACTLY AS IT WAS — a plain text box,
+ * which is what it has always been — and never an empty list, which on screen
+ * reads as "we have no investors" rather than "we could not find out". The
+ * builder says so separately, off `optionsProblem`.
+ */
+function withRosterOptions(c) {
+  const map = (c && c.optionsByField) || null;
+  if (!map || typeof map !== 'object') return c;
+  const apply = (f) => {
+    const opts = map[f.key];
+    return (Array.isArray(opts) && opts.length) ? { ...f, options: opts } : f;
+  };
+  return { ...c, groups: (c.groups || []).map((g) => ({ ...g, fields: (g.fields || []).map(apply) })) };
+}
+
 const blankRow = (fields) => ({ field: (fields[0] && fields[0].key) || '', operator: 'eq', value: '' });
 const blankTree = (fields) => ({ combinator: 'and', rules: [blankRow(fields)] });
 const isGroup = (n) => !!n && typeof n === 'object' && Array.isArray(n.rules);
@@ -92,7 +118,7 @@ export default function LtPricingRules() {
     setLoading(true); setErr(null);
     try {
       const [c, list] = await Promise.all([ltApi.pricingRuleCatalog(), ltApi.pricingRules(showArchived)]);
-      setCat(c); setRules(list.rules || []);
+      setCat(withRosterOptions(c)); setRules(list.rules || []);
     } catch (e) {
       /* A 404 here is the gate, not a fault — this screen belongs to a super
          admin and says nothing at all to anybody else. */
@@ -727,6 +753,21 @@ function Editor({ draft, setDraft, cat, byKey, onClose, onSaved, onError }) {
 
       <div style={{ marginTop: 14 }}>
         <div style={{ ...eyebrow, marginBottom: 6 }}>When</div>
+        {/* ⛔ A ROSTER WE COULD NOT READ SAYS SO, HERE, WHERE THE PICKER WOULD
+            HAVE BEEN. Without this the investor boxes silently fall back to
+            plain typing and the screen looks exactly like the version that had
+            no list at all — so nobody learns the settings store is unreadable,
+            they just think the feature was never built. Nothing is refused:
+            these are text fields and a typed name has always been valid. */}
+        {cat.optionsProblem && (
+          <div style={{
+            marginBottom: 8, padding: '8px 10px', borderRadius: 8, fontSize: 12.5,
+            color: CAUTION, background: '#FBF7EE', border: `1px solid rgba(122,92,37,.28)`,
+          }}>
+            The investor list could not be read ({cat.optionsProblem}), so the investor and
+            white-label boxes are plain typing for now. Anything you type is still valid.
+          </div>
+        )}
         <Group tree={draft.when} fields={cat.groups} byKey={byKey} cat={cat}
           onChange={(t) => set({ when: t })} depth={0} flat={flat} />
       </div>
@@ -879,6 +920,31 @@ function Group({ tree, fields, byKey, cat, onChange, depth, flat }) {
   );
 }
 
+/**
+ * THE VALUE FOLLOWS THE TEST — one definition, both places the test can change.
+ *
+ * ⛔ A LIST TEST HOLDS AN ARRAY AND A PLAIN ONE HOLDS A VALUE, and carrying one
+ * shape into the other is not cosmetic. Moving from "is any of" to "is" used to
+ * keep the array, so the single-value box was handed `['NJ','NY']` — it rendered
+ * `NJ,NY` as its text, matched nothing in its own list, and the rule that saved
+ * said something nobody wrote. Moving the other way handed the tick-box list a
+ * string, which ticks nothing. The reshape is deliberately LOSSY in one
+ * direction only: a list collapses to its first value (the nearest thing to what
+ * was meant), and everything else starts blank rather than carrying a value that
+ * no longer means anything.
+ */
+function valueForOperator(cat, op, prev) {
+  if (cat.noValueOperators.includes(op)) return undefined;
+  if (cat.rangeOperators.includes(op)) return Array.isArray(prev) && prev.length === 2 ? prev : ['', ''];
+  if (cat.listOperators.includes(op)) {
+    if (Array.isArray(prev)) return prev;
+    const one = prev == null || prev === '' ? null : String(prev);
+    return one ? [one] : [];
+  }
+  if (Array.isArray(prev)) return prev.length ? String(prev[0]) : '';
+  return prev == null ? '' : prev;
+}
+
 /** One condition: a field, a test, a value. */
 function Row({ row, fields, byKey, cat, onChange, onDrop }) {
   const f = byKey[row.field];
@@ -894,7 +960,7 @@ function Row({ row, fields, byKey, cat, onChange, onDrop }) {
        operator its type does not take produces a rule the server refuses on
        save, which reads as the builder being broken. */
     const op = allowed.includes(row.operator) ? row.operator : allowed[0];
-    onChange({ field: key, operator: op, value: cat.noValueOperators.includes(op) ? undefined : '' });
+    onChange({ field: key, operator: op, value: valueForOperator(cat, op, undefined) });
   };
 
   return (
@@ -908,18 +974,22 @@ function Row({ row, fields, byKey, cat, onChange, onDrop }) {
     }}>
       <div>
         <label style={label}>Field</label>
-        <select style={input} value={row.field} onChange={(e) => pickField(e.target.value)}>
-          {fields.map((g) => (
-            <optgroup key={g.group} label={g.group}>
-              {g.fields.map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}
-            </optgroup>
-          ))}
-        </select>
+        {/* SEARCHABLE, because this list is ~60 fields long and a `<select>` over
+            sixty is a scroll rather than a search (owner-reported 2026-09-04).
+            The GROUP HEADINGS are kept — they are what tells a loan fact from a
+            price fact — and the search reads the KEY as well as the label, so
+            somebody who knows the column name finds it by typing that. */}
+        <SearchPick groups={fields} value={row.field} onChange={pickField}
+          ariaLabel="Field this condition asks about" placeholder="Search the fields…" />
       </div>
       <div>
         <label style={label}>Test</label>
-        <select style={input} value={row.operator}
-          onChange={(e) => onChange({ ...row, operator: e.target.value, value: cat.noValueOperators.includes(e.target.value) ? undefined : (row.value ?? '') })}>
+        {/* A STABLE HANDLE, because this screen holds several `<select>`s (the
+            engine, the priority, every action) and a render check that reached
+            for "the first one" would silently drive the wrong control — which is
+            exactly what it did on its first run. */}
+        <select style={input} data-op-select value={row.operator}
+          onChange={(e) => onChange({ ...row, operator: e.target.value, value: valueForOperator(cat, e.target.value, row.value) })}>
           {ops.map((o) => <option key={o} value={o}>{cat.operatorLabels[o] || o}</option>)}
         </select>
       </div>
@@ -940,6 +1010,302 @@ function Row({ row, fields, byKey, cat, onChange, onDrop }) {
   );
 }
 
+/* ── THE TWO PICKERS ────────────────────────────────────────────────────────
+ *
+ * Owner-reported 2026-09-04, twice in one message:
+ *   *"When you want to select a few things, the system doesn't let you select
+ *   more than one. When it comes up with a list of stuff you need to select a
+ *   few, it doesn't work."*
+ *   *"On the rule condition by the field, you should have a search to be able to
+ *   search and just populate that field that you are looking for."*
+ *
+ * ⛔ NOTHING WAS BROKEN IN THE DATA — THE CONTROL WAS. The value box for an
+ * "is any of" test was a native `<select multiple>`, which requires a Ctrl or
+ * Cmd click: a plain click on a second option DESELECTS the first, so a rule
+ * naming twelve states could be built only by somebody who knew that, and read
+ * as broken to everybody else. Tick boxes have one meaning and one gesture.
+ *
+ * ⛔ AND THE VALUE SHAPE IS UNCHANGED — still an array of option values for a
+ * list test, still a bare value for a single one. The stored rule, the server's
+ * validator and the overlay that applies it are untouched: this is a control
+ * swap, not a grammar change, which is what makes it safe to ship against rules
+ * that already exist.
+ *
+ * Both are built on ONE `useFilter` so "how does searching behave" has a single
+ * answer (case-folded, on the label AND the key, so `white_label` finds the
+ * field somebody knows by its column name). Every colour is an explicit dark:
+ * `--ink*` is a LIGHT paper colour in this palette and renders white on white.
+ */
+
+/** Case-folded match on a label AND a key. One definition, both pickers. */
+function matches(q, ...parts) {
+  const needle = String(q || '').trim().toLowerCase();
+  if (!needle) return true;
+  return parts.some((p) => String(p == null ? '' : p).toLowerCase().includes(needle));
+}
+
+const pickerPanel = {
+  position: 'absolute', zIndex: 40, left: 0, right: 0, top: 'calc(100% + 4px)',
+  background: '#FFFFFF', border: `1px solid ${LINE}`, borderRadius: 10,
+  boxShadow: '0 10px 28px rgba(20,27,34,.14)', padding: 8, maxHeight: 300, overflowY: 'auto',
+};
+const pickerRow = (active) => ({
+  display: 'block', width: '100%', textAlign: 'left', border: 'none', borderRadius: 7,
+  padding: '7px 9px', fontSize: 13.5, cursor: 'pointer', color: INK,
+  background: active ? '#F1EADC' : 'transparent',
+});
+const pickerGroup = {
+  ...eyebrow, marginTop: 6, marginBottom: 2, paddingLeft: 9,
+};
+
+/**
+ * A SEARCHABLE PICKER for one value out of a grouped list.
+ *
+ * It replaces a `<select>` with optgroups over ~60 fields, which is a scroll
+ * rather than a search. Keyboard: type to filter, ↑ / ↓ to move, Enter to pick,
+ * Escape to close without changing anything.
+ *
+ * ⛔ IT CLOSES ON A REAL BLUR, not on `onBlur` of the input alone — moving from
+ * the search box to a row IS a blur, and closing there would make every option
+ * unclickable. The container's `onBlur` is asked whether focus went anywhere
+ * inside it first.
+ */
+function SearchPick({ groups, value, onChange, placeholder = 'Search…', ariaLabel }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const [active, setActive] = useState(0);
+  const boxRef = useRef(null);
+  const inputRef = useRef(null);
+
+  const flat = useMemo(() => {
+    const out = [];
+    for (const g of groups || []) {
+      const hits = (g.fields || []).filter((x) => matches(q, x.label, x.key));
+      if (hits.length) out.push({ group: g.group, items: hits });
+    }
+    return out;
+  }, [groups, q]);
+  const items = useMemo(() => flat.flatMap((g) => g.items), [flat]);
+
+  const current = useMemo(() => {
+    for (const g of groups || []) for (const x of (g.fields || [])) if (x.key === value) return x;
+    return null;
+  }, [groups, value]);
+
+  useEffect(() => { if (open && inputRef.current) inputRef.current.focus(); }, [open]);
+  useEffect(() => { setActive(0); }, [q, open]);
+
+  const pick = (key) => { onChange(key); setOpen(false); setQ(''); };
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') { setOpen(false); setQ(''); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive((i) => Math.min(items.length - 1, i + 1)); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); setActive((i) => Math.max(0, i - 1)); return; }
+    if (e.key === 'Enter') { e.preventDefault(); if (items[active]) pick(items[active].key); }
+  };
+
+  return (
+    <div ref={boxRef} style={{ position: 'relative' }}
+      onBlur={(e) => { if (!boxRef.current || !boxRef.current.contains(e.relatedTarget)) { setOpen(false); setQ(''); } }}>
+      <button type="button" data-field-picker style={{ ...input, textAlign: 'left', cursor: 'pointer', fontSize: 14 }}
+        aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel}
+        onClick={() => setOpen((v) => !v)}>
+        {current ? current.label : 'Pick a field…'}
+      </button>
+      {open && (
+        <div style={pickerPanel} role="listbox">
+          <input ref={inputRef} style={{ ...input, fontSize: 14, marginBottom: 6 }} value={q}
+            placeholder={placeholder} onChange={(e) => setQ(e.target.value)} onKeyDown={onKey}
+            data-field-search aria-label="Search the fields" />
+          {items.length === 0 && (
+            <div style={{ padding: '8px 9px', fontSize: 12.5, color: MUTED }}>
+              Nothing matches “{q}”.
+            </div>
+          )}
+          {flat.map((g) => (
+            <div key={g.group}>
+              <div style={pickerGroup}>{g.group}</div>
+              {g.items.map((x) => {
+                const i = items.indexOf(x);
+                return (
+                  <button key={x.key} type="button" role="option" aria-selected={x.key === value}
+                    style={pickerRow(i === active)} onMouseEnter={() => setActive(i)}
+                    onClick={() => pick(x.key)}>
+                    {x.label}
+                    {x.key === value ? <span style={{ color: GOLD_TEXT, fontWeight: 700 }}> ✓</span> : null}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * TICK BOXES for "is any of" — the control the owner reported as broken.
+ *
+ * ⛔ A PLAIN CLICK ADDS, AND A SECOND PLAIN CLICK ADDS AGAIN. That sentence is
+ * the whole fix, and it is the one thing a source guard cannot see, so the
+ * render harness clicks a second option and asserts the first survives.
+ *
+ * Select all applies to WHAT IS SHOWN, never to the whole list — with a search
+ * in the box, "all" meaning something other than what is in front of you is how
+ * somebody blocks fifty states meaning to block twelve. The count says how many
+ * are picked in total, so a filtered view can never hide what a rule holds.
+ */
+function OptionChecklist({ options, value, onChange, allowCustom = false }) {
+  const [q, setQ] = useState('');
+  const [typed, setTyped] = useState('');
+  const picked = Array.isArray(value) ? value : [];
+  const opts = options || [];
+  const set = new Set(picked);
+  /* ⛔ A PICKED VALUE THAT IS NOT ON THE LIST IS STILL PICKED, and it is shown
+     first. On a TEXT field the list is a roster — a shortcut — so a rule may
+     legitimately name an investor nobody has quoted yet; rebuilding the answer
+     from `opts` alone would silently DROP that name the next time anybody
+     ticked anything, which is a rule quietly changing meaning while somebody
+     edits it. */
+  const custom = picked.filter((v) => !opts.some((o) => o.v === v)).map((v) => ({ v, label: v, custom: true }));
+  const all = custom.concat(opts);
+  const shown = all.filter((o) => matches(q, o.label, o.v));
+  const order = (nextSet) => all.filter((o) => nextSet.has(o.v)).map((o) => o.v);
+  const toggle = (v) => {
+    const next = new Set(set);
+    if (next.has(v)) next.delete(v); else next.add(v);
+    /* THE STORED ORDER IS THE LIST'S, never click order — so two rules naming
+       the same twelve states are the same rule to anybody reading them. */
+    onChange(order(next));
+  };
+  const addTyped = () => {
+    const v = String(typed || '').trim();
+    setTyped('');
+    if (!v || set.has(v)) return;
+    const next = new Set([...set, v]);
+    /* `order` can only place values it already knows — the options, plus the
+       ones already picked — so a name being added for the FIRST time is not in
+       it yet and is appended rather than silently dropped. */
+    const known = order(next);
+    onChange(known.includes(v) ? known : known.concat([v]));
+  };
+  const allShown = shown.length > 0 && shown.every((o) => set.has(o.v));
+
+  return (
+    <div style={{ border: `1px solid ${LINE}`, borderRadius: 8, background: '#fff' }} data-tickbox-list>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', padding: 6, borderBottom: `1px solid ${LINE}` }}>
+        <input style={{ ...input, fontSize: 14, padding: '6px 8px' }} value={q} placeholder="Search…"
+          onChange={(e) => setQ(e.target.value)} aria-label="Search these values" data-tickbox-search />
+        <button type="button" style={{ ...btnSoft, padding: '6px 9px', fontSize: 12, whiteSpace: 'nowrap' }}
+          onClick={() => {
+            const next = new Set(set);
+            for (const o of shown) { if (allShown) next.delete(o.v); else next.add(o.v); }
+            onChange(order(next));
+          }}>
+          {allShown ? 'Clear these' : 'Select these'}
+        </button>
+      </div>
+      <div style={{ maxHeight: 190, overflowY: 'auto', padding: '4px 2px' }}>
+        {shown.length === 0 && (
+          <div style={{ padding: '8px 9px', fontSize: 12.5, color: MUTED }}>Nothing matches “{q}”.</div>
+        )}
+        {shown.map((o) => (
+          <label key={o.v} style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '5px 9px',
+            fontSize: 13.5, color: INK, cursor: 'pointer',
+          }}>
+            <input type="checkbox" checked={set.has(o.v)} onChange={() => toggle(o.v)}
+              style={{ width: 16, height: 16, flex: '0 0 auto', accentColor: GOLD }} />
+            <span>{o.label}</span>
+            {o.custom ? <span style={{ fontSize: 11, color: MUTED }}> · typed in</span> : null}
+          </label>
+        ))}
+      </div>
+      {/* ⛔ ON A TEXT FIELD THE LIST IS A SHORTCUT, NEVER A GATE — the same rule
+          the single-value combo follows. `investor` and `white_label` are TEXT
+          in the registry: a sheet can name an investor the roster has not seen,
+          and a rule written the day before that investor is added must still be
+          writable. An ENUM gets no such box, because there the list IS the set
+          of legal answers and an invented one would be refused on save. */}
+      {allowCustom && (
+        <div style={{ display: 'flex', gap: 6, padding: '6px 6px 0', borderTop: `1px solid ${LINE}` }}>
+          <input style={{ ...input, fontSize: 14, padding: '6px 8px' }} value={typed}
+            data-tickbox-add placeholder="Not on the list? Type a name and press Add"
+            aria-label="Add a value that is not on the list"
+            onChange={(e) => setTyped(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTyped(); } }} />
+          <button type="button" style={{ ...btnSoft, padding: '6px 10px', fontSize: 12 }}
+            onClick={addTyped}>Add</button>
+        </div>
+      )}
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+        padding: '6px 9px', borderTop: `1px solid ${LINE}`, fontSize: 12, color: MUTED,
+      }}>
+        <span data-tickbox-count>{picked.length} picked{q ? ` · ${shown.length} shown` : ''}</span>
+        {picked.length > 0 && (
+          <button type="button" style={{ ...btnSoft, padding: '4px 8px', fontSize: 11.5 }}
+            onClick={() => onChange([])}>Clear all</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * PICK FROM THE LIST **OR** TYPE YOUR OWN — for the four text fields that name
+ * an investor or a program.
+ *
+ * Owner-reported 2026-09-04: *"I want to put a rule to block a certain investor
+ * or to block a certain white label name, not populate the value. We can only
+ * type. We need to have the same kind of dropdown, select, and search."*
+ *
+ * ⛔ IT MUST STAY A COMBO, NOT AN ENUM, and that is a correctness rule rather
+ * than a kindness. `investor` / `investor_key` / `white_label` / `program_name`
+ * are TEXT fields in the registry: a sheet can name an investor the roster has
+ * never seen, and a rule written the day before that investor is added must
+ * still be writable. So a typed value is always accepted and never refused —
+ * the list is a shortcut, never a gate.
+ *
+ * ⛔ AND AN UNREADABLE ROSTER LOOKS LIKE ONE, never like an empty company. With
+ * no options at all this renders the plain box it always was; it never draws an
+ * empty list of investors, which reads as "we have none".
+ */
+function ValueCombo({ options, value, onChange, placeholder }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const boxRef = useRef(null);
+  const opts = options || [];
+  const shown = opts.filter((o) => matches(q || value, o.label, o.v)).slice(0, 60);
+
+  return (
+    <div ref={boxRef} style={{ position: 'relative' }}
+      onBlur={(e) => { if (!boxRef.current || !boxRef.current.contains(e.relatedTarget)) setOpen(false); }}>
+      <input style={input} value={value ?? ''} placeholder={placeholder || 'Pick one, or type your own'}
+        data-value-combo
+        onChange={(e) => { onChange(e.target.value); setQ(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false); }} />
+      {open && shown.length > 0 && (
+        <div style={pickerPanel} role="listbox">
+          {shown.map((o) => (
+            <button key={o.v} type="button" role="option" aria-selected={o.v === value}
+              style={pickerRow(false)}
+              onClick={() => { onChange(o.v); setQ(''); setOpen(false); }}>
+              {o.label}
+              {o.label !== o.v ? <span style={{ color: MUTED, fontSize: 12 }}> · {o.v}</span> : null}
+            </button>
+          ))}
+          <div style={{ padding: '6px 9px', fontSize: 11.5, color: MUTED, borderTop: `1px solid ${LINE}`, marginTop: 4 }}>
+            Not on the list? Type it — a name we have not seen yet is still allowed.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ValueInput({ field, isList, isRange, value, onChange }) {
   if (isRange) {
     const v = Array.isArray(value) ? value : ['', ''];
@@ -953,19 +1319,24 @@ function ValueInput({ field, isList, isRange, value, onChange }) {
   if (field && field.options && field.options.length) {
     const picked = isList ? (Array.isArray(value) ? value : []) : value;
     if (isList) {
-      /* "ANY OF THE ABOVE OR ALL OF THE ABOVE" — the owner's own words. A real
-         multi-select, so a licensing rule naming twelve states is one condition. */
+      /* "ANY OF THE ABOVE OR ALL OF THE ABOVE" — the owner's own words, and for
+         months the control could not do it: a native `<select multiple>` needs a
+         Ctrl or Cmd click, so a plain click on a second option DESELECTED the
+         first. Tick boxes, with a search over them, so a licensing rule naming
+         twelve states is twelve ordinary clicks. The value shape is unchanged. */
       return (
-        <select
-          multiple
-          size={Math.min(8, field.options.length)}
-          style={{ ...input, height: 'auto', minHeight: 96 }}
-          value={picked}
-          onChange={(e) => onChange([...e.target.selectedOptions].map((o) => o.value))}
-        >
-          {field.options.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
-        </select>
+        <OptionChecklist options={field.options} value={picked} onChange={onChange}
+          allowCustom={field.type === 'text'} />
       );
+    }
+    /* A TEXT FIELD WITH A LIST IS A COMBO, AN ENUM IS A DROPDOWN, and the
+       difference is what the field's own type says. `investor` / `white_label`
+       and their two siblings are TEXT: the roster is a shortcut over them, never
+       the set of legal answers, so a sheet spelling nobody has seen yet must
+       still be typeable. An enum's list IS the legal set, so it stays a
+       dropdown, where an invented value would be refused on save anyway. */
+    if (field.type === 'text') {
+      return <ValueCombo options={field.options} value={picked ?? ''} onChange={onChange} />;
     }
     return (
       <select style={input} value={picked ?? ''} onChange={(e) => onChange(e.target.value)}>
@@ -1034,7 +1405,10 @@ function Actions({ list, cat, onChange }) {
           }}>
             <div>
               <label style={label}>Do</label>
-              <select style={input} value={a.type} onChange={(e) => set(i, { type: e.target.value, points: 0.25, reason: a.reason || '' })}>
+              {/* A STABLE HANDLE, for the same reason the operator box has one:
+                  this screen holds many `<select>`s and a render check reaching
+                  for "the last one" drove the sample-loan panel instead. */}
+              <select style={input} data-action-select value={a.type} onChange={(e) => set(i, { type: e.target.value, points: 0.25, reason: a.reason || '' })}>
                 {cat.actions.map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}
               </select>
             </div>

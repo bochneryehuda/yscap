@@ -94,6 +94,25 @@ const ACTIONS = {
     stops: 'investor',
     needsReason: true,
   },
+  /* ⛔ A SECOND STOPPING VERB, AND IT IS NARROWER THAN THE ONE ABOVE — that is
+     the whole reason it exists (owner-directed 2026-09-04: *"this investor
+     should not populate this program name"*, and, asked which of the two a rule
+     should offer, *"let me choose per rule"*).
+
+     `block_investor` takes the investor off the loan entirely: every rate, every
+     program. This takes ONE PROGRAM off and leaves that investor's other
+     programs priced, which is what somebody means by "we do not place this
+     program in this state" — the investor is still fine, this book is not.
+
+     WHICH IT IS IS THE RULE-WRITER'S DECISION, never inferred, which is why
+     they are two verbs rather than one verb with a setting. */
+  block_program: {
+    key: 'block_program',
+    label: 'Block this program name',
+    help: 'This one program does not populate on a loan the rule matches. The investor\'s other programs still price.',
+    stops: 'program',
+    needsReason: true,
+  },
   note: {
     key: 'note',
     label: 'Add a note for staff',
@@ -165,11 +184,18 @@ function validate(list) {
       problems.push(`${at} (${spec.label}): the reason is longer than 500 characters.`);
     }
   });
-  /* ⛔ ONE STOP IS ENOUGH, AND TWO CONTRADICT EACH OTHER. Blocking the investor
-     and marking the row ineligible say different things about the same loan, and
-     a board can only print one reason. */
+  /* ⛔ ONE STOP IS ENOUGH, AND TWO CONTRADICT EACH OTHER. Marking the row
+     ineligible, blocking the investor and blocking one program say three
+     different things about the same loan, and a board can only print one reason.
+     THE MESSAGE IS BUILT FROM THE REGISTRY, not typed: it named two verbs while
+     there were three, so a rule stopped two ways was refused with advice that
+     did not mention the verb the writer had actually picked. */
   const stops = list.filter((a) => a && specOf(a.type) && specOf(a.type).stops);
-  if (stops.length > 1) problems.push('A rule can stop a quote one way, not two — pick "mark ineligible" or "block this investor".');
+  if (stops.length > 1) {
+    const names = STOP_KEYS.map((k) => `"${ACTIONS[k].label.toLowerCase()}"`);
+    problems.push(`A rule can stop a quote one way, not two — pick ${
+      names.slice(0, -1).join(', ')} or ${names[names.length - 1]}.`);
+  }
   return problems;
 }
 
