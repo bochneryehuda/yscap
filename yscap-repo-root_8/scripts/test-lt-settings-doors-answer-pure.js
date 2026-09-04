@@ -253,7 +253,7 @@ async function main() {
 
            const LOCKS = (st) => st !== 'seen' && st !== 'not_yet';
 
-       — which locks a source on `unknown`, and all 204 LT suites stayed green because the
+       — which locks a source on `unknown`, and every LT suite in the chain stayed green because the
        guards on this were a regex for the SPELLING `state === 'never'`. On a fresh
        install every investor is `unknown`, so that is every source button dead on day
        one — the catastrophe the register's own header names.
@@ -293,7 +293,20 @@ async function main() {
       'PUT /investor-links': { links: { acra: 'nqm' } },
       'PUT /custom-investors': { investors: {} },
       'PUT /margin-holdback': { points: 0.3 },
+      /* ⛔ THE CLEAR BRANCH IS ITS OWN DOOR, and it was the one call site of nine this
+         proof could not see. `PUT /margin-holdback` answers through `holdbackBody`
+         TWICE — once for a saved figure, once for a blank that puts the setting back to
+         the standing default — and the marker only ever reached the first, because a
+         valid `points` body never enters the `raw === null || raw === ''` branch.
+         MEASURED by the re-audit: a byte-identical inline copy of the payload in that
+         branch left this whole suite green (61 passed, 0 failed), which is precisely
+         how two copies of one payload begin. A door reached two ways needs a case per
+         way; listing it once counts the door, not the call. */
+      'PUT /margin-holdback (clear)': { points: null },
     };
+    /* The synthetic name above routes to the real door — the suffix says which BRANCH
+       the case is for, and is never part of the route. */
+    const routeOf = (d) => d.replace(/ \(clear\)$/, '');
     /* ⛔ H1 · DELEGATION, PROVEN BY REPLACING A BUILDER. G1/G2 assert the builders EXIST
        and that ONE door's answer matches ONE builder's — which the re-audit walked
        straight past: it made all six doors build byte-identical inline copies, left the
@@ -301,7 +314,10 @@ async function main() {
        precisely what this arrangement exists to prevent.
 
        The doors reach the builders through one replaceable object now, so a marker handed
-       to a builder must come out of its doors. An inlined copy cannot produce it. */
+       to a builder must come out of its doors. An inlined copy cannot produce it — at
+       every call site this loop actually CALLS, which is why the clear branch of the
+       holdback door had to be added as a case of its own rather than assumed to ride
+       along with the door it shares. */
     const bodies = routes._internals.bodies;
     const keep = { ...bodies };
     const MARK = '__delegation_marker__';
@@ -310,15 +326,15 @@ async function main() {
         ['investorsBody', ['GET /investors', 'PUT /investors']],
         ['linksBody', ['GET /investor-links', 'PUT /investor-links']],
         ['customInvestorsBody', ['GET /custom-investors', 'PUT /custom-investors']],
-        ['holdbackBody', ['GET /margin-holdback', 'PUT /margin-holdback']],
+        ['holdbackBody', ['GET /margin-holdback', 'PUT /margin-holdback', 'PUT /margin-holdback (clear)']],
       ]) {
         const wasAsync = name !== 'holdbackBody';
         bodies[name] = wasAsync ? (async () => ({ [MARK]: name })) : (() => ({ [MARK]: name }));
         for (const d of doors) {
           const body = d.startsWith('PUT') ? VALID_WRITE[d] : undefined;
-          const r = await call(d, body);
+          const r = await call(routeOf(d), body);
           ok(r.body && r.body[MARK] === name,
-            `⛔ H1 \`${d}\` answers through \`${name}\` — a door with its own inline copy could not carry the marker (${r.code})`);
+            `⛔ H1 \`${d}\` answers through \`${name}\` — a door with its own inline copy could not carry the marker (status ${r.status})`);
         }
         bodies[name] = keep[name];
       }

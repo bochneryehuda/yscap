@@ -364,7 +364,7 @@ const BANDS = { lenderprice: { answered: true, keys: ['acra'] }, loannex: { answ
        `LtPricer.jsx`, because a `.jsx` module cannot be loaded by any CI job — and the
        re-audit of 2026-09-03 walked straight through them: a `bandsWillFollow` returning
        TRUE unconditionally, while still calling `bracketMissing` so every pattern
-       matched, was green across all 204 suites. A TRUE here is a promise that the band
+       matched, was green across every LT suite in the chain. A TRUE here is a promise that the band
        door will run, and a wrong one means the press is never recorded and the super
        admin is never told a sheet did not carry a switched investor. The three rules now
        live in `bandRules.js`, plain JavaScript, and this asks them. */
@@ -414,7 +414,7 @@ const BANDS = { lenderprice: { answered: true, keys: ['acra'] }, loannex: { answ
 
     /* ⛔ D6 · AND THE SERVER'S READ IS RUN TOO. This was one inline expression at the
        route guarded by an UNANCHORED regex, and the re-audit appended `|| body.full ===
-       true` to it: the pattern still matched, all 204 stayed green, and because
+       true` to it: the pattern still matched, every LT suite stayed green, and because
        `GENERAL_ENGINE.price` sends `full: true` on EVERY press, the immediate door on
        the General Pricing Engine would have filed no miss and counted no search, ever.
        It is a named function now, and this is its whole truth table. */

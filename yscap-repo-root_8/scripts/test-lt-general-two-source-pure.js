@@ -740,7 +740,7 @@ const byInvestor = (programs) => {
            const noRegister = opts.wantLoanNex !== true;
            const sightings = noRegister ? {} : { … }
 
-       — and all 204 LT suites stayed green, because `loadConfig` on THIS fixture supplies
+       — and every LT suite in the chain stayed green, because `loadConfig` on THIS fixture supplies
        `wantLoanNex: true` and every board built here goes down the passing side. SEAM-0's
        own comment says it exists to stop exactly that shape, and it could not: the gate
        reads a key that IS in `readKeys` and IS handed over, so SEAM-0a, SEAM-0b and
@@ -789,9 +789,16 @@ const byInvestor = (programs) => {
     });
     col3.observe(freshBoard);
     await col3.flush({ scenario: SC, searchKey: 'k-fresh', door: 'immediate' });
+    /* ⛔ THE COUNT, NOT MERELY "SOME". `> 0` would pass a gate that TRUNCATED the list
+       to one — and a shorter sightings list locks investors out of the settings screen
+       just as surely as an empty one. The comparison is against what the SAME Lender
+       Price answer carried on the ordinary board a few lines above, so it needs no
+       hand-typed number and cannot go stale. */
+    const lpFull = (sighted && sighted.lenderprice && sighted.lenderprice.keys.length) || 0;
+    const lpFresh = (sightedFresh && sightedFresh.lenderprice && sightedFresh.lenderprice.keys.length) || 0;
     ok(sightedFresh && sightedFresh.lenderprice && sightedFresh.lenderprice.answered === true
-      && sightedFresh.lenderprice.keys.length > 0,
-      `⛔ SEAM-5 …and with nobody routed to LoanNEX the register is STILL fed what Lender Price carried (${sightedFresh && sightedFresh.lenderprice ? sightedFresh.lenderprice.keys.length : 'nothing'}) — a gate on the routing silences the register on a fresh install`);
+      && lpFull > 0 && lpFresh === lpFull,
+      `⛔ SEAM-5 …and with nobody routed to LoanNEX the register is STILL fed everything Lender Price carried (${lpFresh} of ${lpFull}) — a gate on the routing silences the register on a fresh install, and a truncating one shortens it`);
     ok(REG.SOURCES.every((sname) => freshBoard.sightings && freshBoard.sightings[sname]
       && typeof freshBoard.sightings[sname].answered === 'boolean'),
       'SEAM-5a …and the board still describes every sheet the register knows, so nothing became unrecordable');

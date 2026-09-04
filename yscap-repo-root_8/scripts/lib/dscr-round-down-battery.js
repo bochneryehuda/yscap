@@ -8,16 +8,19 @@
  * else"*) — how many ratios moved, how many bands moved, how many SEARCHED
  * ratios moved and which way. The script that produced the originals was never
  * committed, and the header said so; what it could not say is that the numbers
- * are therefore UNREPRODUCIBLE. Three independent reconstructions of "11 rents ×
- * 8 loan amounts × 6 tax figures × 4 insurance figures × 3 HOA figures × 51
- * rates" have now produced three different sets of counts —
+ * are therefore UNREPRODUCIBLE. Four attempts at "11 rents × 8 loan amounts × 6
+ * tax figures × 4 insurance figures × 3 HOA figures × 51 rates" are on the
+ * record and no two of them agree —
  *
- *     originally written   161,915 moved · 9,722 band · 5,165 searched (3,951↓ 1,214↑)
+ *     5fcfaf43             161,915 moved · 9,722 band · 5,176 searched (no split stated)
+ *     bc5a893d             —                —          5,165 searched (3,951↓ 1,214↑)
  *     re-audit 2026-09-03  —                —          5,690 searched (4,202↓ 1,488↑)
  *     this battery         161,448 moved · 9,033 band · 5,308 searched (3,942↓ 1,366↑)
  *
- * — because the paragraph records the SHAPE of the battery and not one of its
- * values. A count nobody can re-derive is a claim, not a measurement.
+ * — four attempts at one battery, because the paragraph records the SHAPE of the
+ * battery and not one of its values. A count nobody can re-derive is a claim, not a
+ * measurement. (Each row above is read off git rather than remembered; an earlier
+ * draft of this table merged the first two rows and lost 5,176.)
  *
  * ⛔ SO THE AXES LIVE HERE, AS DATA, and the suite MEASURES them on every run
  * rather than quoting them from memory. The header now cites this file and the
@@ -40,8 +43,16 @@
 const fs = require('fs');
 const path = require('path');
 const Module = require('module');
+const { stripComments } = require('./strip-comments');
 
-const BOARD_PATH = path.join(__dirname, '..', '..', 'src', 'longterm', 'pricing', 'bracket-board.js');
+/* ⛔ THIS MODULE NAMES NO PRODUCT PATH OF ITS OWN — the CALLER passes the board it is
+   measuring, exactly as it passes the engines. `scripts/lib` is shared ground between
+   two products that may not reach into each other (CLAUDE.md rule 4: only
+   `scripts/test-lt-*.js` may import Long-Term). A `path.join(__dirname, '..', '..',
+   'src', 'longterm', …)` here would slip past the separation gate — which reads
+   `require` targets, not composed paths — while being exactly what the rule forbids.
+   The precedent this sits beside, `strip-comments.js`, is product-neutral for the same
+   reason. */
 
 /**
  * ⛔ THE STRIP MATCHES THE LEVER'S SHAPE, NOT ITS EXACT TEXT, and that is not
@@ -66,8 +77,19 @@ const LEVER_RE = () => /tierRounding\.sendAs\('[a-z]+',\s*([^;]*?),\s*2\)/g;
  * really happened. One definition of "what BEFORE means", shared by the suite and
  * by anyone re-running the measurement.
  */
-function baselineEngine() {
-  const bbSrc = fs.readFileSync(BOARD_PATH, 'utf8');
+function baselineEngine(boardPath) {
+  if (!boardPath) throw new Error('baselineEngine(boardPath): the caller names the board it is measuring');
+  /* ⛔ EVERYTHING HERE READS THE COMMENT-STRIPPED SOURCE, and the baseline is COMPILED
+     from it. The first cut matched the raw file, so ONE COMMENT LINE quoting the lever
+     it describes — in a repo whose comments routinely quote the code they explain —
+     made the count read 3 instead of 2 and turned eleven assertions red on correct
+     code. A guard that goes red because somebody documented something teaches its
+     reader to delete the documentation. (`N8` in the suite already read the stripped
+     source for exactly this reason; this did not.) The stripper is the SHARED one: the
+     two-regex idiom is a skeleton key that can swallow a whole file and make a
+     "must not appear" rule pass over nothing. */
+  const rawSrc = fs.readFileSync(boardPath, 'utf8');
+  const bbSrc = stripComments(rawSrc);
   const found = bbSrc.match(LEVER_RE()) || [];
   const inRatio = /function ratioAtRate\([\s\S]*?\n\}/.exec(bbSrc);
   const ratioLever = inRatio ? (inRatio[0].match(LEVER_RE()) || []) : [];
@@ -76,11 +98,11 @@ function baselineEngine() {
     : bbSrc;
   const afterRatio = /function ratioAtRate\([\s\S]*?\n\}/.exec(baseSrc);
   const stripped = baseSrc !== bbSrc && !!afterRatio && !LEVER_RE().test(afterRatio[0]);
-  const mod = new Module(BOARD_PATH, null);
-  mod.filename = BOARD_PATH;
-  mod.paths = Module._nodeModulePaths(path.dirname(BOARD_PATH));
-  mod._compile(baseSrc, BOARD_PATH);
-  return { BEFORE: mod.exports, found, ratioLever, baseSrc, bbSrc, stripped, path: BOARD_PATH };
+  const mod = new Module(boardPath, null);
+  mod.filename = boardPath;
+  mod.paths = Module._nodeModulePaths(path.dirname(boardPath));
+  mod._compile(baseSrc, boardPath);
+  return { BEFORE: mod.exports, found, ratioLever, baseSrc, bbSrc, rawSrc, stripped, path: boardPath };
 }
 
 /**
@@ -185,4 +207,4 @@ function measure({ boardMod, BEFORE, tiers }) {
   };
 }
 
-module.exports = { AXES, rates, dealsFrom, measure, baselineEngine, BOARD_PATH, _internals: { LEVER_RE } };
+module.exports = { AXES, rates, dealsFrom, measure, baselineEngine, _internals: { LEVER_RE } };

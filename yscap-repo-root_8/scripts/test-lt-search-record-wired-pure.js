@@ -295,7 +295,7 @@ const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.
 
        — so `collector()` is still called with 0 arguments, B6 stays green, and NOTHING IS
        EVER WRITTEN IN PRODUCTION: no sighting from either door, no miss, no email to the
-       super admin. All 204 LT suites passed.
+       super admin. Every LT suite in the chain passed.
 
        A call-site argument count cannot see that, because the defect is not at the call
        site. So this loads the REAL `search-record` with the two writer modules replaced

@@ -90,22 +90,35 @@
  * a better one. Nothing is over-stated about the loan; the request is simply more
  * conservative in that band.
  *
- * WHAT IS ACTUALLY ONE-WAY, and what the safety of this rests on: the RATIO A
- * RATE ACHIEVES (0 of 161,448 moves went up), 0 bands lost, and every searched
- * ratio landing inside the band it is for (0 of 69,696 outside). Those four are
- * asserted HARD; the totals are pinned so they cannot drift quietly.
+ * WHAT IS ACTUALLY ONE-WAY, and what the safety of this rests on — FOUR properties,
+ * and the paragraph used to list three and call them four: the RATIO A RATE ACHIEVES
+ * (0 of 161,448 moves went up), no band moving to a BETTER one, 0 bands lost, and
+ * every searched ratio landing inside the band it is for (0 of 69,696 outside). All
+ * four are asserted HARD in N17a/N17b; the totals are pinned in N17c/N17d so they
+ * cannot drift quietly.
  *
  * ⛔ HONEST NOTE ON THE FIGURES, AND THE REASON THE BATTERY IS NOW IN THE TREE.
  * The script that produced the ORIGINAL numbers was never committed, and the
  * paragraph recorded the battery's SHAPE without one of its values — so it could
- * not be re-derived. Three independent reconstructions produced three different
- * sets of counts (161,915 / 9,722 / 5,165 · 3,951↓ · 1,214↑ as first written;
- * 5,690 · 4,202↓ · 1,488↑ on the 2026-09-03 re-audit; and the figures above from
- * the battery now in the tree). They agree EXACTLY on all four safety properties,
- * which is the finding; the totals were never reproducible and the earlier ones
- * are superseded rather than defended. A count nobody can re-derive is a claim,
- * not a measurement — so the axes are data now, and the suite prints what it
- * measured.
+ * not be re-derived. FOUR different searched-move figures are on the record, from
+ * four attempts at the same battery (checked against git, not remembered):
+ *
+ *   5fcfaf43  161,915 moved · 9,722 band · 5,176 searched — "always downward",
+ *             no split stated
+ *   bc5a893d  5,165 searched · 3,951↓ · 1,214↑ — the reconstruction that found the
+ *             "always downward" claim false, and that preserved 5,176 in its own
+ *             honest note
+ *   2026-09-03 re-audit  5,690 · 4,202↓ · 1,488↑
+ *   this battery (above) 161,448 · 9,033 · 5,308 · 3,942↓ · 1,366↑
+ *
+ * An earlier draft of this paragraph labelled the second row's split "as first
+ * written" and dropped 5,176 entirely — wrong on both counts, and the pre-merge
+ * audit of 2026-09-04 caught it: a paragraph whose whole subject is unreproducible
+ * numbers had the provenance of those numbers wrong. All four agree EXACTLY on the
+ * four safety properties, which is the finding; the totals were never reproducible
+ * and the earlier ones are superseded rather than defended. A count nobody can
+ * re-derive is a claim, not a measurement — so the axes are data now, and the suite
+ * prints what it measured.
  *
  * So the only thing this can do is search a band the loan has genuinely earned
  * instead of the one above it. A borrower quoted at the better band was being

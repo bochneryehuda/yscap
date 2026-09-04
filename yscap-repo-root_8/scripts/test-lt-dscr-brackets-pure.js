@@ -621,9 +621,11 @@ async function main() {
        one that drifts is the one a safety proof rests on. The GUARDS stay here, on the
        pieces it hands back, so nothing about what is asserted moved. */
     const battery = require('./lib/dscr-round-down-battery');
-    const bbPath = battery.BOARD_PATH;
+    /* The battery names no product path of its own — this suite does, because it is the
+       one file allowed to reach into `src/longterm/**` (CLAUDE.md rule 4). */
+    const bbPath = path.join(__dirname, '..', 'src', 'longterm', 'pricing', 'bracket-board.js');
     const bbSrc = fs.readFileSync(bbPath, 'utf8');
-    const base = battery.baselineEngine();
+    const base = battery.baselineEngine(bbPath);
     ok(base.found.length === 2,
       `N0 CONTROL: the board settles a DSCR through the one door in exactly two places (${base.found.length}) — the ratio and the search ratio`);
     ok(base.ratioLever.length === 1,
@@ -821,13 +823,13 @@ async function main() {
          · `if (f.hoaMonthly > 0 && f.hoaMonthly !== 340) return Math.round(...)`.
            `hoasA` is [0, 340], so every condo and PUD on the system rounded to nearest.
 
-       Both passed all 204 LT suites. A fixed list proves the rule at the points
+       Both passed EVERY LT suite in the chain. A fixed list proves the rule at the points
        somebody thought of; it says nothing about the ones they did not.
 
        ⛔ AND THE ORACLE NO LONGER DELEGATES. N11/N12's oracle took its payment from
        `overlay.monthlyPI` — the same function production takes it from — so a mutation
        THERE moved both sides together and went unseen: `if (loanAmount > 500000)
-       return r2(... * 0.97)` was green across all 204, while the bracket ratio on a
+       return r2(... * 0.97)` was green across every one of them, while the bracket ratio on a
        $750,000 loan moved 0.86 → 0.88, a BETTER band. `piHere` below is the textbook
        annuity written out here, computed a different way from production's algebraic
        rearrangement, so nothing production can be mutated into moves it. */
@@ -1031,8 +1033,16 @@ async function main() {
        0 better while the ratio was being rounded the wrong way. */
     ok(M.moved > 0 && M.up === 0 && M.bandBetter === 0,
       `⛔ N17a NOT ONE RATIO A RATE ACHIEVES MOVES UP, and not one band moves to a BETTER one (${M.up} up${M.firstUp ? ` — ${JSON.stringify(M.firstUp)}` : ''}, ${M.bandBetter} better, ${M.moved} moved at all) — the property the whole change rests on`);
-    ok(M.lost === 0 && M.outside === 0 && M.nullsBefore === M.nullsAfter,
-      `⛔ N17b …and nothing became unpriceable: ${M.lost} bands lost, ${M.outside} searched ratios outside their own band${M.firstOutside ? ` — ${JSON.stringify(M.firstOutside)}` : ''}, nulls ${M.nullsBefore} → ${M.nullsAfter}`);
+    /* ⛔ EVERY FIGURE THE BOARD'S HEADER QUOTES IS ASSERTED HERE, and two of them were
+       not. `gained` was measured, returned and read by NOBODY. And this line tested
+       `nullsBefore === nullsAfter` while its own message said "nothing became
+       unpriceable" — MEASURED: a lever that returns null for a third of the deal space
+       makes 107,712 nulls on BOTH sides, so the equality holds and the assertion that
+       NAMES unpriceability stayed green while a third of the battery went dark. Only
+       the pinned totals caught it. An assertion whose message claims more than its
+       condition is worse than no assertion, because it is read as cover. */
+    ok(M.lost === 0 && M.gained === 0 && M.outside === 0 && M.nullsBefore === 0 && M.nullsAfter === 0,
+      `⛔ N17b …and nothing became unpriceable: ${M.lost} bands lost, ${M.gained} newly reachable, ${M.outside} searched ratios outside their own band${M.firstOutside ? ` — ${JSON.stringify(M.firstOutside)}` : ''}, nulls ${M.nullsBefore} → ${M.nullsAfter}`);
     ok(M.moved === 161448 && M.bandWorse === 9033,
       `N17c THE MEASURED TOTALS — the ratio moves a cent in ${M.moved} of ${M.combos} (${(M.moved / M.combos * 100).toFixed(3)}%) and the BAND moves in ${M.bandWorse} (${(M.bandWorse / M.combos * 100).toFixed(3)}%); if that changed on purpose, put these numbers in bracket-board.js's header`);
     ok(M.searchedMoved === 5308 && M.searchedDown === 3942 && M.searchedUp === 1366,
@@ -1048,6 +1058,17 @@ async function main() {
     const strippedBb = stripComments(bbSrc);
     ok(/tierRounding\.sendAs\('dscr'/.test(strippedBb) && !/Math\.round\(best \* 100\)/.test(strippedBb),
       'N8 both places go through the one rounding door — no bare round-to-nearest is left in the board');
+    /* ⛔ N8a · AND EACH SITE IS PINNED TO THE DSCR FIELD, not just one of them. N8 above
+       is a single `.test`, satisfied by EITHER call — so the re-audit swapped the SEARCH
+       ratio's lever to `sendAs('ltv', …)`, which rounds the other way, and the whole
+       suite stayed green. It is numerically inert TODAY (`best` is already 2dp, as that
+       line's own comment says), which is exactly why no measurement can see it — and the
+       lever exists for "the day either side gains a third decimal", on which it would
+       round a borrower's DSCR UP. A guard that counts doors has to name the field at
+       every one of them. */
+    const dscrLevers = (strippedBb.match(/tierRounding\.sendAs\('[a-z]+'/g) || []);
+    ok(dscrLevers.length === 2 && dscrLevers.every((m) => m.includes("'dscr'")),
+      `N8a …and BOTH of them ask for the DSCR field, so a wrong-field lever cannot hide at the second site (${dscrLevers.join(', ') || 'none'})`);
     ok(!/computeDscr/.test(strippedBb),
       'N9 …and the board no longer calls the tenant\'s own round-to-nearest formula');
 

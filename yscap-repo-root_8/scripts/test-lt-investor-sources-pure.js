@@ -41,7 +41,13 @@ const settingsDefs = require(path.join(ROOT, 'src/longterm/settings/encompass-se
    later check silently never ran: a mutation proof against any assertion below the
    failure was worthless, and a red suite reported one problem where there might be six.
    So each check records its verdict and the run carries on to the end; the tally at the
-   bottom sets the exit code. */
+   bottom sets the exit code.
+
+   ⛔ AND THAT IS A PROPERTY OF THE ASSERTIONS, NOT OF THESE TWO HELPERS. Counting a
+   failure does not make the NEXT line safe: a mutation that makes the code under test
+   return a different SHAPE still crashes an unguarded dereference below it, and a crash
+   still stops the battery. Every read of the thing under test in this file has to be
+   total for the claim to hold — see `rowOf`/`lockedOf` in section B for the shape. */
 let pass = 0;
 let bad = 0;
 const ok = (c, n) => {
@@ -183,21 +189,34 @@ console.log('\nB2 · which buttons are locked out — the rule itself, not a cop
   wideKeys.push('never-seen-at-all');
   const srcOf = (k) => (k === 'inv1' ? 'loannex' : 'lenderprice');
   const all = sightings.availabilityAll(wide, wideKeys, srcOf);
+  /* ⛔ EVERY READ OF THE THING UNDER TEST IS TOTAL. A failure here is COUNTED rather
+     than thrown (see the helpers at the head of this file), and that conversion is only
+     worth anything if the run can actually reach the end: a bare `all.get(k).lockedOut`
+     is a TypeError the moment the fast path stops returning the key it is being asked
+     about, and a crash stops the battery where it stands — the "a crashing test also
+     fails, and looks like proof" shape. MEASURED: a mutation dropping `lockedOut` from
+     the fast path printed 30 of 160 lines, never reached the tally, and never ran
+     `process.exit`. It exited 1 on the uncaught error, so it was red rather than falsely
+     green — but every assertion below it proved nothing that run, which is the whole
+     reason the conversion was made. `rowOf` states a false fact and lets the run
+     continue, exactly as `list()` does in the brackets suite. */
+  const rowOf = (k) => (all && typeof all.get === 'function' ? all.get(k) : null) || {};
+  const lockedOf = (k) => { const v = rowOf(k).lockedOut; return Array.isArray(v) ? v : []; };
   let differ = 0; let states = new Set();
   for (const k of wideKeys) {
     const a = sightings.availabilityFor(k, wide);
     const l = sightings.lockedOutFor(k, wide, srcOf(k));
-    const got = all.get(k);
+    const got = rowOf(k);
     if (JSON.stringify(got.availability) !== JSON.stringify(a)) differ += 1;
     if (JSON.stringify(got.lockedOut) !== JSON.stringify(l)) differ += 1;
-    for (const src of sightings.SOURCES) states.add(a[src].state);
+    for (const src of sightings.SOURCES) states.add(a && a[src] ? a[src].state : 'unreadable');
   }
-  ok(states.size >= 3,
+  ok(states.size >= 3 && !states.has('unreadable'),
     `B11 CONTROL: the battery really carries several states at once (${[...states].sort().join(', ')})`);
   eq(differ, 0,
     '⛔ B11a THE FAST PATH ANSWERS EXACTLY WHAT THE PER-ROW DOORS ANSWER — it is the same two rules underneath, which is what stops a fast path drifting from the rule it is fast at');
-  ok(all.get('inv1').lockedOut.indexOf('loannex') === -1,
-    'B11b …including the rule that the source a row is SET to is never locked out');
+  ok(lockedOf('inv1').indexOf('loannex') === -1 && Array.isArray(rowOf('inv1').lockedOut),
+    'B11b …including the rule that the source a row is SET to is never locked out — and that the fast path answers with a list at all');
 
   /* ⛔ A REGRESSION GUARD, NOT A TARGET — AND IT IS A RATIO, NOT A CLOCK.
      What this is about is that `availabilityAll` is a FAST PATH and not a per-row loop
@@ -210,10 +229,17 @@ console.log('\nB2 · which buttons are locked out — the rule itself, not a cop
      So both paths are measured IN THE SAME RUN, over the same data, and the FAST one
      has to be a multiple faster. Load lifts both halves together, so the ratio is
      invariant to it; a return to asking per row collapses the ratio to about 1 and
-     fails whatever the machine is doing. The floor is deliberately far below the
-     measured ~600× — this must only ever catch a structural regression, never a slow
-     afternoon. The absolute figures are REPORTED in the message, as measurements
-     rather than as assertions. */
+     fails whatever the machine is doing.
+
+     ⛔ THE FLOOR IS SET FROM A RANGE, NOT FROM ONE DRAW. An earlier version of this
+     note quoted "~600×", which is one sample of a wide distribution and was not
+     reproduced on the next box that tried. MEASURED over 33 runs by the pre-merge
+     audit of 2026-09-04 — unloaded, under `--jitless`, under `--no-opt`, under a
+     squeezed semi-space, and under 3× CPU oversubscription — the ratio ranged
+     47×–985×, worst margin 2.35× over the floor, with no spurious failure. 20 is
+     therefore far under anything observed: this must only ever catch a structural
+     regression, never a slow afternoon. The absolute figures are REPORTED in the
+     message, as measurements rather than as assertions. */
   const SPEEDUP_MIN = 20;
   const big = { boards: { lenderprice: T1, loannex: T1 }, searches: { lenderprice: 50, loannex: 50 }, investors: {} };
   const bigKeys = [];
@@ -918,7 +944,7 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
          if (stored && typeof stored === 'object' && !Array.isArray(stored)
              && Array.isArray(stored.problems)) return stored;
 
-     — and all 204 LT suites stayed green while `availabilityFor` THREW on that register
+     — and every LT suite in the chain stayed green while `availabilityFor` THREW on that register
      and a garbage stamp read as `seen`, lighting a source button on no evidence. One
      shape proves the rule for that shape; the register is stored as free-form JSON by a
      door that will accept any of these, so the rule is asked about all of them. */
