@@ -1090,6 +1090,62 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
       'N9 …and joins it switched OFF, which is the owner\'s rule in full');
   }
 
+  /* ── N10. THE BOARD SAYS WHY, AND SAYS SOMETHING THE READER CAN ACT ON ────────────────
+     The standing rule takes 17 investors off the general board, so what the board says about
+     them is the whole of what an officer gets. 'Switched off in the investor settings' is
+     TRUE of every off row and USELESS on this kind: nobody switched them off, and it sends
+     the reader to a toggle nobody moved instead of to the missing NAME. Same class as the
+     document card that told somebody to "request a fresh copy from whoever uploaded it"
+     about a file PILOT generated itself — advice a reader cannot act on is a defect.
+
+     Asserted against a CONTROL that is genuinely switched off, so this proves the two are
+     TOLD APART rather than that some sentence exists. */
+  {
+    const routing = require(path.join(ROOT, 'src/longterm/pricing/investor-routing'));
+    const board = (key, investor) => ({
+      sources: { lenderprice: { answered: true } }, summary: {}, unmapped: [],
+      investors: [{
+        key, investor, presentIn: ['lenderprice'],
+        programs: { lenderprice: [{ source: 'lenderprice' }] }, best: { lenderprice: { rate: 7 } },
+      }],
+    });
+    const unnamed = (routing.applyRouting(board('visio', 'Visio Lending'), { routes: {} }).hidden || [])[0];
+    const switched = (routing.applyRouting(board('nqm', 'NQM Funding'), { routes: { nqm: { enabled: false } } }).hidden || [])[0];
+    ok(unnamed && switched, 'N10 both kinds of off row reach the board\'s own accounting');
+    ok(unnamed.why === 'switched_off' && switched.why === 'switched_off',
+      'N10a …under the same machine reason, which is exactly why the SENTENCE has to tell them apart');
+    /* \`/name/i\` alone is TOO LOOSE — a mutation that replaced the instruction with 'This
+       investor is not on the board.' still matched, because the trailing sentence about a
+       term sheet also contains the word. What has to be there is the ACTION. */
+    ok(typeof unnamed.reason === 'string' && /\bname it\b/i.test(unnamed.reason),
+      `N10b an investor nobody has NAMED is told to name it (${JSON.stringify(unnamed.reason || null)})`);
+    ok(!/switched off/i.test(unnamed.reason),
+      'N10c …and is NOT sent to a toggle nobody moved');
+    ok(typeof switched.reason === 'string' && /switched off/i.test(switched.reason),
+      `N10d while one somebody really did switch off still says so (${JSON.stringify(switched.reason || null)})`);
+    ok(unnamed.reason !== switched.reason,
+      'N10e …so the two are genuinely different sentences, not one wording covering both');
+    /* AN OWNER-DIRECTED NOTE OUTRANKS BOTH GENERATED SENTENCES.
+       ⛔ AND IT HAS TO BE INJECTED TO BE SEEN AT ALL: `OWNER_DISABLED` is EMPTY today (the
+       owner turned the last pre-filled-off investor on, 2026-09-02), so `row.note` is
+       unreachable on the live roster and an assertion taken without injecting would pass on
+       a branch that never runs — which is the vacuous shape this file keeps finding. The map
+       is exported for exactly this. The first cut of this assertion instead invented a
+       user-typed `note` settings field, which does not exist; it tested a capability rather
+       than the code. */
+    const settingsOf = require(path.join(ROOT, 'src/longterm/pricing/investor-settings'));
+    const hadOwn = Object.prototype.hasOwnProperty.call(settingsOf.OWNER_DISABLED, 'visio');
+    const prev = settingsOf.OWNER_DISABLED.visio;
+    settingsOf.OWNER_DISABLED.visio = 'Paused while we renegotiate.';
+    let noted;
+    try { noted = (routing.applyRouting(board('visio', 'Visio Lending'), { routes: {} }).hidden || [])[0]; }
+    finally { if (hadOwn) settingsOf.OWNER_DISABLED.visio = prev; else delete settingsOf.OWNER_DISABLED.visio; }
+    ok(noted && noted.reason === 'Paused while we renegotiate.',
+      `N10f …and an owner-directed note outranks both generated sentences (${JSON.stringify(noted ? noted.reason : null)})`);
+    ok(!Object.prototype.hasOwnProperty.call(settingsOf.OWNER_DISABLED, 'visio'),
+      'N10g …and the injection is cleaned up, so no later assertion reads a roster this one changed');
+  }
+
   console.log(`\n${bad ? 'FAILED' : 'ALL PASSED'} (${pass} passed, ${bad} failed)\n`);
   process.exit(bad ? 1 : 0);
 })();
