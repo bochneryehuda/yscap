@@ -86,6 +86,7 @@ const quoteShape = require('../pricing/quote-shape');
 const loannexHalf = require('../pricing/loannex-half');
 const breakdown = require('../pricing/breakdown');
 const nearTier = require('../pricing/near-tier');
+const ineligibility = require('../pricing/ineligibility');
 const vendorMargin = require('../pricing/vendor-margin');
 const settingsStore = require('../settings/store');
 const rosterContext = require('../pricing/roster-context');
@@ -161,20 +162,11 @@ const holdbackRaw = () => investorConfig.holdbackRaw();
  * Defensive at every hop: this walks two vendors' parsed answers, and a board
  * that is a shape short must cost the flag, never the board.
  */
-function cellsOnBoard(board) {
-  const out = [];
-  try {
-    for (const p of (board && board.programs) || []) {
-      for (const r of (p && p.rungs) || []) {
-        for (const a of (r && r.adjustments) || []) {
-          if (!a || typeof a !== 'object') continue;
-          out.push({ label: a.label || a.reason || a.name || null, detail: a.detail || a.description || null });
-        }
-      }
-    }
-  } catch (_) { /* a hint is never worth a board */ }
-  return out;
-}
+/* ⛔ MOVED to `pricing/near-tier.js`, which is its ONE consumer, because the GENERAL
+   engine needs the same cells. Two copies of "which cells does a board carry" is how one
+   engine's hint names an investor's real tier and the other's falls back to the standing
+   steps, on the same board. */
+const cellsOnBoard = nearTier.cellsOnBoard;
 
 /** Every investor name a board actually returned, in the order it returned them. */
 /* `namesOf` moved to `pricing/investor-links.js` as `namesFromBoard` so the GENERAL engine
@@ -608,7 +600,14 @@ async function priceBoth(scenario, opts = {}) {
      */
     nearTier: nearTier.nearTier({
       value: sc.value, loan: sc.loan, ltvPct: sc.ltv != null ? (sc.ltv > 1 ? sc.ltv : sc.ltv * 100) : null,
-      dscr: sc.dscr, lines: cellsOnBoard(mergedRaw),
+      /* ⛔ THE LENDER PRICE PARSE, NOT THE MERGED BOARD — a CORRECTION. `merge.merge`
+         returns `{sources, summary, investors, unmapped}` and no `programs` key at all, so
+         `cellsOnBoard(mergedRaw)` has ALWAYS answered an empty list and this hint has ALWAYS
+         fallen back to the standing steps, while the comment above claimed it could name the
+         investor's real band. MEASURED: 0 cells from the merged board, 3 from the same
+         search's Lender Price parse. Lender Price is the one sheet that publishes its
+         itemisation WITH the quote. */
+      dscr: sc.dscr, lines: cellsOnBoard(boards.lenderprice),
     }),
     /**
      * How each half was ASKED — a merged number nobody can trace back to a
@@ -786,88 +785,17 @@ function makeRouter(opts = {}) {
    */
   router.post('/combined/disqualify', async (req, res) => {
     const b = req.body || {};
-    const reveal = b.revealSource === true;
-    const pollKey = b.pollKey ? String(b.pollKey) : null;
-    const treeId = b.treeId ? String(b.treeId) : null;
-    if (!pollKey && !treeId) {
-      return res.status(400).json({ ok: false, error: 'missing_handle',
-        message: 'Send the ineligibility handle the price answer returned.' });
-    }
-    const pending = []; const failed = []; const lenders = [];
-    // The half is named by its MECHANISM unless an admin asked to see the source — the same rule
-    // the board and the explain handle already apply.
-    const POLLED = reveal ? 'lenderprice' : 'polled';
-    const TREE = reveal ? 'loannex' : 'tree';
-
-    let polledReady = false;
-    if (pollKey) {
-      try {
-        const pr = await lp.pollDisqualifiedByKey(pollKey);
-        if (pr.unknown) {
-          failed.push({ half: POLLED, reason: 'unknown_search_key',
-            message: 'That search has expired — price the loan again to start a fresh ineligible list.' });
-        } else if (!pr.ok) {
-          failed.push({ half: POLLED, reason: pr.error || 'error', message: pr.message || null });
-        } else if (!pr.ready) {
-          pending.push(POLLED);
-        } else {
-          polledReady = true;
-          const parsed = pr.parsed || lp.parseDisqualified(pr.raw);
-          for (const l of lpPrograms.decorateDisqualifiedLenders((parsed && parsed.lenders) || [])) {
-            lenders.push(reveal ? { ...l, source: 'lenderprice' } : l);
-          }
-        }
-      } catch (e) {
-        failed.push({ half: POLLED, reason: e.code || 'error', message: reasonOf(e) });
-      }
-    }
-
-    let treeReady = false;
-    if (treeId) {
-      try {
-        const r = await nex.fails(treeId, { portal: b.portal });
-        treeReady = true;
-        for (const l of lpPrograms.decorateDisqualifiedLenders(((r.disqualified || {}).lenders) || [])) {
-          lenders.push(reveal ? { ...l, source: 'loannex' } : l);
-        }
-      } catch (e) {
-        failed.push({ half: TREE, reason: e.code || 'error', message: reasonOf(e) });
-      }
-    }
-
-    /**
-     * ONE INVESTOR, ONE ENTRY. A refused investor can legitimately appear on BOTH sheets — the
-     * board joins the two by `investorKey` and this list must join them the same way, or the screen
-     * shows one company twice under one white label and reads as a bug. An investor the registry
-     * cannot key is kept under its own name rather than dropped: an unkeyed refusal is still a
-     * refusal, and dropping it would quietly shorten the list.
-     */
-    const byKey = new Map();
-    for (const l of lenders) {
-      const k = l.investorKey || ('name:' + String(l.lender || '').toLowerCase());
-      const prev = byKey.get(k);
-      if (!prev) byKey.set(k, { ...l, items: [...(l.items || [])] });
-      else prev.items.push(...(l.items || []));
-    }
-    const mergedLenders = [...byKey.values()];
-
-    res.json({
-      ok: true,
-      // Ready when ANYTHING arrived — a list that says "still computing" while holding real
-      // refusals would hide the answer it already has.
-      ready: polledReady || treeReady,
-      pending,
-      failed,
-      disqualified: {
-        lenders: mergedLenders,
-        lenderCount: mergedLenders.length,
-        itemCount: mergedLenders.reduce((n, l) => n + ((l.items || []).length), 0),
-      },
-      retryAfterMs: pending.length ? 2000 : null,
-      message: pending.length
-        ? 'One of the two rate sheets is still working out its ineligible list — ask again shortly.'
-        : null,
-    });
+    if (!b.pollKey && !b.treeId) return res.status(400).json(ineligibility.NO_HANDLE);
+    /* ⛔ THE BEHAVIOUR LIVES IN `pricing/ineligibility.js`, which the GENERAL engine's own
+       door calls too. It was ~90 lines here — two halves fetched two different ways, each
+       settled independently, refusals carried, one entry per investor — and the general
+       engine had no comparable door at all, so a LoanNEX refusal could never reach its
+       not-eligible list. Two copies of "what does ready mean, what happens when one half
+       fails" is two chances for the two screens to disagree about one refusal. */
+    res.json(await ineligibility.collect(
+      { pollKey: b.pollKey, treeId: b.treeId, portal: b.portal, reveal: b.revealSource === true },
+      { lp, nex, programs: lpPrograms },
+    ));
   });
 
   /**

@@ -39,7 +39,12 @@ const ok = (c, m) => { if (c) { pass++; console.log(`  ok   ${m}`); } else { fai
    require(...)` at the top of the file), so a cache entry replaced afterwards is
    never seen — the first cut of this harness stubbed `bracket-run` too late and
    the bands door quietly ran the real one. Everything goes in first. */
-const calls = { recordOne: [], flush: [], observe: 0, later: 0 };
+const calls = { recordOne: [], flush: [], observe: 0, observed: [], later: 0, collector: [] };
+/* ⛔ THE REAL MODULE, TAKEN BEFORE IT IS STUBBED. The stub replaces the WRITERS, which is
+   the point of this suite; it must not replace the pure RULES beside them, or the route
+   would be judged against a re-typed copy. `partOfLargerSearchFrom` is delegated to this
+   below — see the note there. */
+const REAL_SEARCH_RECORD = require(path.join(ROOT, 'src/longterm/pricing/search-record.js'));
 const stub = (rel, exports) => {
   const id = require.resolve(path.join(ROOT, rel));
   require.cache[id] = { id, filename: id, loaded: true, exports };
@@ -51,11 +56,29 @@ const stub = (rel, exports) => {
    is asserted is that `later` was ASKED, which is the production property, and
    that the work it was given actually calls the recorder. */
 stub('src/longterm/pricing/search-record.js', {
-  collector: () => ({
-    observe: () => { calls.observe += 1; },
+  /* ⛔ AND `collector`'s OWN ARGUMENT COUNT IS RECORDED TOO — the hole A3a closes on
+     `recordOne`, still open one line up on the OTHER door until the pre-merge audit of
+     2026-09-03 found it. `searchRecord.collector({ recordSightings: async () => ({ok:true}),
+     recordMisses: async () => ({ok:true}) })` at the bands door turns every band's sighting
+     AND miss recording into nothing in production — and this stub's `collector: () => ({…})`
+     discarded its own argument, so all 24 checks stayed green while the register went
+     silent. Rest params record what was ACTUALLY passed. */
+  partOfLargerSearchFrom: (...a) => REAL_SEARCH_RECORD.partOfLargerSearchFrom(...a),
+  collector: (...ca) => { calls.collector.push({ deps: ca[0], argc: ca.length }); return ({
+    /* ⛔ THE ARGUMENT IS RECORDED, NOT COUNTED — the re-audit's D-6. A spy that only
+       counts calls proves the door CALLED the recorder and nothing about what it handed
+       over: `observe(null)` twice, or `observe(someSummary)` instead of the board, keeps a
+       count-based assertion green while the register is fed nothing it can read. So every
+       argument is kept and asserted by IDENTITY against the object the board stub returned.
+       The count stays too — it is what proves BOTH bands were observed. */
+    observe: (...a) => { calls.observe += 1; calls.observed.push({ arg: a[0], argc: a.length }); },
     flush: (o) => { calls.flush.push(o); },
-  }),
-  recordOne: (b, o) => { calls.recordOne.push({ board: b, opts: o }); },
+  }); },
+  /* ⛔ AND THE ARGUMENT COUNT IS KEPT — the re-audit's D-5. `(b, o) => …` silently ignores a
+     third argument, so a door that injected its own no-op dependency (`recordOne(board, opts,
+     { recordMiss: () => {} })`) would turn the recording into nothing in production and leave
+     every assertion here green. Rest params record what was ACTUALLY passed. */
+  recordOne: (...a) => { calls.recordOne.push({ board: a[0], opts: a[1], argc: a.length }); },
   later: (fn) => { calls.later += 1; try { fn(); } catch (_) { /* production swallows too */ } },
   settled: async () => {},
 });
@@ -91,6 +114,14 @@ const BOARD = {
    see section D, which is what stops this whole suite being silenced by a condition
    that the one fixture here happens to satisfy. */
 const cfg = { wantLoanNex: true };
+/* ONE object, not a fresh spread per call, so the observe spy above can assert the door
+   handed over THE BOARD IT WAS GIVEN rather than something shaped like it. */
+const BOARD_LP_ONLY = {
+  ...BOARD,
+  source: 'lenderprice',
+  sources: { lenderprice: true, loannex: false },
+  sightings: { lenderprice: { answered: true, keys: ['nqm'] }, loannex: { answered: false, keys: [] } },
+};
 stub('src/longterm/pricing/general-board.js', {
   loadConfig: async () => ({
     routes: {}, custom: new Map(), links: {}, heldSetting: 0.25,
@@ -102,12 +133,7 @@ stub('src/longterm/pricing/general-board.js', {
      the two-source board regardless would leave section D unable to see a gate written
      on the BOARD (`if (board.source === 'both')`) rather than on the config — and the
      audit defeated the suite both ways. */
-  boardForScenario: async () => (cfg.wantLoanNex ? BOARD : {
-    ...BOARD,
-    source: 'lenderprice',
-    sources: { lenderprice: true, loannex: false },
-    sightings: { lenderprice: { answered: true, keys: ['nqm'] }, loannex: { answered: false, keys: [] } },
-  }),
+  boardForScenario: async () => (cfg.wantLoanNex ? BOARD : BOARD_LP_ONLY),
   pickerRoster: () => [],
 });
 /* The bands door's own runner. It hands each band back through `priceOne`, which is
@@ -134,7 +160,7 @@ const SCENARIO = {
   state: 'NJ', zip: '07728', county: 'Monmouth', purpose: 'purchase',
   propertyType: 'sfr', termYears: 30,
 };
-const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.observe = 0; calls.later = 0; };
+const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.observe = 0; calls.observed.length = 0; calls.later = 0; };
 
 (async () => {
   console.log('\n── A. THE IMMEDIATE BOARD RECORDS — the door the owner reported ──');
@@ -151,6 +177,8 @@ const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.
     const got = calls.recordOne[0] || {};
     ok(got.board === BOARD,
       'A3 …handing over THE BOARD it just answered, not a re-derived one');
+    ok(got.argc === 2,
+      `A3a …with EXACTLY the board and the options — a third argument would be a dependency the door injected, which is how a recorder becomes a no-op in production (${got.argc})`);
     ok(got.opts && got.opts.staffId === 'staff-1' && got.opts.scenario,
       'A4 …with who searched and what they searched for, which is what makes the review actionable');
     ok(calls.flush.length === 0,
@@ -166,6 +194,8 @@ const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.
       `B0 CONTROL: the door answered (${res.code || 200} ${res.body && (res.body.ok || res.body.error)})`);
     ok(calls.observe === 2,
       `B1 every band is OBSERVED — an investor that answers in one band is carried (${calls.observe} of 2)`);
+    ok(calls.observed.length === 2 && calls.observed.every((o) => o.arg === BOARD && o.argc === 1),
+      `B1a …and what it observed is THE BAND'S OWN BOARD, by identity, not a count of calls (${calls.observed.map((o) => (o.arg === BOARD ? 'board' : String(o.arg && o.arg.source || o.arg))).join(', ')})`);
     ok(calls.flush.length === 1,
       `B2 …and flushed EXACTLY ONCE, after the whole search — never per band, whose silence proves nothing (${calls.flush.length})`);
     ok(calls.later === 1,
@@ -175,6 +205,16 @@ const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.
       'B4 …carrying who searched and what for');
     ok(calls.recordOne.length === 0,
       'B5 …and it does NOT also call the single-board recorder — one search, one recording');
+    /* ⛔ B6 · THE SAME HOLE A3a CLOSES, ON THIS DOOR. `collector()` takes an optional
+       dependency bag, so `collector({ recordSightings: async () => ({ok:true}),
+       recordMisses: async () => ({ok:true}) })` here turns every band's sighting AND miss
+       recording into nothing IN PRODUCTION — and left all 24 checks green until the
+       pre-merge audit of 2026-09-03 tried it, because this suite's stub discarded its own
+       argument. A3a records `recordOne`'s argument count for the immediate door; this
+       records `collector`'s for the bands door. */
+    const c0 = calls.collector[0];
+    ok(c0 && c0.argc === 0,
+      `B6 the collector is asked for with NO dependencies injected — anything passed there is the recorder replaced with a no-op (${c0 ? `argc ${c0.argc}` : 'never called'})`);
   }
 
   console.log('\n── C. A REFUSED SEARCH IS STILL A SEARCH ──');
@@ -189,8 +229,8 @@ const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.
     bracket.fail = false;
     ok(res.code === 422 && res.body && res.body.error === 'lt_bracket_figures_incomplete',
       `C0 CONTROL: the bracketing really did refuse AFTER the sheets were asked (${res.code} ${res.body && res.body.error})`);
-    ok(calls.observe === 2,
-      `C0b CONTROL: …and the sheets really were asked (${calls.observe} bands observed)`);
+    ok(calls.observe === 2 && calls.observed.every((o) => o.arg === BOARD),
+      `C0b CONTROL: …and the sheets really were asked, each handing over its own board (${calls.observe} bands observed)`);
     ok(calls.flush.length === 1,
       `C1 …so the search is recorded anyway — a refusal downstream is not evidence the sheets were never asked (${calls.flush.length})`);
 
@@ -243,6 +283,59 @@ const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.
     ok(res2.body && res2.body.ok === true, `D2 CONTROL: the bands door answers too (${res2.code || 200})`);
     ok(calls.flush.length === 1,
       `⛔ D3 …and it flushes the register just the same (${calls.flush.length})`);
+
+  console.log('\n── E. THE REAL WRITERS ARE THE DEFAULTS — run, not read ──');
+  {
+    /* ⛔ WHY THIS EXISTS. B6 records `collector`'s ARGUMENT COUNT, which catches the
+       mutation it was written for (`collector({recordSightings: noop, recordMisses:
+       noop})` at the call site) and nothing else. The re-audit of 2026-09-03 moved the
+       same no-op ONE LINE INSIDE the module —
+
+           const recordSightings = deps.recordSightings || (async () => ({ ok: true }));
+
+       — so `collector()` is still called with 0 arguments, B6 stays green, and NOTHING IS
+       EVER WRITTEN IN PRODUCTION: no sighting from either door, no miss, no email to the
+       super admin. Every LT suite in the chain passed.
+
+       A call-site argument count cannot see that, because the defect is not at the call
+       site. So this loads the REAL `search-record` with the two writer modules replaced
+       in the require cache, asks for a collector with NO dependencies exactly as the
+       route does, and asserts the real writers were REACHED. */
+    const SR_ID = require.resolve(path.join(ROOT, 'src/longterm/pricing/search-record.js'));
+    const CFG_ID = require.resolve(path.join(ROOT, 'src/longterm/pricing/investor-config.js'));
+    const MISS_ID = require.resolve(path.join(ROOT, 'src/longterm/pricing/source-misses.js'));
+    const beforeSr = require.cache[SR_ID];
+    const beforeCfg = require.cache[CFG_ID];
+    const beforeMiss = require.cache[MISS_ID];
+    const hit = { sightings: 0, misses: 0, observed: null };
+    const stub = (id, exports) => { require.cache[id] = { id, filename: id, loaded: true, exports }; };
+    try {
+      delete require.cache[SR_ID];
+      stub(CFG_ID, { async recordSightings(observed) { hit.sightings += 1; hit.observed = observed; return { ok: true, wrote: true }; } });
+      stub(MISS_ID, { async record() { hit.misses += 1; return { ok: true }; } });
+      const real = require(SR_ID);
+      const c = real.collector();                    // exactly as the bands door asks for it
+      c.observe({
+        ok: true,
+        sightings: { lenderprice: { answered: true, keys: ['nqm'] }, loannex: { answered: true, keys: [] } },
+        missing: ['acra'],   // the board's own key — `observe` reads `board.missing`
+      });
+      await c.flush({ staffId: null, scenario: {} });
+      ok(hit.sightings === 1,
+        `⛔ E1 A COLLECTOR ASKED FOR WITH NO DEPENDENCIES REACHES THE REAL SIGHTINGS WRITER (${hit.sightings} call(s)) — a no-op default inside the module silences every door and no argument count can see it`);
+      ok(hit.observed && hit.observed.lenderprice && hit.observed.lenderprice.answered === true,
+        'E1a …and hands it what the board actually saw, rather than an empty shape');
+      ok(hit.misses === 1,
+        `⛔ E2 …and the real MISS writer too — that one is what emails the super admin about a sheet that did not carry a switched investor (${hit.misses} call(s))`);
+    } finally {
+      /* Put the cache back exactly as it was: a stub left behind would silently answer
+         for every later suite in the same process. */
+      delete require.cache[SR_ID];
+      if (beforeSr) require.cache[SR_ID] = beforeSr;
+      if (beforeCfg) require.cache[CFG_ID] = beforeCfg; else delete require.cache[CFG_ID];
+      if (beforeMiss) require.cache[MISS_ID] = beforeMiss; else delete require.cache[MISS_ID];
+    }
+  }
 
     /* And the fixture is held to the shape the real board produces, so a board that
        described a sheet WITHOUT saying whether it answered could not sit here unnoticed —

@@ -254,10 +254,23 @@ export function dscrTier(ratio) {
  * @returns 'unknown' when either side is unusable, 'below' when the figures have dropped into a
  *          lower band than the price was bought in, 'above' when they have risen into a higher
  *          one, and 'ok' when they are still in the same band.
+ *
+ * ⛔ BOTH SIDES ARE CUT DOWN FIRST, BECAUSE THE SERVER CUTS BOTH (the owner's rule of
+ * 2026-08-30, applied to `termsheet/snapshot.ratioProblem` on 2026-09-03). `dscrTier`
+ * rounds to NEAREST internally, so handing it a raw `priced` re-introduced exactly the
+ * split that fix closed: the browser banded 1.245 as 1.25 while the server banded it as
+ * 1.24, and the screen refused an option the term sheet would have issued. Found by the
+ * re-audit of 2026-09-03; wrong in the SAFE direction (a false warning, never a false
+ * issue) and reachable only when the ratio was typed rather than stamped by the board,
+ * since the screen writes its own figure with `toFixed(2)` — latent, and fixed anyway,
+ * because a screen and a document disagreeing about one loan is the thing this rule
+ * exists to prevent.
+ *
+ * An already-2dp figure is unchanged by the cut, so every ordinary call is byte-identical.
  */
 export function ratioVerdict(computed, priced) {
-  const c = dscrTier(computed);
-  const p = dscrTier(priced);
+  const c = dscrTier(sendAs('dscr', computed, 2));
+  const p = dscrTier(sendAs('dscr', priced, 2));
   if (c == null || p == null) return 'unknown';
   if (c === p) return 'ok';
   return c < p ? 'below' : 'above';

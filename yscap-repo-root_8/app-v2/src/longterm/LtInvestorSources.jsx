@@ -310,15 +310,23 @@ export default function LtInvestorSources() {
       const { map, reset } = mapForSave(rows, edits);
       const out = await ltApi.sourceSaveInvestors(map);
       /**
-       * ⛔ RE-READ, NEVER INSTALL THE WRITE'S OWN ANSWER. The PUT answers `describeSettings` — the
-       * FULL 43-row roster with no `availability`, no `lockedOut`, no `connections`, no
-       * `lastAnswered` and no `hidden`. Installing it made a SUCCESSFUL save visibly degrade the
-       * screen: the list jumped from the ~26 rows this screen shows to 43, the "Available on"
-       * column emptied to a dangling dash, and buttons the register had locked went live again.
-       * A save that works must leave the screen showing what the screen is for.
+       * INSTALL THE WRITE'S OWN ANSWER — which it is now safe to do, and was not.
+       *
+       * The PUT used to answer `describeSettings` alone: the FULL registry with no
+       * `availability`, no `lockedOut`, no `connections`, no `lastAnswered` and no
+       * `hidden`. Installing that made a SUCCESSFUL save visibly degrade the screen —
+       * the list jumped from the rows this screen shows to every investor the system
+       * knows, the "Available on" column emptied to a dangling dash, and buttons the
+       * register had locked went live again. So this threw the answer away and re-read.
+       *
+       * That was a workaround, not a fix. It cost a round trip, and it left a save that
+       * WORKED reporting an error whenever only the re-read failed. The door answers the
+       * read's own payload now — proven key for key by `test-lt-settings-doors-answer-pure`,
+       * which RUNS both doors rather than reading the route's source — so the answer in
+       * hand is exactly what a re-read would have fetched.
        */
+      setData(out);
       setEdits({});
-      load();
       setSaved(`Saved. ${out.saved} investor${out.saved === 1 ? '' : 's'} now carry a setting of their own; the rest use the pre-fill.`
         + (reset
           ? ` ${reset} went back to the pre-fill — any that were on this list only because of that setting have left it.`

@@ -1019,6 +1019,51 @@ section('the disclosures — the same kind as the RTL sheet, about THIS loan');
 // =============================================================================
 section('the renderer measures the way the page is actually drawn');
 // =============================================================================
+/* ═══════════════════════════════════════════════════════════════════════════
+   ⛔ THE ITEMISED LLPA LIST NEVER GOES ON A TERM SHEET — owner-directed 2026-09-04,
+   in their own words: *"We are never putting an itemized LLP list on term sheets."*
+
+   "LLPA" is the vendor's line-by-line price-adjustment breakdown — the list of reasons
+   a rate moved (credit score, loan-to-value, property type, cash-out …). LoanNEX returns
+   it on the explain call and `src/longterm/loannex/parse.js` keeps it; it is STAFF
+   knowledge, because it names the pricing levers and a client reading it can work the
+   margin back out. It is drawn on the internal breakdown panel and nowhere else.
+
+   This was already true when the owner asked, so the guard PINS the answer rather than
+   changing behaviour — the point is that it cannot drift in later on a screen nobody
+   re-checks.
+
+   ⛔ AND IT IS ASSERTED ON THE DOCUMENT, NOT ON THE SOURCE. A regex was tried first and
+   is the wrong tool twice over: `adjustments` is ALSO the name of our own compensation
+   list in `snapshot.js` (internal, never printed) and of jsPDF's kerning option, so a
+   pattern loose enough to catch a leak false-fires on both — and a pattern tight enough
+   not to (`.adjustments.map`) was PROVEN not to bite: a mutation writing
+   `(q.adjustments || []).map(...)` into the PDF sailed straight past it. So the vendor's
+   labels are put on a real quote and the CLIENT DOCUMENT is searched for them. A leak
+   spelt any way at all fails; our own internal lists are untouched because they carry
+   none of those words. */
+{
+  const LLPA_WORDS = ['FICO 720-739', 'LTV 75.01-80', 'Cash-out refinance', 'Non-owner occupied'];
+  const withVendorList = quote('The offer', 7.375, 102, {
+    /* The shape `loannex/parse.js` answers with, on the quote the sheet is built from. */
+    adjustments: LLPA_WORDS.map((label, n) => ({ label, points: -0.125 * (n + 1) })),
+    explain: { adjustments: LLPA_WORDS.map((label) => ({ label, points: -0.25 })) },
+  });
+  const PREPARED_LLPA = { borrowerName: 'Jonathan Reyes', propertyAddress: '218 Forest Avenue, Lakewood, NJ 08701' };
+  const built = snapshot.buildSnapshot({ selections: [withVendorList], plan: PLAN, prepared: PREPARED_LLPA });
+  check(built && built.ok === true,
+    `TS-LLPA CONTROL: a sheet really does build from a quote carrying the vendor list (${built && built.ok ? 'ok' : (built && built.error) || 'no'})`);
+  /* The CLIENT document — what the PDF is drawn from and what the borrower is shown. */
+  const clientText = JSON.stringify((built && built.snapshot) || {});
+  const leaked = LLPA_WORDS.filter((w) => clientText.indexOf(w) !== -1);
+  check(leaked.length === 0,
+    `⛔ TS-LLPA the client's term sheet carries NONE of the vendor's itemised price-adjustment lines — the owner's rule, asserted on the document rather than on a spelling${leaked.length ? ` — leaked: ${leaked.join(', ')}` : ''}`);
+  /* CONTROL: the words really were in the input, so the check above is about something
+     rather than passing on a document that never had them near it. */
+  check(JSON.stringify(withVendorList).indexOf(LLPA_WORDS[0]) !== -1,
+    'TS-LLPA CONTROL: …and those lines really were on the quote that document was built from');
+}
+
 {
   // THE TRAP: pdf-lib's `widthOfTextAtSize` applies the font's KERN PAIRS while
   // its `drawText` emits a plain show-text operator carrying no kern

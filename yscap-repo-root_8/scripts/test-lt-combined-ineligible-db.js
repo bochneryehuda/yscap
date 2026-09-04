@@ -186,9 +186,26 @@ const SC = { purpose: 'Purchase', value: 500000, loan: 375000, zip: '08201', fic
     ok(/askDisqualified\(\{ auto: true, handle \}\)/.test(pricer),
       'WIRE-5 …and the bounded retry re-sends the handle, never the identity string it is keyed on');
 
-    ok(/disqualifyHandle: \(res\) => \(\(res && res\.searchKey\)/.test(engines)
-      && /disqualify: \(h\) => ltApi\.dscrDisqualifications\(h\.searchKey\)/.test(engines),
-      'WIRE-6 the GENERAL engine still makes the exact call it always made — byte-identical, so that board is untouched');
+    /* ⛔ WIRE-6 SAID THE GENERAL ENGINE'S CALL WAS BYTE-IDENTICAL, AND THAT INVARIANT WAS
+       DELIBERATELY ENDED ON 2026-09-03 — it is not a stale spelling, it is a rule that no longer
+       holds and must not be restored. It was written when the two-sheet join was combined-only,
+       so "the general board is untouched" was exactly the right thing to protect. But the
+       general route had LoanNEX's transaction id in hand and dropped it, so on a board five
+       investors are quoted from LoanNEX on, that board's not-eligible list could never say why
+       any of them said no. It now asks the SAME join at its OWN path.
+
+       WHAT REPLACES IT IS THE PART THAT STILL MATTERS, and it is a real hazard rather than a
+       restatement: the general board is NOT super-admin-only and the combined door IS (every
+       `/dscr/combined/*` route answers 404 to everybody else), so routing the general board
+       through the combined door would take the ineligible list away from every ordinary officer
+       — silently, since a 404 there reads as "nothing to show". */
+    ok(/disqualify: \(h\) => ltApi\.dscrIneligible\(/.test(engines),
+      'WIRE-6 the GENERAL engine asks the joined door, so its board can say why a LoanNEX investor said no');
+    const genDecl = engines.slice(engines.indexOf("key: 'general'"), engines.indexOf("key: 'combined'"));
+    ok(!/combinedDisqualifications/.test(genDecl),
+      'WIRE-6a …at its OWN path, never the combined engine\'s — that one is super-admin-only, and a 404 there would read as "nobody was refused"');
+    ok(/res\.searchKey/.test(genDecl),
+      'WIRE-6b …and it still falls back to the older handle, so a page held across a deploy keeps its ineligible tab');
     ok(/ltApi\.combinedDisqualifications\(/.test(engines),
       'WIRE-7 the COMBINED engine asks both rate sheets through the one door');
     ok(/combinedDisqualifications: \(handle\) => ltPost\(lt\('\/dscr\/combined\/disqualify'\)/.test(api),

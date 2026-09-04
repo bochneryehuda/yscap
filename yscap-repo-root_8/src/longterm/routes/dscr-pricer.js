@@ -18,6 +18,8 @@ const lp = require('../lenderprice/client');
 // never filters, narrows or re-orders anything — the display overlay lives on
 // the screen, and the search always asks for everything.
 const investorPrograms = require('../lenderprice/investor-programs');
+const nearTier = require('../pricing/near-tier');
+const ineligibility = require('../pricing/ineligibility');
 const generalBoard = require('../pricing/general-board');
 const searchRecord = require('../pricing/search-record');
 /* THE SECOND RATE SHEET. Required here so the bracket loop can hand both clients to
@@ -494,9 +496,17 @@ async function price(req, res) {
        differently. Best-effort by construction: it swallows its own failures, and the board has
        already been built by the time it runs — and it runs OFF THE RESPONSE PATH, because on the
        first miss of a day the recording sends an email and this is the door an officer waits on. */
+    /* ⛔ AND IT SAYS WHETHER IT IS THE WHOLE SEARCH. On the General Pricing Engine this
+       press also fires the band door, which asks the SAME scenario across every band —
+       so filing this board's misses here would email the super admin about an investor
+       the same press is about to prove the sheet carries, and would count one press as
+       two searches. `bandsFollow` is the screen's own honest answer to "am I about to
+       run the bands?"; anything else (a saved-scenario re-run, an older bundle, another
+       caller) leaves it unset and this door records in full, exactly as before. */
     searchRecord.later(() => searchRecord.recordOne(board, {
       staffId: (req.actor && req.actor.id) || null,
       scenario: sc,
+      partOfLargerSearch: searchRecord.partOfLargerSearchFrom(body),
     }));
 
     const effectiveFull = effectiveOf(board.request); // requested-vs-effective transparency
@@ -524,6 +534,50 @@ async function price(req, res) {
       cashoutAmount: cashoutNote(sc), dscrClamped: chk.dscrClamped || null,
       request: board.request, searchKey: board.searchKey,
       disqualifyStatus: 'computing', provenance: board.provenance || null, recovered: !!board.recovered,
+      /**
+       * ⛔ WHY AN INVESTOR IS NOT ON THIS BOARD — computed on every search since the board
+       * became two-source, and thrown away until now. `applyRouting` builds all three, the
+       * COMBINED engine has returned them since it shipped, and this door dropped them, so
+       * two boards built by ONE function answered differently about the same search.
+       *
+       * `hidden[]` names each removal with its reason and its CLIENT-SAFE name (never the
+       * vendor's spelling); `completeness` says vendor-neutrally whether both rate sheets
+       * answered, so a short board is never silent; `settings` says how many routes applied
+       * and what could not be read.
+       */
+      hidden: board.hidden || [],
+      completeness: board.completeness || null,
+      settings: board.settings || null,
+      /* The hand-added investors this board was priced against, and what could not be read
+         of them — so a shorter roster than somebody configured can say so. */
+      customInvestors: board.customInvestors || null,
+      /**
+       * THE HANDLE FOR "WHY DID EVERY OTHER INVESTOR SAY NO" — both rate sheets.
+       *
+       * The general engine's own `/disqualify` door is Lender Price only and takes a
+       * SCENARIO, so a LoanNEX refusal could never reach the not-eligible list even though
+       * this very search already holds the tree id. Named for the MECHANISM, never the
+       * vendor — one sheet computes its list asynchronously and is polled, the other answers
+       * a whole tree at once — and the PORTAL is deliberately absent: the browser already
+       * sent it, so it hands its own copy back rather than being told a hostname.
+       */
+      ineligibility: {
+        pollKey: board.searchKey || null,
+        treeId: (board.nx && board.nx.transactionId) || null,
+      },
+      /**
+       * "YOU ARE ALMOST AT A BETTER TIER" — computed from the scenario the sheets were
+       * actually asked about plus the grid cells THIS board carries, so it can name the
+       * investor's real band rather than the standing steps. Never throws and never gates:
+       * a hint beside a board must not be able to cost the board.
+       */
+      nearTier: nearTier.nearTier({
+        value: sc.value,
+        loan: sc.loan,
+        ltvPct: sc.ltv != null ? (sc.ltv > 1 ? sc.ltv : sc.ltv * 100) : null,
+        dscr: sc.dscr,
+        lines: board.cells || [],
+      }),
     };
     if (board.rawSummary) out.rawSummary = board.rawSummary; // only when body.debug asked for it
     return res.json(out);
@@ -655,6 +709,54 @@ async function disqualify(req, res) {
   const shaped = shapeDisqualified({ ...pdFull, lenders: investorPrograms.decorateDisqualifiedLenders(pdFull.lenders) }, { debug: body.debug, rawSummary: body.debug ? lp.summarizeRaw(r.disqualified) : null, ...pageOptsOf(req) });
   const out = { ok: true, ready: r.ready, polls: r.polls, message: r.message || null, qualified, ...shaped };
   res.json(out);
+}
+
+/**
+ * WHY EVERY OTHER INVESTOR SAID NO — BOTH RATE SHEETS, ONE LIST (owner's rule for this
+ * engine: "it should sound like one system").
+ *
+ * ⛔ THE DEFECT THIS CLOSES. This engine's only ineligibility door is `POST /disqualify`,
+ * which takes a SCENARIO and asks LENDER PRICE alone — so on a board where an investor is
+ * routed to LoanNEX, that sheet's refusals could never reach the not-eligible list, even
+ * though the price answer already held the tree id and simply dropped it. An officer read
+ * a list that was silently half a list.
+ *
+ * ⛔ AND IT IS THE COMBINED ENGINE'S OWN BEHAVIOUR, not a second copy of it. The joining
+ * rule, what `ready` means, and what happens when one half fails all live in
+ * `pricing/ineligibility.js`; both doors call it, so the two screens cannot disagree about
+ * one refusal.
+ *
+ * The old scenario-based door is UNTOUCHED — it re-prices and is the saved-scenario flow.
+ */
+/**
+ * POST /ineligible — WHY EACH INVESTOR SAID NO, ACROSS BOTH RATE SHEETS.
+ *
+ * The JOIN is `pricing/ineligibility.collect`, the one definition both engines call, so the two
+ * boards can never explain one refusal two ways. What is this door's own is the SHAPING:
+ *
+ * ⛔ THIS BOARD'S LIST HAS ALWAYS BEEN BOUNDED, AND IT STAYS BOUNDED. `GET /disqualifications`
+ * runs every answer through `shapeDisqualified`, which caps lenders at LENDER_PAGE_MAX and each
+ * lender's reasons at ITEM_PAGE_MAX and reports `truncated` + a cursor rather than trimming in
+ * silence. Handing the joined result back raw would have quietly removed that ceiling from the
+ * general board on the very change that makes the list LONGER — two sheets' refusals instead of
+ * one. The combined door does not shape because it never did; a bound is a property of the DOOR,
+ * not of the join, which is why it lives here and not in the shared module.
+ */
+async function ineligible(req, res) {
+  const b = req.body || {};
+  if (!b.pollKey && !b.treeId) return res.status(400).json(ineligibility.NO_HANDLE);
+  const joined = await ineligibility.collect(
+    { pollKey: b.pollKey, treeId: b.treeId, portal: b.portal, reveal: b.revealSource === true },
+    { lp, nex, programs: investorPrograms },
+  );
+  const { disqualified, ...rest } = joined;
+  return res.json({
+    ...rest,
+    ...shapeDisqualified(
+      { ...disqualified, ready: joined.ready },
+      { debug: b.debug, ...pageOptsOf(req) },
+    ),
+  });
 }
 
 // POST /selftest — run the fixed battery; returns one row per scenario. Paced, gentle on the login.
@@ -804,9 +906,12 @@ function makeRouter() {
   router.get('/disqualifications/:searchKey', (req, res) => disqualifications(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualifications_error' })));
   router.post('/disqualifications', (req, res) => disqualifications(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualifications_error' })));
   router.post('/disqualify', (req, res) => disqualify(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualify_error' })));
+  /* THE HANDLE-BASED DOOR — both rate sheets, off the `ineligibility` handles the price
+     answer returns. Its own path so the scenario-based door above keeps working unchanged. */
+  router.post('/ineligible', (req, res) => ineligible(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_ineligible_error' })));
   router.post('/selftest', (req, res) => selftest(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_selftest_error' })));
   return router;
 }
 
-module.exports = { makeRouter, handlers: { health, loginCheck, price, priceBrackets, disqualify, disqualifications, selftest, zipLookup, investorsRoster }, BATTERY, SUPPORTED_FIELDS, META_FIELDS,
+module.exports = { makeRouter, handlers: { health, loginCheck, price, priceBrackets, disqualify, disqualifications, ineligible, selftest, zipLookup, investorsRoster }, BATTERY, SUPPORTED_FIELDS, META_FIELDS,
   _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf } };

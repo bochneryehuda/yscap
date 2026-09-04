@@ -87,8 +87,14 @@ function readCells(lines) {
   for (const l of Array.isArray(lines) ? lines : []) {
     const text = [l && l.detail, l && l.label].filter((x) => typeof x === 'string').join(' ; ');
     if (!text) continue;
-    // FIELD : lo% - hi%    (a closed band)
-    const range = /\b(C?LTV|DSCR)\s*:\s*(\d+(?:\.\d+)?)\s*%?\s*-\s*(\d+(?:\.\d+)?)\s*%?/gi;
+    /* FIELD lo% - hi%   (a closed band)
+       ⛔ THE COLON IS OPTIONAL, and that is a CORRECTION rather than a loosening. A Lender
+       Price cell writes its band with no colon at all — `flattenAdjustments` produces
+       `{group: 'DSCR', reason: 'DSCR 1.20 - 1.24'}` — so requiring one meant this parser
+       could not read the ONE sheet that publishes its itemisation at price time, and every
+       flag fell back to the standing steps saying "no band was published on this quote".
+       It cannot over-match: the field name is still required and so is a real `lo - hi`. */
+    const range = /\b(C?LTV|DSCR)\s*:?\s*(\d+(?:\.\d+)?)\s*%?\s*-\s*(\d+(?:\.\d+)?)\s*%?/gi;
     let m;
     while ((m = range.exec(text)) !== null) {
       const key = m[1].toLowerCase();
@@ -96,8 +102,8 @@ function readCells(lines) {
       if (lo == null || hi == null || !(hi >= lo)) continue;
       if (out[key]) out[key].push({ lo, hi, text: m[0] });
     }
-    // FIELD : >= x   /   FIELD : <= x   (an open threshold)
-    const thr = /\b(C?LTV|DSCR)\s*:\s*(>=|<=|>|<)\s*(\d+(?:\.\d+)?)\s*%?/gi;
+    // FIELD >= x   /   FIELD <= x   (an open threshold) — colon optional, same reason
+    const thr = /\b(C?LTV|DSCR)\s*:?\s*(>=|<=|>|<)\s*(\d+(?:\.\d+)?)\s*%?/gi;
     while ((m = thr.exec(text)) !== null) {
       const key = m[1].toLowerCase();
       const v = num(m[3]);
@@ -237,7 +243,42 @@ function nearTier(input) {
   }
 }
 
+/**
+ * EVERY GRID CELL A BOARD ALREADY CARRIES — the input `nearTier` reads its real bands from.
+ *
+ * ⛔ IT LIVES HERE BECAUSE IT IS THIS MODULE'S OWN INPUT, and it was a private helper in
+ * `routes/combined-pricer.js` while the GENERAL engine needed the same thing. A second copy
+ * of "which cells does a board carry" is how one engine's hint names an investor's real tier
+ * and the other's falls back to the standing steps, on the same board.
+ *
+ * NEVER THROWS. A hint beside a board is never worth the board.
+ */
+function cellsOnBoard(board) {
+  const out = [];
+  try {
+    for (const p of (board && board.programs) || []) {
+      /* ⛔ BOTH SHAPES. A priced row is `options` on a Lender Price board and `rungs` on a
+         LoanNEX one, and this read `rungs` alone — so on a Lender Price board, which is the
+         ONE board that carries its itemisation at price time, it found nothing. See the
+         header above: that is the whole reason it was returning an empty list. */
+      const rows = (p && (p.options || p.rungs)) || [];
+      for (const r of rows) {
+        for (const a of (r && a_of(r)) || []) {
+          if (!a || typeof a !== 'object') continue;
+          /* `reason` is what a Lender Price cell calls its own label (`flattenAdjustments`
+             writes `{group, reason, value}`); `label`/`name` cover the other shapes. */
+          out.push({ label: a.label || a.reason || a.name || null, detail: a.detail || a.description || a.group || null });
+        }
+      }
+    }
+  } catch (_) { /* a hint is never worth a board */ }
+  return out;
+}
+/** The itemised cells on one priced row, whichever key that row carries them under. */
+function a_of(r) { return r.adjustments || r.rateAdjustments || null; }
+
 module.exports = {
+  cellsOnBoard,
   nearTier, STATED_LTV_STEP, STATED_DSCR_TIERS, LTV_WINDOW_PP, DSCR_WINDOW,
   _internals: { readCells, sheetBandFor, loanForTier, ltvNearTier, dscrNearTier },
 };

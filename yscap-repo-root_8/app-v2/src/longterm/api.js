@@ -608,6 +608,13 @@ export const ltApi = {
   vorSend: (loanId, body) => ltPost(lt(`/vor/loans/${encodeURIComponent(loanId)}/send`), body),
   vorManualReturn: (loanId, body) => ltPost(lt(`/vor/loans/${encodeURIComponent(loanId)}/manual-return`), body),
 
+  // WHY EACH INVESTOR SAID NO, on the GENERAL board, across BOTH rate sheets — the same join the
+  // combined board has always used, at this board's own path. A POST because the handle is a pair
+  // (`pollKey` and/or `treeId`) rather than one id, and because either half may be absent: a
+  // scenario LoanNEX never answered has no tree to ask about, and the door reports that half as
+  // simply not asked rather than as a failure.
+  dscrIneligible: (handle) => ltPost(lt('/dscr/ineligible'), handle || {}),
+
   dscrDisqualifications: (searchKey, params) => {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') q.set(k, String(v));

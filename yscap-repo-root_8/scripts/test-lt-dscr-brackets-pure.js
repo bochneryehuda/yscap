@@ -163,7 +163,12 @@ section('B. the ratio at a rate — measured, monotone, and the owner\'s own cas
 // =============================================================================
 {
   const r = (rate) => boardMod.ratioAtRate(F, rate);
-  ok(r(6.5) === 1.23 && r(8.5) === 1.05 && r(11.125) === 0.87,
+  /* ⛔ RE-POINTED, NOT LOOSENED, by the owner-authorised cut-down of 2026-09-03
+     ("Round it down, same as everywhere else"). 6.5% used to read 1.23 because the
+     ratio was ROUNDED TO NEAREST; its true figure is 1.2299…, so the band it has
+     actually earned is 1.22. The other two are unmoved — the change only ever bites
+     where the third decimal was lifting a loan into a band above its own. */
+  ok(r(6.5) === 1.22 && r(8.5) === 1.05 && r(11.125) === 0.87,
     `three rates give three ratios (${r(6.5)}, ${r(8.5)}, ${r(11.125)})`);
   // ⛔ THE PROPERTY THE WHOLE FEATURE RESTS ON. If the ratio did not fall as the
   // rate rose, a bracket would not be a contiguous run of rates and grouping by
@@ -567,7 +572,12 @@ async function main() {
     const rAmort = boardMod.ratioAtRate(F, 7.5, null);
     const rIO = boardMod.ratioAtRate(Fio, 7.5, null);
     const ioPayment = Math.round((LOAN * (7.5 / 100) / 12) * 100) / 100;
-    const expectIO = Math.round((RENT / (Math.round((ioPayment + TAX + INS) * 100) / 100)) * 100) / 100;
+    /* ⛔ CUT with this test's OWN arithmetic, never by calling the production rule —
+       an expectation that asked `sendAs` would agree with whatever `sendAs` did and
+       prove nothing. A plain floor is a second, independent implementation of "cut
+       down to two decimals"; on this fixture (1.2371…) it is nowhere near a float
+       boundary, so the two can only disagree if the production rule stops cutting. */
+    const expectIO = Math.floor((RENT / (Math.round((ioPayment + TAX + INS) * 100) / 100)) * 100) / 100;
     ok(rIO === expectIO,
       `⛔ vendor silent + interest-only: the fallback uses the interest-only payment (loan × rate ÷ 12 = ${ioPayment}) → ${rIO}`);
     ok(rIO > rAmort,
@@ -584,7 +594,510 @@ async function main() {
     const fn = /function ratioAtRate\([\s\S]*?\n\}/.exec(src);
     ok(!!fn && !/TYPICAL_RATE_PCT|dscrCalc|seedRatio/.test(fn[0]),
       '⛔ `ratioAtRate` reads the vendor payment or recomputes from THIS rate — never the seed coupon or the calculator');
-    ok(!/require\(.*dscrCalc/.test(src), '…and the board module imports no browser calculator at all');
+    /* ⛔ THROUGH THE SHARED STRIPPER, like every other "must not appear" rule in this file.
+       This one read the RAW source, which can only ever fail wrongly (a comment naming the
+       calculator would trip it) and never pass wrongly — safe, but the odd one out, and the
+       pre-merge audit of 2026-09-03 flagged it as fragile. */
+    const { stripComments: stripSrc } = require('./lib/strip-comments');
+    ok(!/require\(.*dscrCalc/.test(stripSrc(src)), '…and the board module imports no browser calculator at all');
+
+  }
+
+  // =============================================================================
+  section('N. the band is searched at a ratio the loan has EARNED — cut down, never rounded up');
+  // =============================================================================
+  {
+    /* ⛔ THE OWNER-AUTHORISED CHANGE OF 2026-09-03. Asked what to do about the bands
+       still rounding the DSCR to nearest, the owner answered: *"Round it down, same as
+       everywhere else."* That is the standing rule of 2026-08-30 finally reaching the one
+       surface it had been left off. THIS MOVES PRICES, so it is measured rather than
+       asserted, and measured against a baseline built by NEUTRALISING this file's own
+       changed line — never by reading git, which proves inertness only until the change
+       is committed and then compares the engine to itself. */
+    /* ⛔ ONE DEFINITION OF WHAT "BEFORE" MEANS, shared with the battery the board's own
+       header cites (`scripts/lib/dscr-round-down-battery.js`). It used to be written out
+       here and would have been written out a second time by any re-measurement — two
+       copies of a baseline rule is two answers to "what was the engine before", and the
+       one that drifts is the one a safety proof rests on. The GUARDS stay here, on the
+       pieces it hands back, so nothing about what is asserted moved. */
+    const battery = require('./lib/dscr-round-down-battery');
+    /* The battery names no product path of its own — this suite does, because it is the
+       one file allowed to reach into `src/longterm/**` (CLAUDE.md rule 4). */
+    const bbPath = path.join(__dirname, '..', 'src', 'longterm', 'pricing', 'bracket-board.js');
+    const bbSrc = fs.readFileSync(bbPath, 'utf8');
+    const base = battery.baselineEngine(bbPath);
+    ok(base.found.length === 2,
+      `N0 CONTROL: the board settles a DSCR through the one door in exactly two places (${base.found.length}) — the ratio and the search ratio`);
+    ok(base.ratioLever.length === 1,
+      `N0a …one of them inside \`ratioAtRate\`, which is the one this baseline neutralises (${base.ratioLever.length})`);
+    ok(base.stripped,
+      'N0b …and the baseline genuinely has it replaced by the OLD round-to-nearest');
+    const BEFORE = base.BEFORE;
+    ok(typeof BEFORE.ratioAtRate === 'function' && typeof BEFORE.sendRatioFor === 'function',
+      'N0c …and the baseline engine really loaded');
+
+    /* The owner's own shape: a deal whose true ratio sits just under a band edge. */
+    const EDGE = boardMod.readFigures({ rentMonthly: 2490, taxMonthly: 0, insuranceMonthly: 0, hoaMonthly: 0, loanAmount: 300000, termYears: 30, interestOnly: true });
+    // interest-only at 8% on 300,000 = 2,000/month exactly, so rent/PITIA = 1.245 on the nose.
+    const edgeAfter = boardMod.ratioAtRate(EDGE, 8);
+    const edgeBefore = BEFORE.ratioAtRate(EDGE, 8);
+    ok(edgeBefore === 1.25 && edgeAfter === 1.24,
+      `⛔ N1 THE ONE THAT MATTERS: a 1.245 deal used to be searched at 1.25 and is now searched at 1.24 (${edgeBefore} → ${edgeAfter})`);
+    ok(tiers.dscrTier(edgeAfter) < tiers.dscrTier(edgeBefore),
+      `N1b …which is the band BELOW the one it was being priced in (${tiers.dscrTier(edgeAfter)} vs ${tiers.dscrTier(edgeBefore)}) — the whole point of the rule`);
+
+    /* THE SWEEP. Real-shaped figures, every eighth from 5.25% to 11.5%. */
+    const rents = [1800, 2400, 2490, 3000, 3850, 5000];
+    const loansA = [180000, 300000, 420000, 640000];
+    const taxesA = [180, 450, 800];
+    const insA = [65, 165];
+    const hoasA = [0, 340];
+    const ratesA = [];
+    for (let r = 5.25; r <= 11.5 + 1e-9; r += 0.125) ratesA.push(Math.round(r * 1000) / 1000);
+    let combos = 0; let wentUp = 0; let moved = 0; let bandWorse = 0; let bandBetter = 0;
+    let nullsBefore = 0; let nullsAfter = 0;
+    const deals = [];
+    for (const rent of rents) for (const loan of loansA) for (const tax of taxesA) for (const i of insA) for (const hoa of hoasA) {
+      const fg = boardMod.readFigures({ rentMonthly: rent, taxMonthly: tax, insuranceMonthly: i, hoaMonthly: hoa, loanAmount: loan, termYears: 30 });
+      if (!fg) continue;
+      deals.push(fg);
+      for (const rate of ratesA) {
+        const b = BEFORE.ratioAtRate(fg, rate);
+        const a = boardMod.ratioAtRate(fg, rate);
+        combos += 1;
+        if (b == null) nullsBefore += 1;
+        if (a == null) nullsAfter += 1;
+        if (b == null || a == null) continue;
+        if (a > b) wentUp += 1;
+        if (a !== b) moved += 1;
+        const tb = tiers.dscrTier(b); const ta = tiers.dscrTier(a);
+        if (ta !== tb) { if (ta < tb) bandWorse += 1; else bandBetter += 1; }
+      }
+    }
+    ok(combos > 1000, `N2 CONTROL: the sweep really ran (${combos} deal/rate combinations over ${deals.length} deals)`);
+    /* `moved > 0` is part of THIS assertion, not only of N4: without it a baseline that
+       failed to build reads as "nothing went up" and the safety property passes having
+       compared an engine to itself. */
+    ok(moved > 0 && wentUp === 0 && bandBetter === 0,
+      `⛔ N3 THE SAFETY PROPERTY: the two engines genuinely differ (${moved} ratios moved) and not one ratio went UP, not one band improved (${wentUp} up, ${bandBetter} better)`);
+    ok(moved > 0 && bandWorse > 0,
+      `N4 …and it is not a no-op either: ${moved} ratios moved a cent (${((moved / combos) * 100).toFixed(1)}%) and ${bandWorse} landed in the band the loan has actually earned (${((bandWorse / combos) * 100).toFixed(2)}%)`);
+    ok(nullsBefore === nullsAfter,
+      `N5 …and nothing became unworkable — the same ${nullsAfter} combinations answer null either way`);
+
+    /* ⛔ AND NO BAND GOES UNPRICED. `sendRatioFor` yields null when the ratio it picks
+       does not land in the band it is for, and that band is then not searched at all —
+       so a change that pushed a ratio across an edge could silently take a whole band
+       off the board. This is the assertion that would have caught it. */
+    let lost = 0; let gained = 0; let both = 0;
+    const rateRows = ratesA.map((r) => ({ rate: r }));
+    for (const fg of deals) {
+      for (const row of tiers.DSCR_TIERS) {
+        const t = row.tier != null ? row.tier : row;
+        const b = BEFORE.sendRatioFor(t, fg, rateRows);
+        const a = boardMod.sendRatioFor(t, fg, rateRows);
+        if (b != null && a == null) lost += 1;
+        else if (b == null && a != null) gained += 1;
+        else if (b != null) both += 1;
+      }
+    }
+    ok(both > 0, `N6 CONTROL: bands really were priced on both engines (${both})`);
+    ok(lost === 0,
+      `⛔ N7 …and NOT ONE band stopped being priceable (${lost} lost, ${gained} newly reachable)`);
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       N11..N14 · THE RULE ITSELF, POINTWISE — because N3..N7 are DIRECTIONAL.
+
+       ⛔ THE PRE-MERGE AUDIT OF 2026-09-03 DEFEATED EVERY ASSERTION ABOVE WITH
+       THREE MUTATIONS THAT RE-ARM ROUND-TO-NEAREST ON PART OF THE INPUT SPACE,
+       each leaving all eight suites GREEN with a green control:
+
+         M3  `if (quoted != null && quoted > 0) return Math.round((f.rentMonthly / pitia) * 100) / 100;`
+             — THE LIVE PRODUCTION PATH. `vendorMonthlyPi` is set on every real
+             Lender Price option (`client.js` reads `monthlyPI ?? total`), and this
+             module's own header says the vendor's quoted payment WINS when it
+             quoted one. So this undoes the owner's authorised change on
+             essentially every real board.
+         M2  `if (__r >= 1.25) return Math.round(__r * 100) / 100;`
+             — the best-priced bands: rent 2,990 / PITIA 2,000 = 1.495 goes to the
+             ≥1.50 top band instead of the one below it. The owner's reported
+             defect, at the top of the ladder.
+         M4  `if (f.loanAmount > 400000) return Math.round(...)`.
+
+       WHY THEY SURVIVED: N3/N4/N5/N7 assert a DIRECTION (`after ≤ before`, no band
+       improved, none lost), which any PARTIAL re-arming of round-to-nearest
+       satisfies — a ratio that is rounded to nearest never goes UP relative to a
+       baseline that also rounds to nearest, it is the SAME. The only assertion that
+       pins the RULE was N1, a single point, at 8%, interest-only, with NO vendor
+       payment — so the whole vendor path was unasserted. Confirmed by the audit:
+       under the `+0.005` mutation N1/N1b failed while N3..N10 all passed on an
+       engine that rounds to nearest everywhere.
+
+       SO THE RULE IS PINNED AS AN EQUALITY, AT EVERY POINT, AGAINST AN ORACLE.
+       The oracle takes the payment from `termsheet/overlay.monthlyPI` — a DIFFERENT
+       module, which a mutation of `ratioAtRate` cannot reach, and the one definition
+       of what a payment is on this product — and does its OWN cutting-down with its
+       OWN arithmetic. It deliberately does NOT ask `tier-rounding` the question the
+       module under test asks it: a helper that delegated would MOVE WITH the rule
+       and every assertion here would pass vacuously the day somebody flipped it.
+
+       The PITIA line restates production's shape on purpose. If production ever
+       changes how a PITIA is settled, these fail — correctly: that would move every
+       searched ratio on every board and is a decision, not a tidy-up. */
+    const { monthlyPI: oraclePI } = require('../src/longterm/termsheet/overlay');
+    /** Cut to 2dp, never up — this suite's OWN arithmetic, never `tier-rounding`'s. */
+    const cutHere = (n) => {
+      if (!Number.isFinite(n)) return null;
+      const x = n * 100;
+      const whole = Math.round(x);
+      /* The same float-slack shape production uses: a value within noise of a whole
+         number IS that whole number, so a typed 1.15 (×100 = 114.99999999999999) is
+         not cut to 1.14. Restated rather than imported, for the reason above. */
+      const eps = Math.max(1e-9, Math.abs(x) * 1e-12);
+      return (Math.abs(x - whole) < eps ? whole : Math.floor(x)) / 100;
+    };
+    const oracleRatio = (fg, rate, vendorPi) => {
+      const pi = (vendorPi != null && vendorPi > 0)
+        ? vendorPi
+        : oraclePI({ loanAmount: fg.loanAmount, ratePct: rate, termYears: fg.termYears, interestOnly: fg.interestOnly });
+      if (!Number.isFinite(pi) || pi <= 0) return null;
+      const pitia = Math.round((pi + fg.taxMonthly + fg.insuranceMonthly + fg.hoaMonthly) * 100) / 100;
+      if (!(pitia > 0)) return null;
+      if (!Number.isFinite(fg.rentMonthly)) return null;
+      return cutHere(fg.rentMonthly / pitia);
+    };
+
+    let pointsPlain = 0; let mismatchPlain = 0; let firstPlain = null;
+    let cutSomething = 0;
+    for (const fg of deals) {
+      for (const rate of ratesA) {
+        const got = boardMod.ratioAtRate(fg, rate);
+        const want = oracleRatio(fg, rate, null);
+        pointsPlain += 1;
+        if (got !== want) { mismatchPlain += 1; if (!firstPlain) firstPlain = { rate, got, want, loan: fg.loanAmount, rent: fg.rentMonthly }; }
+        /* How many of these the rule ACTUALLY BITES on — without this the equality
+           could hold over a battery where nothing was ever cut, and prove nothing. */
+        if (want != null && want !== Math.round((fg.rentMonthly / (Math.round((oraclePI({ loanAmount: fg.loanAmount, ratePct: rate, termYears: fg.termYears, interestOnly: fg.interestOnly }) + fg.taxMonthly + fg.insuranceMonthly + fg.hoaMonthly) * 100) / 100)) * 100) / 100) cutSomething += 1;
+      }
+    }
+    ok(cutSomething > 100,
+      `N11 CONTROL: the rule genuinely bites over this battery (${cutSomething} of ${pointsPlain} points are cut below where round-to-nearest would put them)`);
+    ok(mismatchPlain === 0,
+      `⛔ N11a THE RULE, POINTWISE: every one of ${pointsPlain} ratios is EXACTLY the cut-down value${firstPlain ? ` — first mismatch ${JSON.stringify(firstPlain)}` : ''}`);
+
+    /* ⛔ N12 · THE VENDOR'S OWN PAYMENT — the path the audit's M3 mutation lives on,
+       and the one no assertion above passes at all. Every real Lender Price option
+       carries a quoted monthly payment, so this is not an edge case: it is what
+       essentially every board on the live system takes. */
+    const vendorPis = [1450.5, 1687.33, 1900, 2000, 2100, 2333.67, 2750.25, 3100.4];
+    let pointsVendor = 0; let mismatchVendor = 0; let firstVendor = null; let vendorCut = 0;
+    for (const fg of deals) {
+      for (const vp of vendorPis) {
+        /* The RATE is passed too and is deliberately ignored by production when a
+           vendor payment is present — asserted below, because a mutation that
+           started using it would change every searched ratio silently. */
+        const got = boardMod.ratioAtRate(fg, 7.5, vp);
+        const want = oracleRatio(fg, 7.5, vp);
+        pointsVendor += 1;
+        if (got !== want) { mismatchVendor += 1; if (!firstVendor) firstVendor = { vp, got, want, rent: fg.rentMonthly }; }
+        const nearest = want == null ? null : Math.round((fg.rentMonthly / (Math.round((vp + fg.taxMonthly + fg.insuranceMonthly + fg.hoaMonthly) * 100) / 100)) * 100) / 100;
+        if (want != null && want !== nearest) vendorCut += 1;
+      }
+    }
+    ok(vendorCut > 50,
+      `N12 CONTROL: the vendor-payment battery genuinely exercises the rule (${vendorCut} of ${pointsVendor} points are cut)`);
+    ok(mismatchVendor === 0,
+      `⛔ N12a THE VENDOR'S OWN PAYMENT IS CUT DOWN TOO — ${pointsVendor} points, every one exact${firstVendor ? ` — first mismatch ${JSON.stringify(firstVendor)}` : ''}`);
+    ok(boardMod.ratioAtRate(deals[0], 5.25, 2000) === boardMod.ratioAtRate(deals[0], 11.5, 2000),
+      'N12b …and the rate is ignored when the vendor quoted a payment — the vendor\'s figure wins, whatever coupon it came from');
+
+    /* ═══ N16 · THE INPUT SPACE, NOT A BATTERY — and an oracle that borrows nothing ═══
+       ⛔ WHY THIS EXISTS, AND WHAT IT REPLACES. The re-audit of 2026-09-03 defeated
+       N11a and N12a WITHOUT touching the rounding rule's shape at all — it simply
+       re-armed round-to-nearest on a REGION the lists above do not reach:
+
+         · `if (quoted != null && quoted > 3200) return Math.round(r * 100) / 100;`
+           `vendorPis` stops at $3,100.40. A $500,000 loan at 7.5% over 30 years pays
+           $3,496, so this is not an edge — it is essentially every jumbo board.
+           MEASURED under it: rent 5,980 / P&I 4,000 = 1.495 bought the ≥1.50 TOP band.
+         · `if (f.hoaMonthly > 0 && f.hoaMonthly !== 340) return Math.round(...)`.
+           `hoasA` is [0, 340], so every condo and PUD on the system rounded to nearest.
+
+       Both passed EVERY LT suite in the chain. A fixed list proves the rule at the points
+       somebody thought of; it says nothing about the ones they did not.
+
+       ⛔ AND THE ORACLE NO LONGER DELEGATES. N11/N12's oracle took its payment from
+       `overlay.monthlyPI` — the same function production takes it from — so a mutation
+       THERE moved both sides together and went unseen: `if (loanAmount > 500000)
+       return r2(... * 0.97)` was green across every one of them, while the bracket ratio on a
+       $750,000 loan moved 0.86 → 0.88, a BETTER band. `piHere` below is the textbook
+       annuity written out here, computed a different way from production's algebraic
+       rearrangement, so nothing production can be mutated into moves it. */
+    {
+      /** The payment, from first principles. Deliberately `P·r(1+r)ⁿ / ((1+r)ⁿ−1)`
+          where production writes `P·r / (1−(1+r)⁻ⁿ)` — the same identity by a
+          different route, so the two agreeing is evidence rather than tautology. */
+      const piHere = ({ loanAmount, ratePct, termYears, interestOnly }) => {
+        if (!Number.isFinite(loanAmount) || loanAmount <= 0) return null;
+        if (!Number.isFinite(ratePct) || ratePct < 0) return null;
+        const r = ratePct / 100 / 12;
+        const r2h = (x) => Math.round(x * 100) / 100;
+        if (interestOnly) return r2h(loanAmount * r);
+        if (!Number.isFinite(termYears) || termYears <= 0) return null;
+        const n = Math.round(termYears * 12);
+        if (n <= 0) return null;
+        if (r === 0) return r2h(loanAmount / n);
+        const g = Math.pow(1 + r, n);
+        return r2h((loanAmount * r * g) / (g - 1));
+      };
+
+      /* THE PAYMENT ITSELF, ACROSS THE WHOLE RANGE WE LEND IN — including jumbo,
+         which nothing anywhere pinned. Compared with a ONE CENT tolerance because
+         the two formulations differ in the last bits of a float, and a 3% error
+         (the mutation that got through) is thousands of times that. */
+      let piPoints = 0; let piBad = 0; let firstPi = null; let worst = 0;
+      for (const loan of [50000, 175000, 499999, 500001, 750000, 1200000, 2500000, 5000000]) {
+        for (const rate of [0, 3.125, 5.25, 6.875, 7.5, 9.99, 12.5, 15]) {
+          for (const term of [15, 20, 30, 40]) {
+            for (const io of [false, true]) {
+              const mine = piHere({ loanAmount: loan, ratePct: rate, termYears: term, interestOnly: io });
+              const prod = oraclePI({ loanAmount: loan, ratePct: rate, termYears: term, interestOnly: io });
+              piPoints += 1;
+              const d = (mine == null || prod == null) ? (mine === prod ? 0 : Infinity) : Math.abs(mine - prod);
+              if (d > worst && Number.isFinite(d)) worst = d;
+              if (!(d <= 0.011)) { piBad += 1; if (!firstPi) firstPi = { loan, rate, term, io, mine, prod }; }
+            }
+          }
+        }
+      }
+      ok(piBad === 0,
+        `⛔ N16 THE MONTHLY PAYMENT IS ITSELF PINNED, over ${piPoints} points to $5,000,000 — worst disagreement ${worst.toFixed(4)}${firstPi ? ` — first ${JSON.stringify(firstPi)}` : ''}`);
+
+      /** The ratio oracle again, this time on `piHere` — it borrows NOTHING from
+          production but the figures the deal is made of. */
+      const oracleFree = (fg, rate, vendorPi) => {
+        const pi = (vendorPi != null && vendorPi > 0)
+          ? vendorPi
+          : piHere({ loanAmount: fg.loanAmount, ratePct: rate, termYears: fg.termYears, interestOnly: fg.interestOnly });
+        if (!Number.isFinite(pi) || pi <= 0) return null;
+        const pitia = Math.round((pi + fg.taxMonthly + fg.insuranceMonthly + fg.hoaMonthly) * 100) / 100;
+        if (!(pitia > 0) || !Number.isFinite(fg.rentMonthly)) return null;
+        return cutHere(fg.rentMonthly / pitia);
+      };
+
+      /* A SEEDED WALK OF THE SPACE. Deterministic (the same numbers on every run and
+         on every machine, so a failure is reproducible), and wide enough that no
+         region of it is reachable by a rule keyed on a threshold: every figure is
+         drawn from a continuous range rather than a short list, so a mutation gated
+         on "vendor payment over X" or "HOA is not exactly Y" has nowhere to hide. */
+      let seed = 20260903;
+      const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+      const pick = (lo, hi) => lo + rnd() * (hi - lo);
+      let pts = 0; let bad = 0; let first = null; let bit = 0; let vendorPts = 0; let jumboPts = 0; let hoaPts = 0;
+      for (let i = 0; i < 40000; i += 1) {
+        const fg = boardMod.readFigures({
+          rentMonthly: Math.round(pick(400, 30000) * 100) / 100,
+          taxMonthly: Math.round(pick(0, 3000) * 100) / 100,
+          insuranceMonthly: Math.round(pick(0, 900) * 100) / 100,
+          hoaMonthly: rnd() < 0.45 ? 0 : Math.round(pick(1, 2400) * 100) / 100,
+          loanAmount: Math.round(pick(60000, 3500000)),
+          termYears: [15, 20, 30, 40][Math.floor(rnd() * 4)],
+          interestOnly: rnd() < 0.35,
+        });
+        const rate = Math.round(pick(3, 15) * 1000) / 1000;
+        /* Half the points go down the VENDOR-PAYMENT path — the live production path
+           — and its range runs to $25,000 a month, far past any list. */
+        const vp = rnd() < 0.5 ? Math.round(pick(150, 25000) * 100) / 100 : null;
+        const got = boardMod.ratioAtRate(fg, rate, vp);
+        const want = oracleFree(fg, rate, vp);
+        pts += 1;
+        if (vp != null) vendorPts += 1;
+        if (fg.loanAmount > 500000) jumboPts += 1;
+        if (fg.hoaMonthly > 0) hoaPts += 1;
+        if (got !== want) { bad += 1; if (!first) first = { rate, vp, got, want, fg }; }
+        /* The control, point by point: how often the rule actually BITES here. An
+           equality over a space where nothing is ever cut would prove nothing. */
+        if (want != null) {
+          const pi = (vp != null && vp > 0) ? vp : piHere({ loanAmount: fg.loanAmount, ratePct: rate, termYears: fg.termYears, interestOnly: fg.interestOnly });
+          if (Number.isFinite(pi) && pi > 0) {
+            const pitia = Math.round((pi + fg.taxMonthly + fg.insuranceMonthly + fg.hoaMonthly) * 100) / 100;
+            if (pitia > 0 && want !== Math.round((fg.rentMonthly / pitia) * 100) / 100) bit += 1;
+          }
+        }
+      }
+      ok(bit > 5000,
+        `N16a CONTROL: the rule bites across the space (${bit} of ${pts} points cut below round-to-nearest)`);
+      ok(vendorPts > 15000 && jumboPts > 5000 && hoaPts > 15000,
+        `N16b CONTROL: the walk really covers the regions the fixed lists miss (${vendorPts} vendor-payment, ${jumboPts} over $500k, ${hoaPts} with an HOA)`);
+      ok(bad === 0,
+        `⛔ N16c THE RULE HOLDS OVER THE SPACE: ${pts} points, every one exactly the cut-down value${first ? ` — first mismatch ${JSON.stringify(first)}` : ''}`);
+    }
+
+    /* ⛔ N13 · THE TOP OF THE LADDER — the audit's M2 shape, stated as a value.
+       rent 2,990 against a PITIA of exactly 2,000 is 1.495: cut down it is 1.49 and
+       sits BELOW the ≥1.50 top band; rounded to nearest it is 1.50 and buys the best
+       band on the sheet. This is the owner's own reported defect at its most
+       expensive point, so it is pinned as a number rather than as a direction. */
+    const TOP = boardMod.readFigures({ rentMonthly: 2990, taxMonthly: 0, insuranceMonthly: 0, hoaMonthly: 0, loanAmount: 300000, termYears: 30, interestOnly: true });
+    const topRatio = boardMod.ratioAtRate(TOP, 8);
+    ok(topRatio === 1.49,
+      `⛔ N13 a 1.495 deal is searched at 1.49, never 1.50 (${topRatio})`);
+    ok(tiers.dscrTier(topRatio) < tiers.dscrTier(1.5),
+      `N13b …which is the band below the top one (${tiers.dscrTier(topRatio)} vs ${tiers.dscrTier(1.5)})`);
+    ok(boardMod.ratioAtRate(TOP, 99, 2000) === 1.49,
+      'N13c …and the same deal reached through the VENDOR\'s quoted payment is cut identically');
+
+    /* ⛔ N14 · A LARGE LOAN — the audit's M4 shape. The rule is about the RATIO, so
+       nothing about the size of the loan may change it. */
+    const BIG = boardMod.readFigures({ rentMonthly: 9960, taxMonthly: 0, insuranceMonthly: 0, hoaMonthly: 0, loanAmount: 1200000, termYears: 30, interestOnly: true });
+    const bigRatio = boardMod.ratioAtRate(BIG, 8);
+    ok(bigRatio === 1.24,
+      `⛔ N14 a $1.2M loan at the same 1.245 ratio is cut down exactly as a small one is (${bigRatio})`);
+
+    /* ⛔ N15 · WHAT IS ACTUALLY ONE-WAY ABOUT THE SEARCHED RATIO.
+       The header claimed the searched ratio "moves in 5,176 — always downward."
+       The pre-merge audit of 2026-09-03 measured that false, and it is: over the
+       header's own 69,696-pair battery a quarter of the moves go UP. N17 below
+       runs that full battery and prints the exact split; this section runs the
+       smaller sweep and asserts the same properties on it.
+
+       THE MECHANISM is why that is the SAFE direction and not a defect.
+       `sendRatioFor` asks for the LOWEST ratio any rate in the band achieves;
+       cutting each rate's ratio down can push the rate that WAS that minimum out
+       of the band, leaving a HIGHER minimum. So the vendor is asked for a
+       STRONGER DSCR than before, which can only ever fetch a worse price.
+
+       So the DIRECTION is not asserted — asserting it would pin a claim that is
+       false. What is asserted is what the safety actually rests on, and the split
+       is REPORTED in the message so a future reader gets the measured fact rather
+       than a tidy story. */
+    let sPairs = 0; let sLost = 0; let sGained = 0; let sUp = 0; let sDown = 0; let sOutside = 0;
+    let firstOutside = null;
+    for (const fg of deals) {
+      for (const row of tiers.DSCR_TIERS) {
+        const t = row.tier != null ? row.tier : row;
+        const b = BEFORE.sendRatioFor(t, fg, rateRows);
+        const a = boardMod.sendRatioFor(t, fg, rateRows);
+        sPairs += 1;
+        if (b != null && a == null) sLost += 1;
+        else if (b == null && a != null) sGained += 1;
+        if (b == null || a == null) continue;
+        if (a > b) sUp += 1; else if (a < b) sDown += 1;
+        /* ⛔ THE CONTRACT `sendRatioFor` STATES: an unplaceable ratio yields null
+           rather than searching the wrong band. A ratio that came back at all must
+           therefore sit in the band it was asked for. */
+        if (tiers.dscrTier(a) !== t) { sOutside += 1; if (!firstOutside) firstOutside = { tier: t, ratio: a }; }
+      }
+    }
+    /* The battery HERE is the smaller one (288 deals × the 11-band ladder); the
+       header's 69,696-pair one is run by N17 below, off the shared axes in
+       `scripts/lib/dscr-round-down-battery.js`. Both show the same split and the
+       same four safety properties, which is the point — and neither is quoted
+       from memory any more. */
+    ok(sPairs > 1000 && (sUp + sDown) > 0,
+      `N15 CONTROL: the ladder sweep really ran (${sPairs} pairs, ${sUp + sDown} moved)`);
+    ok(sOutside === 0,
+      `⛔ N15a EVERY SEARCHED RATIO LANDS IN THE BAND IT IS FOR (${sOutside} outside${firstOutside ? ` — ${JSON.stringify(firstOutside)}` : ''}) — a ratio in a neighbouring band would search the wrong scenario`);
+    ok(sLost === 0,
+      `⛔ N15b …and NOT ONE band stopped being priceable (${sLost} lost, ${sGained} newly reachable)`);
+    ok(sUp > 0 && sDown > 0,
+      `N15c THE MEASURED SPLIT, recorded rather than claimed one-way: ${sDown} moves down and ${sUp} UP — the header said "always downward" and that was false`);
+
+    /* ⛔ N17 · THE HEADER'S OWN NUMBERS, MEASURED HERE RATHER THAN REMEMBERED.
+       `bracket-board.js` quotes counts for this change — how many ratios moved, how
+       many bands moved, how many SEARCHED ratios moved and which way. The script that
+       produced the originals was never committed, so THREE reconstructions of the
+       battery its paragraph describes produced three different sets of counts (the
+       battery module's own header records all three side by side). A number nobody can
+       re-derive is a claim, not a measurement — and this file's standing rule is that a
+       count is reported as measured or not reported at all.
+
+       So the axes now live in `scripts/lib/dscr-round-down-battery.js` as DATA and are
+       re-measured on every run of this suite. The header cites that file and this
+       assertion; `node scripts/test-lt-dscr-brackets-pure.js` is the one command that
+       reproduces the figures, and it prints them in the message below.
+
+       ⛔ THE TOTALS ARE PINNED EXACTLY, ON PURPOSE. They are the outcome of an
+       owner-authorised change to how a price is searched, so they may not drift
+       quietly: if a deliberate change moves them, re-read this message and update the
+       board's header with the numbers it prints. What the safety of the change rests on
+       is asserted separately and hard, immediately below. */
+    const M = battery.measure({ boardMod, BEFORE, tiers });
+    ok(M.deals === 6336 && M.rates === 51 && M.combos === 323136 && M.pairs === 69696,
+      `N17 CONTROL: the shared battery really ran at its declared size — ${M.deals} deals × ${M.rates} rates = ${M.combos} combinations, and ${M.pairs} deal/band pairs`);
+    /* `M.moved > 0` is PART of this assertion, not decoration — the same fold N3
+       carries one section up, for the same reason. A baseline that failed to build is
+       byte-identical to the engine, so nothing moves, and "not one ratio went up"
+       passes having compared the engine to itself. MEASURED: a mutation replacing the
+       lever with a round-UP defeats the strip, and this assertion reported 0 up and
+       0 better while the ratio was being rounded the wrong way. */
+    ok(M.moved > 0 && M.up === 0 && M.bandBetter === 0,
+      `⛔ N17a NOT ONE RATIO A RATE ACHIEVES MOVES UP, and not one band moves to a BETTER one (${M.up} up${M.firstUp ? ` — ${JSON.stringify(M.firstUp)}` : ''}, ${M.bandBetter} better, ${M.moved} moved at all) — the property the whole change rests on`);
+    /* ⛔ EVERY FIGURE THE BOARD'S HEADER QUOTES IS ASSERTED HERE, and two of them were
+       not. `gained` was measured, returned and read by NOBODY. And this line tested
+       `nullsBefore === nullsAfter` while its own message said "nothing became
+       unpriceable" — MEASURED: a lever that returns null for a third of the deal space
+       makes 107,712 nulls on BOTH sides, so the equality holds and the assertion that
+       NAMES unpriceability stayed green while a third of the battery went dark. Only
+       the pinned totals caught it. An assertion whose message claims more than its
+       condition is worse than no assertion, because it is read as cover. */
+    ok(M.lost === 0 && M.gained === 0 && M.outside === 0 && M.nullsBefore === 0 && M.nullsAfter === 0,
+      `⛔ N17b …and NOTHING IS UNPRICEABLE ON EITHER SIDE — absolutes, not a delta (the previous wording said "nothing BECAME unpriceable" while testing only that the two counts matched): ${M.lost} bands lost, ${M.gained} newly reachable, ${M.outside} searched ratios outside their own band (REPORTED, not evidence — it is 0 by construction while N18's in-band test stands)${M.firstOutside ? ` — ${JSON.stringify(M.firstOutside)}` : ''}, nulls ${M.nullsBefore} before and ${M.nullsAfter} after`);
+    ok(M.moved === 161448 && M.bandWorse === 9033,
+      `N17c THE MEASURED TOTALS — the ratio moves a cent in ${M.moved} of ${M.combos} (${(M.moved / M.combos * 100).toFixed(3)}%) and the BAND moves in ${M.bandWorse} (${(M.bandWorse / M.combos * 100).toFixed(3)}%); if that changed on purpose, put these numbers in bracket-board.js's header`);
+    ok(M.searchedMoved === 5308 && M.searchedDown === 3942 && M.searchedUp === 1366,
+      `N17d …and the SEARCHED ratio moves in ${M.searchedMoved} of ${M.pairs} pairs — ${M.searchedDown} down and ${M.searchedUp} UP (first up: ${JSON.stringify(M.firstSearchedUp)}), which is the split the header must state rather than "always downward"`);
+
+
+    /* ONE DOOR, both places this file settles a ratio. A bare round in `sendRatioFor`
+       would let the two answer differently the day either side gains a third decimal. */
+    /* Through the SHARED stripper. The two-regex idiom this file used elsewhere is a
+       SKELETON KEY: it strips block comments first, so it cannot tell a `/*` inside a line
+       comment or a string from a real one, and a "must not appear" rule PASSES over a file
+       it swallowed (main, 2026-09-03). */
+    const { stripComments } = require('./lib/strip-comments');
+    const strippedBb = stripComments(bbSrc);
+    ok(/tierRounding\.sendAs\('dscr'/.test(strippedBb) && !/Math\.round\(best \* 100\)/.test(strippedBb),
+      'N8 both places go through the one rounding door — no bare round-to-nearest is left in the board');
+    /* ⛔ N8a · AND EACH SITE IS PINNED TO THE DSCR FIELD, not just one of them. N8 above
+       is a single `.test`, satisfied by EITHER call — so the re-audit swapped the SEARCH
+       ratio's lever to `sendAs('ltv', …)`, which rounds the other way, and the whole
+       suite stayed green. It is numerically inert TODAY (`best` is already 2dp, as that
+       line's own comment says), which is exactly why no measurement can see it — and the
+       lever exists for "the day either side gains a third decimal", on which it would
+       round a borrower's DSCR UP. A guard that counts doors has to name the field at
+       every one of them. */
+    const dscrLevers = (strippedBb.match(/tierRounding\.sendAs\('[a-z]+'/g) || []);
+    ok(dscrLevers.length === 2 && dscrLevers.every((m) => m.includes("'dscr'")),
+      `N8a …and BOTH of them ask for the DSCR field, so a wrong-field lever cannot hide at the second site (${dscrLevers.join(', ') || 'none'})`);
+
+    /* ⛔ N18 · THE IN-BAND TEST IS PINNED AT THE SOURCE, because `outside` cannot pin it.
+       The header called `outside` a "contract tripwire for the day that return line
+       changes" and the re-audit of 2026-09-04 proved it is not one: DELETE the test
+       (`return dscrTier(rounded) === tier ? rounded : null` → `return rounded;`) and the
+       whole suite stays green, because `outside` only counts a ratio that is BOTH
+       un-tested AND pushed out of band — deleting the test alone leaves every ratio
+       landing where it already landed. The tripwire fires only on the PAIR, which is not
+       a guard on the line at all.
+
+       What the line is FOR is the thing worth pinning: a ratio that fell into a
+       neighbouring band would search the wrong scenario, so an unplaceable one must yield
+       null and that bracket simply not be priced. That is a statement about the code, and
+       no run of the rounding battery can see it — so it is read out of the stripped source
+       instead, and `outside` goes back to being a measurement that is REPORTED rather than
+       relied on (N17b still carries it, and its own message now says so). */
+    ok(/return\s+dscrTier\(rounded\)\s*===\s*tier\s*\?\s*rounded\s*:\s*null\s*;/.test(strippedBb),
+      '⛔ N18 `sendRatioFor` still REFUSES a ratio that lands outside the band it is for — pinned on the line itself, because the `outside` count cannot fail on its deletion alone');
+    ok(!/computeDscr/.test(strippedBb),
+      'N9 …and the board no longer calls the tenant\'s own round-to-nearest formula');
+
+    /* ⛔ AND `computeDscr` ITSELF IS UNTOUCHED — it is Encompass's own CUST01FV formula,
+       owner-confirmed 2026-08-14 and FROZEN. What moved is its CALLER, which is the same
+       shape the term-sheet fix took. Asserted here so a future "tidy-up" cannot decide the
+       frozen formula should be cut down to match. */
+    const formulas = require('../src/longterm/encompass/formulas');
+    ok(formulas.computeDscr(2490, 2000) === 1.25,
+      '⛔ N10 the tenant\'s frozen formula still ROUNDS TO NEAREST — only its caller moved');
 
     console.log(bad ? `\n${bad} FAILED` : '\nALL PASSED');
   process.exit(bad ? 1 : 0);

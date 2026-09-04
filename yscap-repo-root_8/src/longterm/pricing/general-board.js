@@ -44,6 +44,7 @@ const vendorMargin = require('./vendor-margin');
 const loannexHalf = require('./loannex-half');
 const investorConfig = require('./investor-config');
 const investorLinks = require('./investor-links');
+const nearTier = require('./near-tier');
 /* ⛔ THE SEARCH MODEL IS REQUIRED, NEVER READ OFF THE INJECTED CLIENT. `wantFrom` mirrors the
    Lender Price request through `mapAmortization` and `resolveSearchTerms`, which live on the
    search MODEL. Reading them off `deps.lp` would silently answer `{}` for every caller that
@@ -150,6 +151,16 @@ async function loadConfig(opts = {}) {
     extraFor: routing.extraResolver(investorRows, linkMap, custom),
     wantLoanNex: expectedFromLoanNex(roster).length > 0,
     problem: saved.problem || customCtx.problem || null,
+    /* THE HAND-ADDED INVESTORS THIS BOARD IS PRICED AGAINST, and what could not be read
+       of them. `problem` is the settings store refusing to answer at all; `problems` is
+       what the tolerant read dropped. Either way the board is a SHORTER roster than
+       somebody configured, and a screen that cannot say so presents it as the whole
+       truth. The combined engine has returned this since it shipped. */
+    customInvestors: {
+      count: custom.size,
+      problems: customCtx.problems || [],
+      problem: customCtx.problem || null,
+    },
   };
 }
 
@@ -393,6 +404,39 @@ async function boardForScenario(sc, deps, opts = {}) {
     ok: true,
     sightings,
     investorPairing,
+    /**
+     * ⛔ WHAT THIS BOARD ALREADY KNEW AND USED TO THROW AWAY.
+     *
+     * `applyRouting` builds all three of these on every search and this function returned
+     * none of them, so the general engine's screen could not answer the one question an
+     * officer asks about a short board: WHY is that investor not here? The combined engine
+     * has returned the same three since it shipped — so the two boards were built by one
+     * function and answered differently, which is the drift a shared builder exists to stop.
+     *
+     * `hidden[]` names every removal with its reason (switched off / the sheet did not
+     * answer / the sheet had no quote) and its CLIENT-SAFE name; `completeness` says whether
+     * both rate sheets answered, vendor-neutrally, so a short board is never silent;
+     * `settings` says how many routes were applied and what could not be read.
+     */
+    hidden: routed.hidden || [],
+    completeness: routed.completeness || null,
+    settings: routed.settings || null,
+    customInvestors: opts.customInvestors || null,
+    /**
+     * THE GRID CELLS THIS BOARD CARRIES — the input the "you are almost at a better tier"
+     * hint reads its REAL bands from, rather than falling back to the standing steps.
+     *
+     * ⛔ OFF THE LENDER PRICE PARSE, NOT THE MERGED BOARD, AND THAT IS A CORRECTION.
+     * The combined engine has passed `cellsOnBoard(mergedRaw)` since the hint was wired,
+     * and `merge.merge` returns `{sources, summary, investors, unmapped}` — no `programs`
+     * key AT ALL — so it has ALWAYS answered an empty list and the hint has ALWAYS fallen
+     * back to the standing steps, while the comment beside it claimed the opposite.
+     * MEASURED: 0 cells from the merged board; 3 from the same search's Lender Price parse.
+     * Lender Price is the one sheet that publishes its itemisation WITH the quote (LoanNEX
+     * explains on demand, which is what sharpens the flag when somebody opens a price
+     * build), so its own parse is where the cells are.
+     */
+    cells: nearTier.cellsOnBoard(lpParsed),
     parsed: Object.assign({}, lpParsed, { programs, programCount: programs.length, lenderCount: routedLenderCount }),
     programs,
     missing,
