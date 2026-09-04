@@ -2454,6 +2454,22 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
         rawPrice: q.price,
         adjustedPoints: q.adjustedPoints,
       },
+      /* ⛔ THE BUILD BEHIND THIS PRICE, SO THE SERVER CAN REFUSE A ROW THAT DOES NOT ADD UP.
+         A LoanNEX row's price comes from the search and its itemisation from a separate
+         on-demand call; until now nothing compared them anywhere, and `snapshot.buildMember`
+         validated the price only as "is it a number" while already refusing over a dollar of
+         monthly payment. Sent ONLY when the breakdown has actually been fetched — a row nobody
+         opened sends nothing and is issued exactly as before, because refusing those would stop
+         the desk working over a check nobody asked for. */
+      priceLanding: (o && o.priceBuild
+        && o.priceBuild.basePoints != null && o.priceBuild.adjustmentPoints != null
+        && o.priceBuild.adjustedPoints != null)
+        ? {
+          basePoints: o.priceBuild.basePoints,
+          adjustmentPoints: o.priceBuild.adjustmentPoints,
+          adjustedPoints: o.priceBuild.adjustedPoints,
+        }
+        : null,
       pricedAt: (o && o.rateSheet && o.rateSheet.effectiveAt) || (res && res.pricedAt) || null,
       /* ⛔ THE RATIO THIS OPTION WAS PRICED AT — the bracket board's own stamp on the
          option (`o.dscr`), never the form's figure. On a banded board the form's DSCR
