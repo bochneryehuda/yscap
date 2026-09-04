@@ -41,8 +41,13 @@
  */
 
 const assert = require('assert');
+const fs = require('fs');
 const path = require('path');
 const ROOT = path.join(__dirname, '..');
+/* Every "must not appear" / call-site count reads the COMMENT-STRIPPED source: the note that
+   explains a rule necessarily names the thing it is about, and a guard that read comments would
+   be satisfied by its own explanation. */
+const { stripComments: strip } = require(path.join(ROOT, 'scripts/lib/strip-comments'));
 
 let pass = 0; let fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log(`  ok   ${m}`); } else { fail++; console.log(`  FAIL ${m}`); } };
@@ -321,13 +326,78 @@ async function main() {
     const bodies = routes._internals.bodies;
     const keep = { ...bodies };
     const MARK = '__delegation_marker__';
+    const DOORS = [
+      ['investorsBody', ['GET /investors', 'PUT /investors']],
+      ['linksBody', ['GET /investor-links', 'PUT /investor-links']],
+      ['customInvestorsBody', ['GET /custom-investors', 'PUT /custom-investors']],
+      ['holdbackBody', ['GET /margin-holdback', 'PUT /margin-holdback', 'PUT /margin-holdback (clear)']],
+    ];
+
+    /* ⛔ THE LIST ABOVE IS COUNTED AGAINST PRODUCTION'S OWN CALL SITES, because a
+       hand-kept list of doors is a list that goes stale the day somebody adds the tenth
+       one — and this exact shape is what bit the round before: the holdback door grew a
+       SECOND branch (the clear), the list still named the door once, and an inline copy
+       in the new branch was invisible. MEASURED again by the re-audit of 2026-09-04: a
+       tenth branch added inside an already-listed door left the whole suite green.
+
+       So the source is asked how many times each builder is actually CALLED, and the
+       cases have to add up to it. A branch added anywhere fails here until somebody
+       writes the case that reaches it — which is the only thing that makes the H1 loop
+       below a statement about the DOORS rather than about the four the list happens to
+       name. It reads the COMMENT-STRIPPED source, or the note explaining the rule would
+       satisfy the rule. */
+    const routesSrc = strip(fs.readFileSync(path.join(ROOT, 'src/longterm/routes/investor-settings-routes.js'), 'utf8'));
+    let callSitesTotal = 0;
+    for (const [name, doors] of DOORS) {
+      const sites = (routesSrc.match(new RegExp(`bodies\\.${name}\\(`, 'g')) || []).length;
+      callSitesTotal += sites;
+      ok(sites === doors.length,
+        `⛔ H1 CASES: \`${name}\` is called ${sites} time(s) in the route file and this suite exercises ${doors.length} — a branch nobody wrote a case for is a branch an inline copy can hide in`);
+    }
+    const allSites = (routesSrc.match(/bodies\.\w+\(/g) || []).length;
+    ok(allSites === callSitesTotal && allSites > 0,
+      `⛔ H1 CASES: …and those are ALL of them — ${allSites} \`bodies.*\` call sites in the route file against ${callSitesTotal} accounted for, so a FIFTH builder cannot appear unlisted either`);
+
+    /* ⛔ AND COUNTING CALL SITES IS NECESSARY, NOT SUFFICIENT — say so rather than let the
+       next reader assume otherwise. A tenth `bodies.*` CALL fails the count above; a branch
+       that RETURNS EARLY and never reaches a builder at all does not, because it adds no
+       call site. That is the shape the re-audit of 2026-09-04 used, and the only reason the
+       H1 loop below would catch it is if some case happens to reach that branch — which is
+       a fact about the cases, not about the doors.
+
+       So the doors are also asked STRUCTURALLY: inside each of the four settings handlers,
+       every answer that reports success has to be built by a builder. A hand-written success
+       payload anywhere in one of them is a second copy by definition, whichever branch it
+       sits in and whether or not a case reaches it. Each handler is sliced from its own
+       `router.<verb>('<path>'` line to the next `router.` line, so a branch added anywhere
+       inside it is in scope automatically. The three doors that legitimately answer without a
+       builder (`/investor-links/suggest`, `/misses`, `/misses/:id`) are not settings payloads
+       and are deliberately out of scope — this is the four doors H1 is about. */
+    const SETTINGS_HANDLERS = [
+      "router.get('/margin-holdback'", "router.put('/margin-holdback'",
+      "router.get('/investors'", "router.put('/investors'",
+      "router.get('/investor-links'", "router.put('/investor-links'",
+      "router.get('/custom-investors'", "router.put('/custom-investors'",
+    ];
+    let inlineSuccess = 0; let inlineWhere = [];
+    for (const head of SETTINGS_HANDLERS) {
+      const from = routesSrc.indexOf(head);
+      if (from < 0) { inlineSuccess += 1; inlineWhere.push(`${head} — handler not found`); continue; }
+      const next = routesSrc.indexOf('router.', from + head.length);
+      const body = routesSrc.slice(from, next < 0 ? routesSrc.length : next);
+      /* Every success answer in this handler, and whether the builder is in it. */
+      for (const m of body.match(/res\.json\(\{\s*ok:\s*true[\s\S]*?\)\s*;/g) || []) {
+        if (!/bodies\.\w+\(/.test(m)) {
+          inlineSuccess += 1;
+          inlineWhere.push(`${head.replace("router.", "")}: ${m.replace(/\s+/g, ' ').slice(0, 90)}`);
+        }
+      }
+    }
+    ok(inlineSuccess === 0,
+      `⛔ H1 SHAPE: every success answer inside the four settings handlers is BUILT by a builder — an early-return branch answering a hand-written payload is a second copy whether or not a case reaches it${inlineWhere.length ? ` — ${inlineWhere.join(' · ')}` : ''}`);
+
     try {
-      for (const [name, doors] of [
-        ['investorsBody', ['GET /investors', 'PUT /investors']],
-        ['linksBody', ['GET /investor-links', 'PUT /investor-links']],
-        ['customInvestorsBody', ['GET /custom-investors', 'PUT /custom-investors']],
-        ['holdbackBody', ['GET /margin-holdback', 'PUT /margin-holdback', 'PUT /margin-holdback (clear)']],
-      ]) {
+      for (const [name, doors] of DOORS) {
         const wasAsync = name !== 'holdbackBody';
         /* ⛔ THE MARKER STANDS IN FOR THE BUILDER'S OWN KEYS, NOT BESIDE THEM. A stub
            returning only `{[MARK]: name}` proves the builder was CALLED and nothing more:
@@ -368,18 +438,60 @@ async function main() {
        payload it built BEFORE saving is invisible to all of them — the re-audit proved
        it on the links door and stayed green. That is the same user-visible defect #100
        fixed: the screen installs the write's answer, so a pre-save reply shows the OLD
-       link map straight after somebody saved a new one. */
-    /* A KNOWN STATE FIRST. An earlier section has already linked acra→nqm, so writing it
-       again changes nothing and the control below would (correctly) refuse to vouch for
-       anything — which is exactly what it caught the first time this was written. */
-    await call('PUT /investor-links', { links: {} });
-    const before = await call('GET /investor-links');
-    const wrote = await call('PUT /investor-links', VALID_WRITE['PUT /investor-links']);
-    const after = await call('GET /investor-links');
-    ok(JSON.stringify(before.body.links) !== JSON.stringify(after.body.links),
-      'H2 CONTROL: the write really did change something — otherwise the next assertion could not tell a stale answer from a fresh one');
-    eq(comparable(after.body, wrote.body, ['ok', 'saved']).differ, [],
-      '⛔ H2a …and the write answered the state AFTER its own save, not the one it read on the way in');
+       link map straight after somebody saved a new one.
+
+       ⛔ AND IT IS ASKED OF EVERY WRITE DOOR, NOT OF THE ONE THIS WAS FOUND ON. The first
+       cut proved it for the links door alone, and the re-audit of 2026-09-04 made BOTH
+       `PUT /investors` and `PUT /custom-investors` answer a payload built before their own
+       save: 66 passed, 0 failed, twice. Worse, the suite had no state-CHANGING write to
+       either — every earlier section writes the settings back unchanged — so the doors
+       were structurally untestable for staleness however carefully anyone read them.
+
+       So each door gets its own case, and the case has to EARN its state change: a
+       CONTROL asserts the watched key actually moved, because a write that changed
+       nothing cannot tell a stale answer from a fresh one and would vouch for a broken
+       door. Every one of the four `bodies.*` write doors is here, so the pairing is
+       complete against the same call-site count H1 CASES holds above. */
+    const H2_CASES = [
+      {
+        door: 'PUT /investor-links', read: 'GET /investor-links', watch: 'links', extras: ['ok', 'saved'],
+        /* An earlier section has already linked acra→nqm, so writing it again changes
+           nothing — the reset is what makes the change a change. */
+        reset: { links: {} }, change: { links: { acra: 'nqm' } },
+      },
+      {
+        door: 'PUT /investors', read: 'GET /investors', watch: 'investors', extras: ['ok', 'saved'],
+        reset: { investors: { ...store['pricing.combinedInvestors'] } },
+        change: {
+          investors: {
+            ...store['pricing.combinedInvestors'],
+            nqm: { ...store['pricing.combinedInvestors'].nqm, holdback: 0.22 },
+          },
+        },
+      },
+      {
+        door: 'PUT /custom-investors', read: 'GET /custom-investors', watch: 'list', extras: ['ok', 'saved', 'removed'],
+        reset: { investors: {} },
+        change: { investors: { h2_probe: { label: 'H2 Probe', source: 'lenderprice', enabled: true } } },
+      },
+      {
+        door: 'PUT /margin-holdback', read: 'GET /margin-holdback', watch: 'points', extras: ['ok'],
+        reset: { points: 0.4 }, change: { points: 0.31 },
+      },
+    ];
+    for (const c of H2_CASES) {
+      await call(c.door, c.reset);
+      const before = await call(c.read);
+      const wrote = await call(c.door, c.change);
+      const after = await call(c.read);
+      ok(wrote.status === 200 && wrote.body && wrote.body.ok === true,
+        `H2 CONTROL: \`${c.door}\` took the state-changing body (${wrote.status})`);
+      ok(JSON.stringify(before.body && before.body[c.watch]) !== JSON.stringify(after.body && after.body[c.watch]),
+        `⛔ H2 CONTROL: \`${c.door}\` really did change \`${c.watch}\` — otherwise the next assertion could not tell a stale answer from a fresh one, and would pass on a door that answers nothing at all`);
+      eq(comparable(after.body, wrote.body, c.extras).differ, [],
+        `⛔ H2a \`${c.door}\` answered the state AFTER its own save, not the one it read on the way in`);
+      await call(c.door, c.reset);
+    }
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

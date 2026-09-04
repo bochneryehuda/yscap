@@ -101,9 +101,25 @@
  * TRUE BY CONSTRUCTION: `sendRatioFor` ends `return dscrTier(rounded) === tier ? rounded
  * : null`, so a non-null answer is in-band by definition and the measurement skips the
  * nulls. It cannot be nonzero, whatever the rounding does — the audit of 2026-09-04
- * pushed every searched ratio a whole band out and it still read 0 (N17b caught that
- * mutation on `lost`/`gained`, which ARE falsifiable). It is kept as a CONTRACT
- * tripwire for the day that return line changes, and it is not one of the three.
+ * pushed every searched ratio a whole band out and it still read 0. It is not one of
+ * the three.
+ *
+ * ⛔ AND TWO CLAIMS THIS PARAGRAPH USED TO MAKE ABOUT IT WERE BOTH WRONG, corrected
+ * here rather than quietly dropped, because a note whose subject is what is and is not
+ * evidence must not itself be unreproducible:
+ *
+ *   · It said N17b caught that whole-band mutation "on `lost`/`gained`". It did not.
+ *     Run two ways — the shift inside `sendRatioFor`'s lever argument, and inside
+ *     `tierRounding.sendAs` itself — N17b PASSED both times (0 lost, 0 gained, 0
+ *     outside, 0 nulls either side). The mutation is caught loudly, but by N17a, N17d,
+ *     N15, N4 and N1b. `gained` IS falsifiable in general (cutting the DSCR to one
+ *     decimal gives 5,365 newly reachable and N17b fires); `lost` was not falsified.
+ *   · It called `outside` a "CONTRACT tripwire for the day that return line changes".
+ *     It was not one: DELETING the in-band test (`return rounded;`) leaves the whole
+ *     suite green, because `outside` only counts a ratio that is BOTH un-tested AND
+ *     pushed out of band. So the line is pinned DIRECTLY instead — N18 in the brackets
+ *     suite reads it out of the source — and `outside` is what remains: a measurement
+ *     that says nothing on its own and is reported, not relied on.
  *
  * ⛔ HONEST NOTE ON THE FIGURES, AND THE REASON THE BATTERY IS NOW IN THE TREE.
  * The script that produced the ORIGINAL numbers was never committed, and the

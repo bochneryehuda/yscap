@@ -10,8 +10,14 @@
  * CI job installs the front end's build tools), so every guard on them was a regex over
  * their source — and the re-audit of 2026-09-03 walked straight past that: a
  * `bandsWillFollow` returning TRUE unconditionally, while still calling `bracketMissing`
- * so the regexes matched, was green across all 204 suites. This is the same move
+ * so the regexes matched, was green across the WHOLE chain. This is the same move
  * `priceBuild.js` and `dscrCalc.js` already made, for the same reason.
+ *
+ * (That sentence used to say "all 204 suites". A count nobody can re-derive is a claim,
+ * not a measurement — and the chain has been a different size at every commit since, so
+ * the number said nothing while reading like evidence. Seven other files carrying it were
+ * corrected on 2026-09-04; the re-audit found this eighth. What matters is that the guard
+ * was a REGEX over a module CI could not load, and that is now said without a number.)
  *
  * The screen re-exports all three, so nothing that imported them from there had to move.
  */

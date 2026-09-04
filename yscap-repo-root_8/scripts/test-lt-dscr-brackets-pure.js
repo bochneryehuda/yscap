@@ -1042,11 +1042,12 @@ async function main() {
        the pinned totals caught it. An assertion whose message claims more than its
        condition is worse than no assertion, because it is read as cover. */
     ok(M.lost === 0 && M.gained === 0 && M.outside === 0 && M.nullsBefore === 0 && M.nullsAfter === 0,
-      `⛔ N17b …and NOTHING IS UNPRICEABLE ON EITHER SIDE — absolutes, not a delta (the previous wording said "nothing BECAME unpriceable" while testing only that the two counts matched): ${M.lost} bands lost, ${M.gained} newly reachable, ${M.outside} searched ratios outside their own band${M.firstOutside ? ` — ${JSON.stringify(M.firstOutside)}` : ''}, nulls ${M.nullsBefore} before and ${M.nullsAfter} after`);
+      `⛔ N17b …and NOTHING IS UNPRICEABLE ON EITHER SIDE — absolutes, not a delta (the previous wording said "nothing BECAME unpriceable" while testing only that the two counts matched): ${M.lost} bands lost, ${M.gained} newly reachable, ${M.outside} searched ratios outside their own band (REPORTED, not evidence — it is 0 by construction while N18's in-band test stands)${M.firstOutside ? ` — ${JSON.stringify(M.firstOutside)}` : ''}, nulls ${M.nullsBefore} before and ${M.nullsAfter} after`);
     ok(M.moved === 161448 && M.bandWorse === 9033,
       `N17c THE MEASURED TOTALS — the ratio moves a cent in ${M.moved} of ${M.combos} (${(M.moved / M.combos * 100).toFixed(3)}%) and the BAND moves in ${M.bandWorse} (${(M.bandWorse / M.combos * 100).toFixed(3)}%); if that changed on purpose, put these numbers in bracket-board.js's header`);
     ok(M.searchedMoved === 5308 && M.searchedDown === 3942 && M.searchedUp === 1366,
       `N17d …and the SEARCHED ratio moves in ${M.searchedMoved} of ${M.pairs} pairs — ${M.searchedDown} down and ${M.searchedUp} UP (first up: ${JSON.stringify(M.firstSearchedUp)}), which is the split the header must state rather than "always downward"`);
+
 
     /* ONE DOOR, both places this file settles a ratio. A bare round in `sendRatioFor`
        would let the two answer differently the day either side gains a third decimal. */
@@ -1069,6 +1070,24 @@ async function main() {
     const dscrLevers = (strippedBb.match(/tierRounding\.sendAs\('[a-z]+'/g) || []);
     ok(dscrLevers.length === 2 && dscrLevers.every((m) => m.includes("'dscr'")),
       `N8a …and BOTH of them ask for the DSCR field, so a wrong-field lever cannot hide at the second site (${dscrLevers.join(', ') || 'none'})`);
+
+    /* ⛔ N18 · THE IN-BAND TEST IS PINNED AT THE SOURCE, because `outside` cannot pin it.
+       The header called `outside` a "contract tripwire for the day that return line
+       changes" and the re-audit of 2026-09-04 proved it is not one: DELETE the test
+       (`return dscrTier(rounded) === tier ? rounded : null` → `return rounded;`) and the
+       whole suite stays green, because `outside` only counts a ratio that is BOTH
+       un-tested AND pushed out of band — deleting the test alone leaves every ratio
+       landing where it already landed. The tripwire fires only on the PAIR, which is not
+       a guard on the line at all.
+
+       What the line is FOR is the thing worth pinning: a ratio that fell into a
+       neighbouring band would search the wrong scenario, so an unplaceable one must yield
+       null and that bracket simply not be priced. That is a statement about the code, and
+       no run of the rounding battery can see it — so it is read out of the stripped source
+       instead, and `outside` goes back to being a measurement that is REPORTED rather than
+       relied on (N17b still carries it, and its own message now says so). */
+    ok(/return\s+dscrTier\(rounded\)\s*===\s*tier\s*\?\s*rounded\s*:\s*null\s*;/.test(strippedBb),
+      '⛔ N18 `sendRatioFor` still REFUSES a ratio that lands outside the band it is for — pinned on the line itself, because the `outside` count cannot fail on its deletion alone');
     ok(!/computeDscr/.test(strippedBb),
       'N9 …and the board no longer calls the tenant\'s own round-to-nearest formula');
 

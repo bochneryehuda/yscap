@@ -795,30 +795,52 @@ const byInvestor = (programs) => {
        The first fix compared the fresh board against the ORDINARY one — which catches a
        gate that shortens only when the routing changes, and is blind to one that
        shortens on the SHARED path: the audit of 2026-09-04 sliced `sightedOn` to one key
-       unconditionally and this read "1 of 1", green, with all 298 LT steps green behind
+       unconditionally and this read "1 of 1", green, with the whole long-term chain green behind
        it.
 
-       So the expectation is DERIVED FROM THE FIXTURE down a different road: parse the
-       same Lender Price answer with the vendor's own parser and resolve its investors
-       through the registry — the path the merge builds `presentIn` from, reached
-       without going through `sightedOn` at all. Two roads to one number; a truncation
-       on either is a disagreement. */
+       So the expectation is DERIVED FROM THE FIXTURE — and the road it is derived down
+       has to be one the register's own road does not JOIN.
+
+       ⛔ THE FIRST TWO ANCHORS WERE BOTH DOWNSTREAM OF THE SAME FUNCTION, and the second
+       one read as if it were not. It parsed the same answer with the vendor's parser and
+       counted `decorate(...).roster`, whose comment claimed "two roads to one number" —
+       and the re-audit of 2026-09-04 proved they are ONE road with a shared ancestor:
+       `decorate` resolves every row through `investor-roster.effectiveResolve`, which is
+       exactly what `merge` builds `presentIn` from and what `sightedOn` then reads. Mutated
+       so the shared resolver answers for about half the rows, BOTH sides fell from 4 to 1
+       TOGETHER and this assertion stayed green; taken to the limit ("0 fresh / 0 ordinary,
+       against 0") it passed on nothing at all, because the count had no floor of its own.
+
+       So the anchor is now the RAW FIXTURE ITSELF — the distinct lender labels in the
+       payload, read straight off the JSON with no parser, no registry and no resolver
+       anywhere in reach. Nothing our code does can move it, which is the whole point: a
+       resolver that stops resolving now DISAGREES with it instead of dragging it along.
+       (It is an equality rather than a floor because this fixture carries no link that
+       could collapse two spellings into one investor — `links: {}` on both configs —
+       so every distinct label is a distinct investor, and CONTROL C says so out loud.) */
+    const LP_RAW_LABELS = [...new Set((((LP_RAW || {}).results || {}).qualifiedNonQMData || {})
+      .childs ? LP_RAW.results.qualifiedNonQMData.childs.map((c) => c && c.keyLabel).filter(Boolean) : [])];
+    const lpRawCount = LP_RAW_LABELS.length;
+    /* The registry road is KEPT beside it — not as the anchor, but as the thing being
+       checked against it: the two now genuinely differ, so a resolver that stops resolving
+       fails HERE rather than moving both halves of a comparison at once.
+       `decorate` answers `{programs, roster, unmapped}` — read through a total accessor, so
+       a shape change states a false fact and lets the run reach the end rather than throwing
+       (this very line threw on its first cut, and grepping the output for the assertion names
+       hid it — the crash printed no assertion at all, which is exactly the "a crashing test
+       looks like proof" trap this file keeps running into). */
     const lpParsedForCount = lpModel.parseFull(LP_RAW);
-    /* `decorate` answers `{programs, roster, unmapped}` — the ROSTER is its own count of
-       distinct investors, which is the figure wanted here. Read through a total accessor:
-       a shape change must state a false fact and let the run reach the end, never throw
-       (this very line threw on its first cut, and grepping the output for the assertion
-       names hid it — the crash printed no assertion at all, which is exactly the "a
-       crashing test looks like proof" trap this file keeps running into). */
     const lpDecorated = investorPrograms.decorate((lpParsedForCount && lpParsedForCount.programs) || []) || {};
     const lpExpect = Array.isArray(lpDecorated.roster) ? lpDecorated.roster.length : -1;
     const lpFull = (sighted && sighted.lenderprice && Array.isArray(sighted.lenderprice.keys) ? sighted.lenderprice.keys.length : 0);
     const lpFresh = (sightedFresh && sightedFresh.lenderprice && Array.isArray(sightedFresh.lenderprice.keys) ? sightedFresh.lenderprice.keys.length : 0);
-    ok(lpExpect > 0,
-      `SEAM-5 CONTROL C: the Lender Price fixture really carries investors, counted through the vendor parser and the registry rather than through the register (${lpExpect})`);
+    ok(lpRawCount > 1,
+      `SEAM-5 CONTROL C0: the fixture itself carries several distinct lenders, counted off the raw payload with none of our code in reach (${lpRawCount}: ${LP_RAW_LABELS.join(', ')})`);
+    ok(lpExpect === lpRawCount,
+      `SEAM-5 CONTROL C: …and the registry road agrees with the raw payload about how many investors that is (${lpExpect} against ${lpRawCount}) — the two are only equal while every label resolves, so this is what fails when the shared resolver stops resolving`);
     ok(sightedFresh && sightedFresh.lenderprice && sightedFresh.lenderprice.answered === true
-      && lpFresh === lpExpect && lpFull === lpExpect,
-      `⛔ SEAM-5 …and with nobody routed to LoanNEX the register is STILL fed EVERY investor Lender Price carried (${lpFresh} fresh / ${lpFull} ordinary, against ${lpExpect} in the answer itself) — a gate on the routing silences the register, and a truncating one shortens it`);
+      && lpFresh === lpRawCount && lpFull === lpRawCount,
+      `⛔ SEAM-5 …and with nobody routed to LoanNEX the register is STILL fed EVERY investor Lender Price carried (${lpFresh} fresh / ${lpFull} ordinary, against ${lpRawCount} lenders in the answer itself) — a gate on the routing silences the register, a truncating one shortens it, and neither can pass by dragging the expectation down with it`);
     ok(REG.SOURCES.every((sname) => freshBoard.sightings && freshBoard.sightings[sname]
       && typeof freshBoard.sightings[sname].answered === 'boolean'),
       'SEAM-5a …and the board still describes every sheet the register knows, so nothing became unrecordable');
