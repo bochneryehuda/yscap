@@ -57,6 +57,8 @@
 
 const round3 = (n) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n) * 1000) / 1000);
 const pricePoints = require('./price-points');
+// WHICH ENGINE PRICED A ROW — one registry, so a third engine is one entry there.
+const engineLabel = require('./engine-label');
 
 /**
  * A loan term, in BOTH units, from whichever one the vendor stated.
@@ -625,6 +627,10 @@ function programsFromLoanNex(board, opts = {}) {
       options,
     };
     if (opts.reveal) row.source = 'loannex';
+    /* WHICH ENGINE PRICED THIS ROW — carried WITHOUT a reveal, unlike `source`.
+       See `pricing/engine-label.js`: this is a key from a closed list of OUR
+       engines, never a vendor identifier, and `/api/lt` is a staff mount. */
+    row.pricedBy = engineLabel.ENGINES.loannex.key;
     out.push(row);
   }
   return out;
@@ -645,7 +651,21 @@ function programsForBoard(merged, opts = {}) {
   for (const e of (merged && merged.investors) || []) {
     for (const p of e.programs || []) {
       const base = { ...p, investorKey: e.key, whiteLabel: e.whiteLabel || null, consumerLabel: e.whiteLabel || null };
+      /* ⛔ WHICH ENGINE PRICED IT IS READ BEFORE THE VENDOR TRAIL IS STRIPPED, and
+         it is a DIFFERENT fact from that trail (owner-directed 2026-09-04: *"a
+         stamp … it should say from where this scenario was priced exactly"*).
+         `source`/`lenderId`/`investorOrganizationGuid` are the vendor's own
+         identifiers for an investor and still go without an admin reveal;
+         `pricedBy` is one key from `engine-label`'s closed list of OUR engines and
+         carries no vendor identifier, so it rides on every staff board. A row whose
+         origin we cannot name carries NOTHING rather than a guess — the panel then
+         prints no attribution, which beats printing the wrong one. */
+      const pricedBy = engineLabel.engineKey(p.source)
+        || (Array.isArray(p.rungs) && !Array.isArray(p.options)
+          ? engineLabel.ENGINES.loannex.key
+          : engineLabel.ENGINES.lenderprice.key);
       if (!reveal) { delete base.source; delete base.lenderId; delete base.investorOrganizationGuid; }
+      if (pricedBy) base.pricedBy = pricedBy;
       // A LoanNEX program carries `rungs`; a Lender Price one carries `options`.
       // Which it is decides how it is shaped, and NOT the row's `source`, which
       // the one-system view has already stripped by the time this runs.
@@ -739,7 +759,7 @@ function optionFromRow(raw) {
   if (!text || text.length > ROW_MAX_BYTES) return null;
   const {
     evidence, adjustments, eligibility, notices,
-    holdback, marginHoldback, source, lenderId, investorOrganizationGuid,
+    holdback, marginHoldback, source, lenderId, investorOrganizationGuid, pricedBy,
     priceBuild, rateSheet, ...rest
   } = raw;
   const out = { ...rest };

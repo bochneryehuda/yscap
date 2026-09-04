@@ -45,6 +45,13 @@ import {
   Check, ModeTab, DscrCalc, useScenarioForm, ScenarioFields,
 } from './LtScenarioFields.jsx';
 import { useEngine, useExplain, EngineProvider, ExplainProvider, GENERAL_ENGINE } from './pricerEngine.js';
+// WHICH ENGINE PRICED A ROW — the browser mirror of `pricing/engine-label.js`,
+// held to the server key-for-key by `scripts/test-lt-engine-stamp-pure.js`.
+import { labelFor as engineLabelFor } from './engineLabel.js';
+// ⛔ THE BOARD STAYS WHERE IT IS WHEN SOMETHING OPENS — see `keepScroll.js`.
+// Every control that changes the height of the board is wrapped in this, so a
+// height change added later cannot re-introduce the jump.
+import { keepPlaceOnClick } from './keepScroll.js';
 import { NO_BREAKDOWN } from './sourceLabel.js';
 
 /**
@@ -232,6 +239,12 @@ export function buildRateStack(programs) {
         whiteLabel: p.whiteLabel || null,
         consumerLabel: p.consumerLabel || null,
         rateGridId: p.rateGridId, option: o,
+        /* WHICH ENGINE PRICED THIS ROW (owner-directed 2026-09-04). Carried, never
+           derived: the server stamps it in `pricing/quote-shape.programsForBoard`, and
+           a browser working it out from the row's SHAPE would start guessing the day a
+           third engine answers in a shape it has not seen. Null on a row the server
+           could not name, and every reader draws nothing rather than a wrong engine. */
+        pricedBy: p.pricedBy || null,
         // §38 — the rate sheet this quote priced from. One lender can quote the SAME programme
         // name from two sheets (non-del vs wholesale — measured on ResiCentral), and two identical
         // labels with different prices read as a glitch unless the sheet is there to tell them apart.
@@ -882,6 +895,20 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
    * adjustments", which is a claim no rate sheet made.
    */
   const explainer = useExplain();
+  /* ⛔ WHICH ENGINE PRICED *THIS ROW* — never the board's one wording (owner-reported
+     2026-09-04: *"Base price — this sentence is saying even for stuff that is coming
+     from LoanPass and not from LenderPric … I need to understand from where it's
+     coming and populate correctly"*).
+
+     `engine.sheetLabel` is fixed at "Lender Price" because until 2026-09-03 the
+     general engine had ONE sheet. It now has two, so every line of a LoanNEX row's
+     price build was describing itself as Lender Price's — an untrue sentence on the
+     one panel whose job is to say where a number came from. The row carries its own
+     answer (`pricedBy`); an unnamed row keeps the engine's vendor-neutral subject
+     rather than being attributed to whichever engine happens to be first. */
+  const rowEngine = (quote && quote.pricedBy) || (oProp && oProp.pricedBy) || null;
+  const engineName = engineLabelFor(rowEngine);
+  const buildSubject = engineName || engine.sheetSubject;
   const handle = oProp && oProp.explain && oProp.explain.priceHashKey ? oProp.explain : null;
   const askable = !!(explainer && handle);
   const [fetched, setFetched] = React.useState(null);
@@ -988,6 +1015,27 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
 
   return (
     <div style={{ background: '#fff', borderRadius: 10, padding: 14, marginTop: 10, border: `1px solid ${GOLD}33` }}>
+      {/* ⛔ WHERE THIS PRICE CAME FROM, SAID ON ITS FACE (owner-directed 2026-09-04:
+          *"we need to have a stamp somewhere where we open up the details. It should
+          say from where this scenario was priced exactly. Also, in the future, we're
+          going to add more engines. It should be able to say from where it was
+          priced."*). The name comes from the row's own `pricedBy` through the shared
+          registry, so a third engine names itself with no change here — and a row the
+          server could not name draws NOTHING rather than a guess, because a panel that
+          names the wrong engine is worse than one that names none. STAFF ONLY: the
+          whole of `/api/lt` is mounted behind requireStaff, and a client document is
+          built from a named allowlist that cannot carry this. */}
+      {engineName && (
+        <div style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 10,
+          padding: '4px 10px', borderRadius: 999,
+          background: `${GOLD}14`, border: `1px solid ${GOLD}55`,
+          fontSize: 11.5, fontWeight: 600, color: SLATE, letterSpacing: '.02em',
+        }}>
+          <span aria-hidden="true">◆</span>
+          <span>{`Priced by ${engineName}`}</span>
+        </div>
+      )}
       {asking && (
         <div style={{ fontSize: 12.5, color: MUTED, marginBottom: 10 }}>
           {`Asking ${engine.sheetLabel} to itemise this price…`}
@@ -1010,7 +1058,7 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
       )}
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
         <Track title="Price build"
-          note={`Price is 100 minus points. Every line came from ${engine.sheetLabel}; the right-hand column is this page adding them up so the build can be followed.`}>
+          note={`Price is 100 minus points. Every line came from ${buildSubject}; the right-hand column is this page adding them up so the build can be followed.`}>
           {/* The base is read through ONE resolver (`baseOf`), which prefers whichever half the
               rate sheet actually stated and derives the other — and each row SAYS which it is.
               Drawing "100 − points" on a sheet that quotes a PRICE presented our own arithmetic as
@@ -1054,7 +1102,7 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
           ))}
           {adj.length === 0 && <Row k="Adjustments" v="none itemized" indent />}
           <div style={{ height: 8 }} />
-          <Row k={`Adjustments total (${engine.sheetLabel})`} v={pts(b.adjustmentPoints)} />
+          <Row k={engineName ? `Adjustments total (${engineName})` : 'Adjustments total'} v={pts(b.adjustmentPoints)} />
           {!totalsAgree && (
             <Row k="…the itemized lines add to" v={pts(summedR)} tone="bad"
               title="The lines shown do not add to the vendor's own total. Nothing is adjusted to hide it — both numbers are shown." />
@@ -1082,7 +1130,7 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
           <div style={{ fontSize: 12.5, color: MUTED }}>
             {/* ONE expression, not an expression beside text: React puts a `<!-- -->` marker
                 between the two, which changes the DOM for a sentence that has not changed. */}
-            {`${engine.sheetSubject} returned no margin or holdback lines on this quote.`}
+            {`${buildSubject} returned no margin or holdback lines on this quote.`}
           </div>
         ) : holdbackLines.map(([party, lines]) => (
           <div key={party} style={{ marginBottom: 6 }}>
@@ -1138,7 +1186,7 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
           <Track title={`${engine.sheetPossessive} own fee fields`}
             note="The vendor's numbers verbatim — our fee sheet shows in the borrower-paid and lender-paid positions.">
             {feeLines.filter((r) => r.key !== 'pointsFinanced').length === 0
-              ? <div style={{ fontSize: 12.5, color: MUTED }}>{`${engine.sheetSubject} returned no fee lines on this quote.`}</div>
+              ? <div style={{ fontSize: 12.5, color: MUTED }}>{`${buildSubject} returned no fee lines on this quote.`}</div>
               : feeLines.filter((r) => r.key !== 'pointsFinanced')
                 .map((r) => <Row key={r.key} k={labelize(r.key)} v={r.text} title={r.key} />)}
           </Track>
@@ -1169,7 +1217,7 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
             own block is read verbatim, one click away. */}
         {!compActive && <Track title="Comp">
           {compRows.length === 0
-            ? <div style={{ fontSize: 12.5, color: MUTED }}>{`${engine.sheetSubject} returned no comp lines on this quote.`}</div>
+            ? <div style={{ fontSize: 12.5, color: MUTED }}>{`${buildSubject} returned no comp lines on this quote.`}</div>
             : compRows.map((r) => (
               <div key={r.key}>
                 <Row k={labelize(r.key)} v={r.text} title={r.key} />
@@ -1362,7 +1410,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
     : null);
   return (
     <div style={{ border: `1px solid ${open ? GOLD : 'rgba(20,27,34,.12)'}`, borderRadius: 10, marginBottom: 8, overflow: 'hidden' }}>
-      <button type="button" onClick={onToggle} className="ltq-ratehead"
+      <button type="button" onClick={(e) => keepPlaceOnClick(e, onToggle)} className="ltq-ratehead"
         style={{
           width: '100%', textAlign: 'left', background: open ? PAPER : '#fff', border: 0, cursor: 'pointer',
           padding: '10px 14px', display: 'flex', gap: 16, alignItems: 'baseline', flexWrap: 'wrap',
@@ -1448,7 +1496,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                     <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{lenderHeading(g)}</span>
                     <VendorNameTag name={lenderVendorName(g)} />
                     {many && (
-                      <button type="button" onClick={() => onToggleLender(gKey)} aria-expanded={gOpen}
+                      <button type="button" onClick={(e) => keepPlaceOnClick(e, () => onToggleLender(gKey))} aria-expanded={gOpen}
                         style={{
                           border: 0, background: 'none', padding: '0 0 0 8px', cursor: 'pointer',
                           font: 'inherit', fontSize: 12, fontWeight: 700, color: GOLD_TEXT,
@@ -1493,7 +1541,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                         onAdd={() => ts.pick(g.best, g.best.option)} onRemove={(m) => ts.unpick(m)} />
                     )}
                     <button type="button" className="btn ghost" style={{ fontSize: 12 }}
-                      onClick={() => onOpenQuote(openQuote === (g.best && g.best.key) ? null : (g.best && g.best.key))}>
+                      onClick={(e) => keepPlaceOnClick(e, () => onOpenQuote(openQuote === (g.best && g.best.key) ? null : (g.best && g.best.key)))}>
                       {openQuote === (g.best && g.best.key) ? 'Hide' : 'Details'}
                     </button>
                   </span>
@@ -1540,7 +1588,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                               onAdd={() => ts.pick(q, q.option)} onRemove={(m) => ts.unpick(m)} />
                           )}
                           <button type="button" className="btn ghost" style={{ fontSize: 12 }}
-                            onClick={() => onOpenQuote(isOpen ? null : q.key)}>
+                            onClick={(e) => keepPlaceOnClick(e, () => onOpenQuote(isOpen ? null : q.key))}>
                             {isOpen ? 'Hide' : 'Details'}
                           </button>
                         </span>
@@ -2581,7 +2629,26 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
   const explainRow = React.useMemo(() => {
     if (!engine.explain || !pricedForm) return null;
     const sc = toScenario(pricedForm);
-    return (quote, option) => engine.explain(quote, sc, option);
+    /* ⛔ AND ON A BANDED BOARD, THE BAND'S OWN SEARCH RATIO WINS (owner-reported
+       2026-09-04: *"when you do this bracket search… when you click on details, you
+       don't see the adjustments"*).
+
+       A rate sheet itemises a quote by being asked about the loan it priced. The
+       officer's form carries ONE DSCR; a banded board is one search PER BAND, each at
+       its own ratio, so binding every row to the form's ratio asked the sheet about a
+       loan its quote never came from — and a sheet that cannot find that quote answers
+       with nothing, which the panel drew as an empty adjustments table. The band's own
+       ratio rides on the option (`bracket-board.buildBoard`), so the row itself carries
+       the answer and nothing here recomputes a band.
+
+       Unbanded rows carry no `searchDscr`, so they ask exactly what they always asked. */
+    return (quote, option) => {
+      const band = option && option.searchDscr;
+      const asked = (band != null && Number.isFinite(Number(band)))
+        ? { ...sc, dscr: Number(band) }
+        : sc;
+      return engine.explain(quote, asked, option);
+    };
   }, [engine, pricedForm]);
 
   return (
