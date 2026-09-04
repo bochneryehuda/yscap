@@ -798,6 +798,26 @@ import src/lib/conditions/answers.js
 # about rule grammar at all).
 import src/lib/conditions/rules.js
 
+# ── AND THE PRICING RULE CENTER READS IT TOO (2026-09-04) ────────────────────
+# Recorded rather than re-authorized: the line above is a MODULE import and the
+# gate reads it as one, so nothing new crosses. It is written down because the
+# rule per item is per ITEM, and a reader six months from now should be able to
+# see that a second Long-Term consumer was a decision rather than an accident.
+#
+# `src/longterm/pricing/rules/logic.js` is a THIN seam over the same shared
+# grammar with the PRICING field registry injected: the operator table, the
+# validator, the tri-state evaluator and the plain-English summariser are the
+# shared module's, and what is Long-Term's own is only which registry a rule is
+# read against and the two refusals that are about pricing rather than grammar
+# (an empty tree matches every quote on every board, so it is refused; an
+# unreadable one answers "cannot tell" and the overlay records it instead of
+# acting on it).
+#
+# The alternative was a second grammar, and it is exactly what the share-the-code
+# directive exists to stop: an officer's rule would read one way in the Condition
+# Center and another in the Pricing Rule Center, and the copy that drifted would
+# be the one that silently stopped matching the loans it was written for.
+
 # THE THREE COLUMNS THE SHARED TABLES GAIN SO A LONG-TERM CONDITION CAN LIVE IN
 # THEM (db/653, the same grant). None is lt_-prefixed, so the gate does not
 # require these lines — they are recorded because the rule is per item and a

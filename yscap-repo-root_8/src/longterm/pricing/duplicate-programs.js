@@ -42,7 +42,7 @@ const SUPPRESSED = [
     program: 'BUSINESS PURPOSE / DSCR (5% Fixed)',
     duplicateOf: 'BUSINESS PURPOSE / DSCR',
     since: '2026-09-03',
-    reason: "Owner-identified: the same programme as the regular Investor DSCR, at the same pricing. Verified on the recorded board — 102 of 102 rungs identical on rate, lock and price.",
+    reason: "Owner-identified: the same program as the regular Investor DSCR, at the same pricing. Verified on the recorded board — 102 of 102 rungs identical on rate, lock and price.",
   },
 ];
 

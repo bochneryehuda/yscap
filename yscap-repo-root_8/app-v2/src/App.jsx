@@ -49,6 +49,7 @@ import LtPricer from './longterm/LtPricer.jsx';
 // own header and scripts/test-lt-combined-pricer-fork.mjs.
 import LtCombinedPricer from './longterm/LtCombinedPricer.jsx';
 import LtCombinedSettings from './longterm/LtCombinedSettings.jsx';
+import LtPricingRules from './longterm/LtPricingRules.jsx';
 import LtScenarios from './longterm/LtScenarios.jsx';
 import LtSheetLookup from './longterm/LtSheetLookup.jsx';
 import LtReports from './longterm/LtReports.jsx';
@@ -308,6 +309,11 @@ export default function App() {
               one that drifts is never the server's. */}
           <Route path="/internal/lt/combined" element={<StaffPrivate><LtCombinedPricer /></StaffPrivate>} />
           <Route path="/internal/lt/combined-settings" element={<StaffPrivate><LtCombinedSettings /></StaffPrivate>} />
+          {/* The Pricing Rule Center — our own overlay on top of every engine. Behind
+              StaffPrivate like every other long-term screen; the DOOR is super-admin
+              only and answers 404, and the screen renders nothing when it does, so an
+              ordinary admin who types the URL sees an empty page rather than an error. */}
+          <Route path="/internal/lt/pricing-rules" element={<StaffPrivate><LtPricingRules /></StaffPrivate>} />
           <Route path="/internal/lt/scenarios" element={<StaffPrivate><LtScenarios /></StaffPrivate>} />
           {/* PULL UP A TERM SHEET BY ITS ID. Staff-only for the same reason the
               pricer is: it shows which investor was really behind each price, and

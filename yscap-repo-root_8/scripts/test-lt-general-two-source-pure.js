@@ -281,8 +281,16 @@ const byInvestor = (programs) => {
   ok(keysOn.includes('nqm') && !offNqm.includes('nqm'),
     'GEN-23 turning an investor OFF removes it from the picker (default offers it, off does not) — the misleading "nothing populated" for a deliberate turn-off is gone');
   const mkCustom = (wl) => new Map([['onyxco', { key: 'onyxco', label: 'Onyx Co', whiteLabel: wl, custom: true, seen: 0, aliases: [] }]]);
-  const named = prKeys({ settings: {}, custom: mkCustom('Onyx') });
-  const unnamed = prKeys({ settings: {}, custom: mkCustom(null) });
+  /* ⛔ BOTH FIXTURES ARE SWITCHED ON, so the ONE thing that differs between them is the
+     name — which is what this assertion claims to be about. A hand-added investor now
+     arrives OFF whatever it is called (owner-directed 2026-09-04, and the add-investor
+     panel's own promise: *"It joins the list switched off … switch it on when you are
+     ready"*), so leaving the switch out would make BOTH sides absent and the assertion
+     would pass on a picker that offers nobody at all. That the switch is what puts it on
+     the board is GEN-23's job, one assertion above. */
+  const onCustom = { onyxco: { enabled: true } };
+  const named = prKeys({ settings: onCustom, custom: mkCustom('Onyx') });
+  const unnamed = prKeys({ settings: onCustom, custom: mkCustom(null) });
   ok(named.includes('onyxco') && !unnamed.includes('onyxco'),
     'GEN-24 a NAMED hand-added investor is offered (it reaches the board) and an UNNAMED one is not (it lands in `unmapped`) — the picker names investors exactly as the board does');
 

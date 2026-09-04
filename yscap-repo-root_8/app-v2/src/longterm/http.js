@@ -345,3 +345,116 @@ export const ltPost = (p, b) => ltFetch('POST', p, b);
 export const ltPut = (p, b) => ltFetch('PUT', p, b);
 export const ltPatch = (p, b) => ltFetch('PATCH', p, b);
 export const ltDel = (p) => ltFetch('DELETE', p);
+
+/**
+ * A DOOR THAT REPORTS WHILE IT WORKS — newline-delimited JSON, one object per line.
+ *
+ * Owner-directed 2026-09-04, the band board's progress bar: *"You shouldn't feel like
+ * the system forgot about you. It's just taking long, and meanwhile you see the
+ * original rates."* The band searches take seconds; this is how the screen hears about
+ * each one as it lands instead of at the end.
+ *
+ * ⛔ THE LAST LINE IS THE ANSWER, and it is the same object the plain door returns.
+ * Every earlier line is a report. So a caller that ignores `onEvent` entirely gets
+ * exactly what it got before, which is what makes this safe to fall back FROM.
+ *
+ * ⛔ AND IT DEGRADES RATHER THAN FAILING. A browser with no `ReadableStream` on the
+ * response (an older one, a jsdom render, a proxy that buffered the whole body) still
+ * reaches `res.text()` and reads the same lines — it simply learns everything at once,
+ * which is precisely the behaviour before this existed. A non-streaming path that
+ * THREW would turn a working board into a broken one to protect a progress bar.
+ *
+ * ⛔ A LINE THAT DOES NOT PARSE IS SKIPPED, NEVER THROWN. Progress is decoration; the
+ * result line is what matters, and losing a board because one report was truncated
+ * would be the decoration costing the answer.
+ *
+ * ⛔ AND `onEvent` IS CALLED INSIDE A TRY. A listener that throws — a screen that
+ * unmounted mid-search, most likely — must not abandon the read and lose the result.
+ */
+export async function ltStreamNdjson(path, body, onEvent) {
+  const headers = { 'Content-Type': 'application/json', Accept: 'application/x-ndjson, application/json' };
+  const t = token();
+  if (t) headers.Authorization = `Bearer ${t}`;
+
+  const res = await fetch(path, {
+    method: 'POST',
+    headers,
+    body: body != null ? JSON.stringify(body) : undefined,
+    credentials: 'same-origin',
+  });
+
+  if (!res.ok) {
+    // The up-front refusals still travel as real statuses with a JSON body — see the
+    // route's own note about the status code being spent at the first byte.
+    let data = null;
+    try { data = await res.json(); } catch { /* an empty or non-JSON body is fine */ }
+    const err = new Error(messageFor(res.status, data));
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+
+  /* ⛔ A PLAIN JSON ANSWER IS A VALID ANSWER FROM THIS DOOR, and reading it as a
+     progress line is how a working board becomes an error. The streaming route sends
+     ordinary JSON whenever nothing was ever reported — a refusal the runner produced
+     before the first band, or a run with no work to do — because the HTTP status is
+     still available at that point and a real status is worth more than a uniform shape.
+     It is also exactly what the PLAIN door sends, so this same reader can be pointed at
+     either one. Told apart by the content type the server set, never by guessing at the
+     body's shape. */
+  const ct = String((res.headers && typeof res.headers.get === 'function' ? res.headers.get('content-type') : '') || '');
+  if (!/ndjson/i.test(ct)) {
+    const one = await res.json();
+    return one && typeof one === 'object' ? one : {};
+  }
+
+  let last = null;
+  const take = (line) => {
+    const s = String(line || '').trim();
+    if (!s) return;
+    let obj = null;
+    try { obj = JSON.parse(s); } catch { return; }   // a truncated report is not an error
+    if (!obj || typeof obj !== 'object') return;
+    if (obj.t === 'result') { last = obj; return; }
+    if (typeof onEvent === 'function') {
+      try { onEvent(obj); } catch { /* a listener never costs the answer */ }
+    }
+  };
+
+  const streamable = res.body && typeof res.body.getReader === 'function'
+    && typeof TextDecoder !== 'undefined';
+  if (streamable) {
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      // eslint-disable-next-line no-await-in-loop
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl = buf.indexOf('\n');
+      while (nl >= 0) {
+        take(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        nl = buf.indexOf('\n');
+      }
+    }
+    buf += dec.decode();
+    take(buf);
+  } else {
+    const text = await res.text();
+    for (const line of String(text).split('\n')) take(line);
+  }
+
+  if (last == null) {
+    // The connection ended without the one line that carries the answer. Say exactly
+    // that: a caller must not read "no bands" out of a dropped stream.
+    const err = new Error('The band search ended before it answered. Search again.');
+    err.status = 0;
+    throw err;
+  }
+  // `t` is the envelope's own key and is not part of the answer.
+  const out = { ...last };
+  delete out.t;
+  return out;
+}

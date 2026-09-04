@@ -544,6 +544,15 @@ export default function StaffLayout({ children }) {
             {role === 'super_admin' && (
               <NavLink className="sb-link" to="/internal/lt/combined-settings" title="Combined Pricing Engine settings — every investor, the name a client may see, and which of the two programs their pricing is fetched from."><NavIcon name="settings" />Combined Pricing Engine settings</NavLink>
             )}
+            {/* THE PRICING RULE CENTER — a SEPARATE section, not a tab on the settings
+                screen: *"Separate section, not part of the general settings, a separate
+                center for pricing engine rules."* SUPER ADMIN ONLY and hidden from
+                everybody else rather than shown and refused, exactly like the two above:
+                the door answers 404 to any other role, so a visible link would be a
+                control that always fails. */}
+            {role === 'super_admin' && (
+              <NavLink className="sb-link" to="/internal/lt/pricing-rules" title="Our own rules on top of every pricing engine — refuse a quote, block an investor, add a margin holdback, give a discount or a credit. Nothing is pre-filled."><NavIcon name="pricing" />Pricing Rule Center</NavLink>
+            )}
           </>
         ) : (<>
         <div className="sb-sec">Main</div>

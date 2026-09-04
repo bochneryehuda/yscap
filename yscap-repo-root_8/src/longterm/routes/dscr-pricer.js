@@ -313,12 +313,29 @@ function derivedOf(sc) {
  * runs, with one field different: the ratio. A second pricing path here would be
  * a second answer to what this deal is.
  */
-async function priceBrackets(req, res) {
+/**
+ * THE WHOLE BRACKET BOARD, AS A FUNCTION OF THE REQUEST — the body BOTH doors run.
+ *
+ * ⛔ TWO TRANSPORTS, ONE PIECE OF WORK (owner-directed 2026-09-04, the progress bar:
+ * *"You shouldn't feel like the system forgot about you"*). `POST /price-brackets`
+ * answers one JSON object when it is finished; `POST /price-brackets/stream` reports
+ * each band as it lands and then the same object. A second handler for the streaming
+ * door would be a second answer to what this deal is — the exact defect the header
+ * above warns about — so the door decides only how the answer TRAVELS.
+ *
+ * It returns `{ status, body }` and touches `res` for one thing only: the 4xx refusals
+ * that must happen BEFORE anything is streamed (see `startStream` below). Everything
+ * else is the caller's to send.
+ */
+async function bracketBoardFor(req, res, onProgress) {
   const body = req.body && typeof req.body === 'object' ? req.body : {};
   let sc = body.scenario ? body.scenario : body;
-  if (rejectUnsupported(sc, res)) return;
+  // ⛔ THESE TWO ANSWER `res` THEMSELVES AND THEY RUN BEFORE ANY VENDOR CALL, which is
+  // exactly why the streaming door can still send a real HTTP status: nothing has been
+  // written when they fire. `handled` tells the caller the response is already gone.
+  if (rejectUnsupported(sc, res)) return { handled: true };
   const chk = rejectInvalidRequest(sc, res);
-  if (chk.rejected) return;
+  if (chk.rejected) return { handled: true };
   const requestedScenario = requestedOf(sc);
   sc = chk.scenario;
 
@@ -395,6 +412,9 @@ async function priceBrackets(req, res) {
   };
 
   const out = await bracketRun.priceByBracket(figures, runSearch, {
+    // Passed straight through: the loop reports, this door only forwards. A door that
+    // is not streaming hands over nothing and the loop's `say` becomes a no-op.
+    onProgress: typeof onProgress === 'function' ? onProgress : undefined,
     rounds: Number.isInteger(body.rounds) ? body.rounds : undefined,
     /* WHERE TO START. A ratio the officer typed wins; with none, `seedRatioFrom`
        works one out from a typical coupon — the owner's *"we don't need a target rate
@@ -436,16 +456,95 @@ async function priceBrackets(req, res) {
     // vendor (the first search did not answer). Those need different actions, so
     // they carry different codes and neither is dressed up as the other.
     const status = out.error === 'lt_bracket_figures_incomplete' ? 422 : 502;
-    return res.status(status).json(out);
+    return { status, body: out };
   }
-  res.json(Object.assign({ ok: true }, out, {
-    requestedScenario,
-    derivedScenario: derivedOf(sc),
-    countyEnrichment: chk.countyEnrichment,
-    dscrClamped: chk.dscrClamped || null,
-    effectiveScenario: firstRequest ? effectiveOf(firstRequest) : null,
-    provenance,
-  }));
+  return {
+    status: 200,
+    body: Object.assign({ ok: true }, out, {
+      requestedScenario,
+      derivedScenario: derivedOf(sc),
+      countyEnrichment: chk.countyEnrichment,
+      dscrClamped: chk.dscrClamped || null,
+      effectiveScenario: firstRequest ? effectiveOf(firstRequest) : null,
+      provenance,
+    }),
+  };
+}
+
+/** THE PLAIN DOOR — one JSON object, exactly as it has always answered. */
+async function priceBrackets(req, res) {
+  const out = await bracketBoardFor(req, res, null);
+  if (!out || out.handled) return;
+  res.status(out.status).json(out.body);
+}
+
+/**
+ * THE SAME BOARD, REPORTED AS IT IS BUILT — newline-delimited JSON.
+ *
+ * ⛔ WHY A STREAM AND NOT A PROGRESS TABLE THE SCREEN POLLS. A poll needs somewhere to
+ * keep the run's state between two requests, and any such place is either a table
+ * written a dozen times per search or a module-level map that answers correctly only
+ * while one process serves both requests. The work and the report travel on the ONE
+ * connection that is already open for exactly as long as the work lasts, so there is no
+ * shared state to keep, nothing to expire, and no second request that can be routed
+ * somewhere the first one never reached.
+ *
+ * ⛔ ONE LINE, ONE JSON OBJECT, AND THE LAST ONE IS ALWAYS THE ANSWER (`t: 'result'`).
+ * A reader that understands nothing else can ignore every `t: 'progress'` line and read
+ * the last one — which is precisely what the fallback path in the browser does.
+ *
+ * ⛔ THE STATUS CODE IS SPENT BEFORE THE FIRST BYTE. Once a 200 and the headers have
+ * gone there is no way back to a 502, so a refusal AFTER streaming begins travels as a
+ * result line carrying its own `ok:false` and `error`. The refusals that can be known
+ * up front (`rejectUnsupported`, `rejectInvalidRequest`) run before any of this and
+ * still answer with a real status — which is why `bracketBoardFor` does those two
+ * first and says `handled`.
+ *
+ * ⛔ AND IT NEVER LETS A PROXY HOLD THE LINES BACK. `X-Accel-Buffering: no` and
+ * `Cache-Control: no-transform` are the two that make an nginx in front of this
+ * forward each line rather than collect them into one response at the end — which
+ * would leave a progress bar that fills in a single jump once the work is over.
+ */
+/* `board` is the work, injected with its real default. It is a seam for the TEST and
+   nothing else: the transport above — the headers, the framing, which failures can
+   still be a status and which have to travel as a line — is the part with the traps in
+   it, and it cannot be exercised through a door that needs two live rate sheets. The
+   production call passes nothing. */
+async function priceBracketsStream(req, res, board = bracketBoardFor) {
+  let started = false;
+  const send = (obj) => {
+    if (res.writableEnded) return;
+    try { res.write(`${JSON.stringify(obj)}\n`); } catch (_) { /* the reader left */ }
+  };
+  const start = () => {
+    if (started) return;
+    started = true;
+    res.status(200);
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-store, no-transform');
+    res.setHeader('X-Accel-Buffering', 'no');
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+  };
+  let out;
+  try {
+    out = await board(req, res, (event) => { start(); send({ t: 'progress', ...event }); });
+  } catch (e) {
+    // A throw after the headers have gone cannot be a 500 any more — say so on the wire.
+    if (started) {
+      send({ t: 'result', ok: false, error: 'lt_dscr_price_brackets_error', message: (e && e.message) || null });
+      return res.end();
+    }
+    throw e;
+  }
+  // One of the up-front refusals already answered with its own status.
+  if (!out || out.handled) return;
+  if (!started) {
+    // Nothing was ever reported (a refusal before the first band, or a runner with no
+    // work to do), so the plain status is still available and is the honest answer.
+    return res.status(out.status).json(out.body);
+  }
+  send({ t: 'result', ...out.body });
+  return res.end();
 }
 
 async function price(req, res) {
@@ -883,6 +982,15 @@ function makeRouter() {
   router.get('/health', (req, res) => health(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_health_error' })));
   router.get('/login-check', (req, res) => loginCheck(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_login_error' })));
   router.post('/price-brackets', (req, res) => priceBrackets(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_brackets_error' })));
+  /* THE SAME BOARD, REPORTED AS IT IS BUILT. Registered BEFORE nothing and AFTER the
+     plain door only for readability — Express matches on the full path, so the two
+     cannot shadow one another. */
+  router.post('/price-brackets/stream', (req, res) => priceBracketsStream(req, res).catch((e) => {
+    // Only reachable while the headers are still ours; the handler itself converts a
+    // late throw into a result line.
+    if (res.headersSent) { try { res.end(); } catch (_) { /* already gone */ } return; }
+    res.status(500).json({ ok: false, error: 'lt_dscr_price_brackets_error' });
+  }));
   router.post('/price', (req, res) => price(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_error' })));
   /**
    * WHY IS THIS PRICE THIS PRICE — the SAME door the Combined Pricing Engine mounts.
@@ -914,4 +1022,4 @@ function makeRouter() {
 }
 
 module.exports = { makeRouter, handlers: { health, loginCheck, price, priceBrackets, disqualify, disqualifications, ineligible, selftest, zipLookup, investorsRoster }, BATTERY, SUPPORTED_FIELDS, META_FIELDS,
-  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf } };
+  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf, priceBracketsStream } };
