@@ -632,7 +632,26 @@ control.
 **22 mutations (M1–M22) were each proven to fail, with a green unmutated control either side.**
 A 42-suite sweep across pricing, tapes, Encompass, exceptions and registration: **0 failing.**
 
-One method note worth keeping: **a `require.cache` swap cannot neutralize a module captured by a
+**AND A CAVEAT ON THE EVIDENCE ITSELF, because it is the honest half.** The 42-suite sweep quoted
+above was a SELECTION, and a selection cannot answer *"did this break anything"* — CI found what it
+missed (§9.7b, §9.10). The FULL chain was then run three times, and the first two were themselves
+compromised in ways worth writing down:
+
+* **Run 1 was edited underneath.** Source files were changed while it was in flight, so suites that
+  ran before and after the edit exercised different code. A sample taken while the thing under
+  measurement is changing is not a sample.
+* **Runs 1 and 2 reused a scratch database that earlier runs had already written to.** Run 2 came
+  back with seven failures in `test-sitewire-inbound-reactions`; **reverting the whole commit
+  changed nothing (17/7 either way) and a FRESH database passed 24 of 24** — the leftovers were the
+  cause, not the code. CI builds a new database per run and could never see it. Run 3 is the
+  authoritative one: the committed tree, a fresh database, nothing changing underneath.
+* **Four separate things reported a false verdict along the way** — the background runner reporting
+  the WRAPPER's exit rather than npm's ("exit 0" on a run that failed), suites that report a failure
+  without the `[ci-plan] FAILED:` prefix, `/[1-9][0-9]* failed/` matching the tail of a UUID in a
+  suite's own log line, and the Encompass write-gate's fixture test printing violation lines
+  precisely when it is WORKING. Any one of them, believed, is a confident wrong all-clear.
+
+One further method note worth keeping: **a `require.cache` swap cannot neutralize a module captured by a
 top-level `require`** — measured (cache swap: the fee stayed $2,500; property replacement on the
 exports object: $900). The mutation harness replaces `M.originationFor` on the exports object, and
 the test records why.
