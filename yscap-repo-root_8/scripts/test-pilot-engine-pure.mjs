@@ -405,8 +405,17 @@ ok(!/hint=/.test(LAYOUT_CODE),
    session and asserts the bar is on screen and its button is clickable); these
    are the source half, for a box with no browser. */
 const SVB = stripComments(read('app-v2/src/components/StaffViewBanner.jsx'));
-ok(/if \(!viewing\) return null;/.test(SVB) && !/^\s*return null;/m.test(SVB.replace(/if \(!viewing\) return null;/, '')),
+ok(/if \(!viewing && !unknown\) return null;/.test(SVB)
+   && !/^\s*return null;/m.test(SVB.replace(/if \(!viewing && !unknown\) return null;/, '')),
   'C10a the bar hides only when there is no staff view to report — never unconditionally');
+/* ⛔ AND A FAILED PROBE IS NOT A "NO". Swallowing the error rendered nothing, so a
+   blip read as "you are not in a staff view" — fail-OPEN on the one rule this bar
+   exists for, and on the engine shell this bar is the ONLY thing that says whose
+   session this is. Post-merge audit of #1450. */
+ok(!/\.catch\(\(\) => \{\}\)/.test(SVB),
+  'C10a2 …and an unreadable probe is never swallowed into silence');
+ok(/setUnknown\(true\)/.test(SVB) && /could not check whose screen this is/.test(SVB),
+  'C10a3 …it says it cannot tell, in words, rather than showing nothing');
 ok(/api\.staffViewSession\(\)/.test(SVB) && /setViewing\(/.test(SVB),
   'C10b …it asks the server whose screen this is, so a shell holds no state and cannot wire it wrong');
 ok(/You are seeing/.test(SVB) && /viewing\.name/.test(SVB),
