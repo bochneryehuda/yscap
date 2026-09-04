@@ -94,7 +94,7 @@ function attach(router) {
    * is actually firing."*
    *
    * Every rule the centre holds, worst first, each with what it has actually
-   * DONE on real boards (the db/696 ledger) and, when it cannot run at all, the
+   * DONE on real boards (the db/697 ledger) and, when it cannot run at all, the
    * reason in the words a person can act on.
    *
    * ⛔ AN UNREADABLE LEDGER IS REPORTED, NEVER DRAWN AS ZEROES. Every counter

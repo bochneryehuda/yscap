@@ -3307,7 +3307,7 @@ model LtPricingRuleEvent {
   @@map("lt_pricing_rule_event")
 }
 
-/// ONE RULE'S DAY ON ONE ENGINE — the firing ledger (db/696).
+/// ONE RULE'S DAY ON ONE ENGINE — the firing ledger (db/697).
 ///
 /// Owner-directed 2026-09-04: *"open audit engines to make sure that every rule
 /// is actually firing."* `LtPricingRuleEvent` beside this records what happened

@@ -124,14 +124,20 @@ const CLOSING_FEES = {
   origination: {
     label: 'Origination fee', quoteKey: 'origination', studio: 'origFee', fixture: 'general',
     surfaces: {
-      pdf: /rowIn\(xR, colW, "Origination fee \("/,
-      xlsxStd: /\["Origination \(" \+ origPctStr\(\(d\.origPct/,
-      xlsxGold: /\["Origination \(" \+ origPctStr\(\(gd\.origPct/,
-      xlsxSilver: /\["Origination \(" \+ origPctStr\(\(sd\.origPct/,
-      xlsxSpeed: /\["Origination \(" \+ origPctStr\(\(pd\.origPct/,
+      /* RE-POINTED 2026-09-04, never loosened. The five studio surfaces below used to build this
+         row's label inline; they now call ONE `origRowLabel(<their own data var>)`, because the
+         program minimum (db/696) means the STATED rate is sometimes not the rate charged and five
+         hand-built labels are five chances to print a row that contradicts itself. Each token still
+         names the surface's OWN data variable, which is the rule that stops one column covering
+         for another. */
+      pdf: /rowIn\(xR, colW, origRowLabel\(d, "Origination fee"\)/,
+      xlsxStd: /\[origRowLabel\(d\),/,
+      xlsxGold: /\[origRowLabel\(gd\),/,
+      xlsxSilver: /\[origRowLabel\(sd\),/,
+      xlsxSpeed: /\[origRowLabel\(pd\),/,
       studioPanel: /YS\.put\("rOrig"/,
-      staffPanel: /k=\{`Origination \(/,
-      borrowerEmail: /feeRow\(`Origination fee/,
+      staffPanel: /Origination \(\$\{pct\}\)/,
+      borrowerEmail: /feeRow\(\s*\n?\s*origMin/,
       derivation: /\["Origination", origPctStr/,
     },
   },

@@ -282,7 +282,7 @@ async function events(opts) {
 }
 
 /**
- * WHAT EVERY RULE HAS ACTUALLY DONE — the firing ledger (db/696), rolled up.
+ * WHAT EVERY RULE HAS ACTUALLY DONE — the firing ledger (db/697), rolled up.
  *
  * Owner-directed 2026-09-04: *"open audit engines to make sure that every rule
  * is actually firing."*

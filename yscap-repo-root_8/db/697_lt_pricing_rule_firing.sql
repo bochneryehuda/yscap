@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/696 — lt pricing rule FIRING LEDGER
+-- db/697 — lt pricing rule FIRING LEDGER
 --
 -- WHAT THIS CHANGES, AND WHY.
 --

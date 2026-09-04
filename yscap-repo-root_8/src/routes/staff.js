@@ -3379,6 +3379,22 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // disagreement FAILS the registration with a plain error naming both
     // sides — fix the application details (or the studio pick) and register
     // again. Unclassifiable values stay silent (never a guessed refusal).
+    /* A TYPED MINIMUM ORIGINATION FEE MUST FIT ITS COLUMN, AND THE COLUMN DECIDES.
+       db/696's CHECK is 0..25000 — an OWNER-SET guard against a decimal slip — and it is far
+       narrower than numeric(12,2), so a plausible-looking 250000 would sail through every JS
+       check and be REFUSED BY POSTGRES deep inside the registration transaction, surfacing as
+       a 500 "server error" that names nothing. Refused HERE, before any work is done, in the
+       words `lib/number-bounds` composes from the column's own limit — so the officer is told
+       which box and what the ceiling is, rather than being told the system is broken. An empty
+       box is not a value and is not judged. */
+    if (overrides && overrides.minOrigFee !== undefined && overrides.minOrigFee !== null
+        && overrides.minOrigFee !== '') {
+      const n = Number(overrides.minOrigFee);
+      const problem = !isFinite(n)
+        ? 'Minimum origination fee must be a number'
+        : numberBounds.applicationColumnProblem('file_min_orig_fee', n);
+      if (problem) return res.status(400).json({ error: problem, field: 'minOrigFee' });
+    }
     const fileConflicts = registrationGuard.registrationFileConflicts(f.app, overrides);
     if (fileConflicts.length) {
       return refuse(422, {
@@ -3751,6 +3767,38 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
          will notice. */
       if (Object.prototype.hasOwnProperty.call(overrides, 'feasibilityFee'))
         await client.query(`UPDATE applications SET file_feasibility_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.feasibilityFee)]);
+      /* THE PER-FILE MINIMUM ORIGINATION FEE sticks the same way (owner-directed 2026-09-04,
+         db/696) — an APPROVED EXCEPTION on one file, never a copy of the company number. A blank
+         box writes NULL, which is what makes the owner's own rule true: *"any file, even if it's
+         already in the system, by the next registration, it should follow the rules of the new
+         registration if it gets re-registered again. Shouldn't be locked in where the fee was
+         already locked in."* A typed 0 is a deliberate WAIVER of the minimum and is stored as 0.
+
+         THIS IS THE ONLY WRITER OF THIS COLUMN, and that is load-bearing for the same reason as
+         the feasibility fee above: db/696 does not widen the economics-reopen trigger for it
+         precisely because it can only be written as part of a REGISTRATION, so there is never a
+         stale registration for the trigger to catch. Adding another door means widening that
+         trigger — section F of `test-min-origination-pure.js` is what will notice. */
+      /* THE MINIMUM ORIGINATION FEE HAS A CHECK NARROWER THAN ITS TYPE (db/696: 0..25000),
+         so a number that fits numeric(12,2) can still be REFUSED BY POSTGRES — and this
+         write sits inside the registration transaction, where a raised constraint becomes a
+         500 "server error" on a registration that otherwise succeeded. That is the exact
+         class `lib/number-bounds` exists to kill, and it was live here until the live-schema
+         guard caught the missing COLUMN_KIND entry (2026-09-04).
+
+         It falls to NULL rather than clamping, and the difference matters: `resolveMinFee`
+         already REFUSES an out-of-range value and falls through to the company default, so
+         NULL is the one answer that keeps the stored column and the priced quote agreeing.
+         A clamped $25,000 would be plausible enough to look deliberate, and the studio would
+         re-display it as this file's minimum while nobody chose it. (The DOOR refuses the
+         typed value in plain words before we ever get here — this is the backstop that makes
+         a 500 structurally impossible from any other path.) */
+      const stickyMinOrig = (v) => {
+        const n = stickyMk(v);
+        return (n == null || numberBounds.applicationColumnProblem('file_min_orig_fee', n)) ? null : n;
+      };
+      if (Object.prototype.hasOwnProperty.call(overrides, 'minOrigFee'))
+        await client.query(`UPDATE applications SET file_min_orig_fee=$2 WHERE id=$1`, [appId, stickyMinOrig(overrides.minOrigFee)]);
       /* OUR FEE'S TWO PARTS AND THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE stick the same way
          (owner-directed 2026-08-26, db/632: "it should just be pre-filled in the manual section.
          Everything can be changeable"). A blank clears the column → the company number, this

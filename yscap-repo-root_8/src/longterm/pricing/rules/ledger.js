@@ -1,6 +1,6 @@
 'use strict';
 /**
- * LONG-TERM — WRITING THE RULE FIRING LEDGER (db/696).
+ * LONG-TERM — WRITING THE RULE FIRING LEDGER (db/697).
  *
  * Owner-directed 2026-09-04: *"open audit engines to make sure that every rule
  * is actually firing."*
@@ -124,7 +124,7 @@ function arm() {
 }
 
 /**
- * DRAIN THE BUFFER INTO db/696.
+ * DRAIN THE BUFFER INTO db/697.
  *
  * ⛔ THE UPSERT ADDS, IT DOES NOT REPLACE. Two processes price boards at once
  * and both flush the same (rule, day, engine) key; `SET x = table.x + excluded.x`

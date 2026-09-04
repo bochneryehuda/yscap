@@ -8,7 +8,7 @@
  * The pure suite proves the verdicts and the counting. This one proves the four
  * things no pure test can see:
  *
- *   • that db/696 actually built what the writer writes to — a wrong column name
+ *   • that db/697 actually built what the writer writes to — a wrong column name
  *     inside the writer's own swallowing catch reports a confident, permanent
  *     "nothing has ever fired", which is the exact lie this feature exists to
  *     end (the class db/621 and the `whole-loan-context` phantom columns record);
@@ -20,7 +20,7 @@
  *   • that a board priced end to end actually lands a row, so the recorder is
  *     wired to the engine rather than merely wired to itself.
  *
- * Requires DATABASE_URL with the migrations applied (incl. db/696); skips
+ * Requires DATABASE_URL with the migrations applied (incl. db/697); skips
  * otherwise, so a database-less box pays nothing.
  */
 
@@ -65,7 +65,7 @@ const made = { staff: [], rules: [] };
   };
 
   try {
-    console.log('LT — the rule-center audit (db/696)');
+    console.log('LT — the rule-center audit (db/697)');
 
     // ═════════════════════════════════════════════════════════════════════
     console.log('\nA. THE LEDGER TABLE IS THERE, AND ITS RULES BITE');
@@ -201,7 +201,7 @@ const made = { staff: [], rules: [] };
 
     /* A FLUSH THAT CANNOT REACH THE TABLE MUST REPORT, NEVER THROW. Proven by
        pointing the writer at a database that has no such table — the same shape
-       as a deploy where db/696 has not replayed yet. */
+       as a deploy where db/697 has not replayed yet. */
     ledger.reset();
     ledger.record(
       { ran: true, applied: [{ ruleId, quotes: 1 }] },
@@ -336,10 +336,10 @@ const made = { staff: [], rules: [] };
 
     const fs = require('fs');
     const path = require('path');
-    const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '696_lt_pricing_rule_firing.sql'), 'utf8');
+    const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '697_lt_pricing_rule_firing.sql'), 'utf8');
     let replayed = true;
     try { await ltdb.query(sql); } catch (e) { replayed = false; console.error(`    ${e.message}`); }
-    check(replayed, 'I1  db/696 replays cleanly on a database that already has it');
+    check(replayed, 'I1  db/697 replays cleanly on a database that already has it');
     const kept = await readRow(ruleId, 'general');
     check(!!kept, 'I2  …and the counts written before it are still there');
 
