@@ -274,9 +274,16 @@ export function overridesFromSnapshot(snap, mode) {
        reads as not-an-override, and the register path writes NULL over the sticky — which is the
        whole chain the 2026-07-16 markup fix put in place for exactly this failure.
 
-       AN OPEN FINDING, recorded rather than swept up: `feasibilityFee`, `legalFee`,
-       `settlementFee`, `cemaFee` and `titleFee` are all still INSIDE `compact()` while their own
-       notes say a blank box clears them. Widening the contract to them would change how live files
+       AN OPEN FINDING, recorded rather than swept up — and the membership was MEASURED rather
+       than remembered, because the first version of this note got it wrong in both directions.
+       The keys that genuinely suffer this are the ones that (a) sit inside `compact()`, (b) carry
+       an explicit-blank `delete` in `buildInputs`, and (c) have a STICKY per-file column for that
+       blank to clear: `feasibilityFee` (file_feasibility_fee), `underwritingFee`
+       (file_underwriting_fee), `legalFee` (file_legal_fee), `settlementFee`
+       (file_settlement_fee) and `cemaFee` (file_cema_fee). `titleFee`, `lenderFee`, `creditFee`
+       and `appraisalFee` are NOT in that set and must not be added to it — they have no per-file
+       column at all, so a blank box already resolves to the company default and there is nothing
+       stale for it to clear. Widening the contract to the five would change how live files
        re-register — blanks would start clearing stickies that currently survive — so it is its own
        audited pass and its own owner call, not a drive-by here. */
     ...(f.tsMinOrigFee === '' ? { minOrigFee: '' } : f.tsMinOrigFee != null ? { minOrigFee: f.tsMinOrigFee } : {}),

@@ -25,7 +25,13 @@ touches the long-term product.
 
 This document is the research pass the owner asked for **first**. It states what the system does
 today (measured, not remembered), what one honest change looks like, the decisions that are the
-owner's to make, and the wording. **No code has been changed.**
+owner's to make, and the wording.
+
+> **STATUS 2026-09-04 — BUILT AND SHIPPED.** Sections 1–8 are the research as it was written before
+> anything was changed, and they are kept unedited so the reasoning can be read against what
+> actually shipped. **§9 is the shipped record** — what was built, what was measured rather than
+> assumed, what was corrected along the way, and what is deliberately still open. Where §9 and an
+> earlier section disagree, **§9 is what the code does.**
 
 ---
 
@@ -427,3 +433,196 @@ therefore proceeding **as stated defaults, not as approvals**, and each is small
 in one commit. The two that would cost most to get wrong, and so are worth a second look before
 they ship, are **D2** (the minimum applies to our fee only, never the TPO broker's own) and **D6**
 (going forward only — no sweep of the open book).
+
+---
+
+## 9. THE SHIPPED RECORD — what was actually built, 2026-09-04
+
+Five commits on `claude/speed-program-rtl-research-s70uam`. Sections 1–8 above are the research as
+written **before** anything changed; this section is what the code does.
+
+### 9.1 The one rule, and why it touched no frozen engine
+
+`src/lib/min-origination.js` is the whole rule and it is **PURE** — no database, no config, no
+`require`s — so the server, the studio's browser mirror and the admin screen read ONE definition.
+
+**No frozen engine file moved, and that was verified rather than assumed.** Each engine exports
+`ORIG_PCT` as a constant and never reads it in `sizeLoan` — in `standard-program.js` it appears
+only at its declaration and in the exported `constants` block. The loan amount, the note rate,
+every cap, the initial advance, the holdback and the financed reserve are all computed **above**
+the origination line and never read it. So a floor on that fee is a pure closing-cost change of
+exactly the same class as the construction feasibility fee and the legal-fee ladder, and it needed
+no authorization of a frozen guideline number.
+
+**It reaches cash to close and the liquidity requirement with nothing extra wired**, because the
+cascade is built by adding:
+
+```
+origination ──► closingDueAtClose ──► cashToClose ──► liquidityRequired
+```
+
+A fee can never be missing from a total that is built by adding — the same reasoning
+`scripts/lib/fee-roster.js` records for treating those two as totals proven by ARITHMETIC rather
+than surfaces proven by a source token. The owner's *"it needs to calculate in the cash to close
+and the liquidity requirement"* is therefore satisfied at the ONE line where the floor is applied,
+in `pricing.js`:
+
+```js
+const originationDetail = minOrig.originationFor({
+  totalLoan, origPct,
+  minFee: minOrig.resolveMinFee(hasInput(input, 'minOrigFee') ? input.minOrigFee : null, cd.minOrigFee),
+});
+const origination = originationDetail.amount;
+```
+
+`amount` keeps the exact meaning `quote.closingCosts.origination` already had, so DocLab, the
+tapes, the emails, the tie-outs and the reporting needed no change.
+
+### 9.2 "Pre-filled, not pre-set" — the property, and where it is enforced
+
+The owner's distinction is the whole design, and it is enforced in **four** places, not one:
+
+| Layer | What makes it a pre-fill |
+| --- | --- |
+| `db/695` | Both columns are **nullable with NO DEFAULT**. A `DEFAULT 2500` would stamp the number onto every row at insert, and a stamped value is an explicit per-file override that outlives every later change to the company number — the 2026-08-20 defect reproduced in the database. |
+| The studio | The company number is a **placeholder**, never a painted `value` (`seedAdminDefaults` sets the attribute, not `.value`). |
+| `pricing-overrides` | `minOrigFee` is a **DEFAULTED** key, so `normalizeCompanyDefaultKnobs` maps an exact restatement of the company number back to `''`. |
+| `buildInputs` | An explicit `''` **deletes** the key rather than skipping it (§9.5). |
+
+`resolveMinFee(perFile, companyDefault)` is the three-step chain every other fee in this system
+uses — per-file → company → $2,500 — and it is a function rather than a `||` chain for one reason:
+**an explicit 0 is honoured**, because it is a real decision (an approved exception waiving the
+minimum outright) and `0 || next` would silently un-waive an approved waiver. A value that is
+blank, unreadable, negative or above the $25,000 ceiling is NOT a minimum and falls through.
+
+### 9.3 What it actually changes — measured
+
+At the 1.25% default the minimum is reached at a **$200,000** loan, so it binds below that and on
+**nothing** above it. The owner's own example: a $100,000 loan pays $1,250 today and $2,500 with
+the minimum — an effective 2.500%.
+
+### 9.4 The investor-facing half (§4's two answers, as built)
+
+**Blue Lake's tape.** Column BC is an origination FRACTION, so the tape now sends
+`closingCosts.originationMinimum.effectivePct` when the floor bound and `q.origPct` otherwise —
+the owner's *"send them a higher percentage, according to how much this is the real percentage for
+$2,500."*
+
+The byte-identical property on an unbound loan is a property of the EXPRESSION, not a test result:
+`originationFor` returns `pct` **itself** when `applied` is false, never a re-derivation. Dividing
+the ROUNDED dollars by the loan does not give the stated rate back — 1.25% of $200,001 rounds to
+$2,500.01, and $2,500.01 / $200,001 is 0.0124999875 — so a tape reading a re-derived figure would
+send 1.2499987…% where it has always sent exactly 1.25%, on every loan the minimum never touches.
+That is a change to what an investor receives, dressed as a no-op. Found by section A3 of the pure
+test before it shipped.
+
+**Encompass field 454.** 454 and 388 are two attributes of the SAME `LoanOriginationFee` object
+(`.borPaidAmount` DECIMAL_2 and `.percentage` DECIMAL_3), so 454 joined the **READ-ONLY** registry
+as one more `pull()` — no write path, no new POST endpoint, the read-only gate untouched. The
+switch is `reconcile.markNotApplicable`: a minimum-bound file marks the PERCENTAGE row not
+applicable (with a reason naming 454) and compares the AMOUNT row; an ordinary loan does the
+reverse. *"Not applicable is a status, not a silence"* — both rows still render with the server's
+own sentence saying which governs.
+
+Two things there look like tidiness and are not:
+
+* `markNotApplicable` is **idempotent BY SKIPPING** a row already marked, so a fact that arrives on
+  a second pass can never take effect. The reconcile therefore builds its facts ONCE and passes the
+  same object to BOTH `compareAll` and `markNotApplicable`. The first cut ran the first pass with
+  no facts, marked the amount row not-applicable, and blocked the second.
+* The switch is guarded on `typeof facts.minOrigApplied === 'boolean'`, **not** on truthiness. An
+  unreadable quote must leave the comparison exactly as it is today rather than silently switching
+  which field an investor's file is judged against.
+
+### 9.5 The owner's re-registration rule was NOT working, in two places
+
+*"Any file, even if it's already in the system, by the next registration, it should follow the
+rules of the new registration if it gets re-registered again. Shouldn't be locked in where the fee
+was already locked in."*
+
+**MEASURED before it was fixed:** a file registered with an approved waiver (a typed 0) and then
+re-registered with the box cleared went on being priced at the waived fee. Two independent causes,
+both required:
+
+1. **`compact()` drops `''`,** so a blank box on the studio panel sent **nothing at all** — the
+   payload key is therefore built OUTSIDE `compact()`:
+   `...(f.tsMinOrigFee === '' ? { minOrigFee: '' } : f.tsMinOrigFee != null ? { minOrigFee: f.tsMinOrigFee } : {})`.
+2. **`buildInputs` SKIPS a blank rather than deleting the key** — and `fileInputs` has already
+   handed the base object the sticky value, so skipping leaves the stale amount standing. Hence
+   `if (overrides.minOrigFee === '') delete out.minOrigFee;` beside its four siblings.
+
+**AN OPEN FINDING, recorded rather than swept up, and its membership was MEASURED rather than
+remembered** (the first version of this note got it wrong in both directions). Five keys sit inside
+`compact()` while carrying (a) an explicit-blank `delete` in `buildInputs` and (b) a STICKY
+per-file column for that blank to clear: **`feasibilityFee`, `underwritingFee`, `legalFee`,
+`settlementFee`, `cemaFee`.** They have the same latent defect. `titleFee`, `lenderFee`,
+`creditFee` and `appraisalFee` are **NOT** in that set and must not be added to it — they have no
+per-file column at all, so a blank box already resolves to the company default and there is nothing
+stale for it to clear. Widening the contract to the five would change how live files re-register
+(blanks would start clearing stickies that currently survive), so it is **its own audited pass and
+its own owner call**, not a drive-by.
+
+### 9.6 The corrections made along the way, each of which would have shipped a defect
+
+* **DEFAULTED, not ENGAGED.** The override key was planned as ENGAGED and is DEFAULTED, decided by
+  reading the actual approval and normalization code: DEFAULTED keys have a company default, get
+  the `normalizeCompanyDefaultKnobs` blanking, and `revenueUp: true` means charging MORE needs no
+  approval — only a discount does. The reason is written into the registry entry.
+* **The derivation row was TRUNCATED in the real PDF** — the value column allows two lines and then
+  clips, so it printed `…charged $2,500.00 (3.472% eff`. Found by the new render harness, not by
+  reading; fixed with three short `sub` rows. A source test cannot see this.
+* **A pre-existing live bug found in passing:** `StaffCompanyPricing.jsx` printed
+  `${fmtMoney(lf.underwriting)} + …` as literal text — `fmtMoney` was never defined in that file.
+* **A tenth surface** was found by grep after the nine were done: `src/lib/file-overview.js` printed
+  `1.25% · $2,500.00`, two figures that disagree. It now reads `originationMinimum`.
+* **Two stale guards were RE-POINTED, never loosened** — the fee-roster's five origination tokens
+  and `test-encompass-refinance-fields-pure` F1 (whose registry-shape assertion named the old field
+  count), with F1b added for the new row.
+
+### 9.7 What is deliberately NOT built
+
+* **No sweep of the open book.** The owner's own call: *"no mass registration right now."* Both
+  columns stay NULL on every existing row, so no loan already on the book has its cash to close or
+  its liquidity requirement moved by this deploy — which would reopen Products & Pricing and
+  un-sign live term sheets across the whole open book at once. A live file picks the minimum up on
+  its **next registration**, which is exactly what was asked for.
+* **No TPO-specific minimum.** The minimum applies to OUR fee only, never the broker's own fee on
+  wholesale files (owner-confirmed: *"This is correct"*). There is no `tpo_pricing_settings` column
+  and no per-firm knob.
+* **No CEMA-style tax interaction, no engine number, no V1 change.** `/v1` is parked and registers
+  no files.
+
+### 9.8 The proof
+
+| Suite | Checks | What it holds |
+| --- | --- | --- |
+| `test-min-origination-pure` | 58 | the rule, every boundary, the wording, the no-loan case, the `effectivePct` identity |
+| `test-min-origination-db` | 41 | the migration against a REAL Postgres, the three-step chain, the cascade into cash to close and liquidity, the re-registration rule, the exception reason on every route, and (section G) the Encompass switch end to end |
+| `render-min-origination` | 33 | the REAL browser export — the row label, the sub-line, and the derivation page not clipping |
+| `test-tape-bluelake-pure` | 88 | the bound case plus a byte-identical control |
+| `test-encompass-refinance-fields-pure` | 94 | the registry shape, re-pointed |
+
+**22 mutations (M1–M22) were each proven to fail, with a green unmutated control either side.**
+A 42-suite sweep across pricing, tapes, Encompass, exceptions and registration: **0 failing.**
+
+One method note worth keeping: **a `require.cache` swap cannot neutralize a module captured by a
+top-level `require`** — measured (cache swap: the fee stayed $2,500; property replacement on the
+exports object: $900). The mutation harness replaces `M.originationFor` on the exports object, and
+the test records why.
+
+### 9.9 The wording that shipped (§6's answer, as built)
+
+The row label becomes **"Origination fee (minimum applied)"** on an itemising surface and
+**"— minimum applied"** where the row already says "Origination fee". The sub-line is:
+
+> *This loan's origination fee is our $2,500.00 program minimum, which is more than 1.25% of the
+> loan amount ($1,250.00).*
+
+Three things this wording never does, and they are enforced by the one definition: it never calls
+the floor a **penalty** (it is a minimum on a fee, exactly as the 3-month minimum earned interest
+is never a "prepayment penalty"); it never names a note buyer or capital partner; and the
+**borrower-facing row never states an effective percentage** — two percentages on one line invites
+*"so which rate am I being charged?"*, so the effective figure lives on the derivation page and the
+staff panel, where the reader is an underwriter. **Nothing prints at all when the minimum does not
+bind** — a note that appears on every file teaches people to stop reading notes, so every surface
+is byte-identical to today on a loan at or above the crossover.
