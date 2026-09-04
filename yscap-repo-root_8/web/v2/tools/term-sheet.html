@@ -816,6 +816,7 @@
                     <div class="field"><label for="tsYspStd">Standard&nbsp;(%)</label><div class="input"><input id="tsYspStd" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
                     <div class="field"><label for="tsYspGold">Gold&nbsp;(%)</label><div class="input"><input id="tsYspGold" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
                     <div class="field"><label for="tsYspSilver">Silver&nbsp;(%, max 1.00)</label><div class="input"><input id="tsYspSilver" data-noshare type="number" inputmode="decimal" step="0.05" min="0" max="1" placeholder="0.5"></div></div>
+                    <div class="field"><label for="tsYspSpeed">Speed&nbsp;(%)</label><div class="input"><input id="tsYspSpeed" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
                 </div>
                 <div class="ts-admin-group">Gold top tier — manual markup</div>
                 <div class="ts-admin-grid2">
@@ -831,6 +832,7 @@
                     <div class="field"><label for="tsOrigStd">Standard&nbsp;(%)</label><div class="input"><input id="tsOrigStd" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                     <div class="field"><label for="tsOrigGold">Gold&nbsp;(%)</label><div class="input"><input id="tsOrigGold" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                     <div class="field"><label for="tsOrigSilver">Silver&nbsp;(%)</label><div class="input"><input id="tsOrigSilver" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
+                    <div class="field"><label for="tsOrigSpeed">Speed&nbsp;(%)</label><div class="input"><input id="tsOrigSpeed" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                     <div class="field"><label for="tsOrigManual">Manual&nbsp;(%)</label><div class="input"><input id="tsOrigManual" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                 </div>
                 <p class="ts-admin-mnote">The <strong>Manual</strong> value prices the manual scenario — it applies only once a custom LTV / LTC / ARV basis is set (the Manual card lights). The Manual Program prices on the Standard engine and has no company default of its own, so leaving it blank means <strong>“same as Standard”</strong> — including a Standard value you typed above (the placeholder shows the number a blank field will use). The other three programs are unaffected by it.</p>
@@ -943,6 +945,7 @@
                     <label class="ts-admin-check"><input type="checkbox" id="tsMinIntStd" data-noshare> Add the 3-month minimum earned interest to the <strong>Standard</strong> program</label>
                     <label class="ts-admin-check"><input type="checkbox" id="tsMinIntGold" data-noshare> Add the 3-month minimum earned interest to the <strong>Gold</strong> program</label>
                     <label class="ts-admin-check"><input type="checkbox" id="tsMinIntSilver" data-noshare> Add the 3-month minimum earned interest to the <strong>Silver</strong> program</label>
+                    <label class="ts-admin-check"><input type="checkbox" id="tsMinIntSpeed" data-noshare> Add the 3-month minimum earned interest to the <strong>Speed</strong> program</label>
                 </div>
                 <div id="tsMinIntManualRow" hidden>
                     <label class="ts-admin-check"><input type="checkbox" id="tsMinIntManual" data-noshare checked> Include the 3-month minimum earned interest (<strong>on by default</strong> for a manual product — uncheck to remove)</label>
@@ -1299,11 +1302,11 @@
 <script src="standard-program.js?v=asgseller18-asgelig-tiermk1-tsprog1-oopauto1-judsmall1-speedlev1"></script>
 <script src="gold-standard.js?v=asgseller19-tiermk1-tsprog1-oopauto1"></script>
 <script src="silver-program.js?v=silver9-bandeps-tiermk1-tsprog1-oopauto1-speedlev1"></script>
-<script src="speed-program.js?v=speed3"></script>
+<script src="speed-program.js?v=speed4"></script>
 <script src="title-cost.js?v=admin8-tsprog1"></script>
 <script src="gov-charges.js?v=gov2"></script>
 <script src="address-autocomplete.js?v=admin9-tsprog1"></script>
-<script src="termsheet.js?v=feerows1-heavyrehab1-cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1-derivpage1-bizpurpose1-speed1"></script>
+<script src="termsheet.js?v=feerows1-heavyrehab1-cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1-derivpage1-bizpurpose1-speed1-spknob1"></script>
 <script src="../float-actions.js?v=admin10-applyfix-tsprog1"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

@@ -6,7 +6,8 @@
  * be the more expensive rate from the two programs … only going to allow a 10%
  * assignment fee … even though it's going to be less than both programs, you still
  * need to enforce the max LTV cap from both programs … something that we can sell to
- * either note buyer … Maximum loan out for the speed program is $1 million").
+ * either note buyer"), the two later overlay messages, and the 2026-09-03 correction
+ * that a Speed overlay must never be printed as a parent's own figure.
  * PURE — no DB, no network. Runs web/tools/speed-program.js against the two frozen
  * engines it composes, over the same scenario cross product the engine batteries use.
  *
@@ -26,13 +27,15 @@
  *       seller + financeable, excess = the rest; `assignment.maxPct` is 0.10.
  *   S5  THE OWNER'S TRAP, ASSERTED DIRECTLY. Speed's initial advance ≤ min over
  *       parents of (that parent's acquisition cap × the Speed acqDenom); its total ≤
- *       min over parents of (ARV cap × ARV, on a value-add product) and ≤ $1,000,000.
- *   S6  ATTRIBUTION IS TRUTHFUL. Every enforced ceiling equals the figure of the
- *       parent it is credited to (or the $1M wall when credited to Speed), and every
- *       parent's own ceiling is ≥ the enforced one.
- *   S7  THE $1M WALL. No Speed loan exceeds $1,000,000; a deal both parents would
- *       lend more on is held at exactly the wall; a typed loan amount above it is
- *       INELIGIBLE with the wall named.
+ *       min over parents of (ARV cap × ARV, on a value-add product) and ≤ the maximum.
+ *   S6  ATTRIBUTION IS TRUTHFUL, AND THE PANEL'S TWO SECTIONS STAY SEPARATE. The
+ *       enforced ceiling is the minimum of the two parents' PRICED ceilings and the
+ *       Speed overlay; the overlay is credited only when it binds; each parent's
+ *       published GUIDELINE ROW (what the panel shows in its column) is never below
+ *       what that parent priced, and a Speed overlay never appears in it.
+ *   S7  THE MAXIMUM LOAN OVERLAY. No Speed loan exceeds it; a deal both parents would
+ *       lend more on is held at exactly it; a typed loan amount above it is
+ *       INELIGIBLE with the figure named.
  *   S8  PURITY. Same input → same output; the parents' markup state is untouched
  *       after a quote; the caller's input object is never mutated.
  *   S9  NEVER THROWS. Hostile input yields a status, not an exception.
@@ -78,7 +81,7 @@ const WALL = SPP.constants.SPEED_MAX_LOAN;
 const SHARE = SPP.constants.ASSIGNMENT_MAX_PCT;
 const LTC_WALL = SPP.constants.SPEED_MAX_LTC;
 
-assert(WALL === 1000000, `R11 the Speed Program's own wall is $1,000,000 (got ${WALL})`);
+assert(WALL === 800000, `R11 the Speed Program's own maximum loan is $800,000 (got ${WALL})`);
 assert(SHARE === 0.10, `R7 the Speed Program's assignment share is 10% (got ${SHARE})`);
 assert(LTC_WALL === 0.90, `R13 the Speed Program's loan-to-cost wall is 90% (got ${LTC_WALL})`);
 assert(SPP.constants.FINANCED_RESERVE_ALLOWED === false, 'R12 the Speed Program finances no interest reserve');
@@ -167,7 +170,7 @@ const speedBasis = (c) => SPP.speedInput(c);
 // ---- The matrix, once -------------------------------------------------------------
 let priced = 0, eligible = 0, manual = 0, inel = 0;
 const s1 = { bad: 0 }, s2 = { checked: 0, refused: 0, offTotal: 0, overCap: 0 }, s3 = { bad: 0, notMax: 0 };
-const s4 = { checked: 0, bad: 0 }, s5 = { initOver: 0, arvOver: 0, wallOver: 0 }, s6 = { bad: 0, parentBelow: 0 };
+const s4 = { checked: 0, bad: 0, badTag: 0 }, s5 = { initOver: 0, arvOver: 0, wallOver: 0 }, s6 = { bad: 0, parentBelow: 0, overlayInParent: 0 };
 const s7 = { held: 0 }, s8 = { nondet: 0, mutated: 0, leaked: 0 }, s11 = { bad: 0 };
 const s12 = { requested: 0, financed: 0, noLine: 0, lineWithout: 0 }, s13 = { over: 0, held: 0, misattributed: 0 };
 const first = {};
@@ -232,20 +235,39 @@ for (const c of CASES) {
     const fee = c.purchasePrice - c.sellerPrice, fin = r2(Math.min(fee, SHARE * c.sellerPrice));
     const a = ev.assignment;
     if (a.maxPct !== SHARE || a.financeableFee !== fin || a.recognizedPrice !== r2(c.sellerPrice + fin) || a.excessOOP !== r2(fee - fin)) { s4.bad++; note('s4', { c, a }); }
+    /* THE 10% CAP IS THIS PROGRAM'S OVERLAY, NOT A RULE EITHER PARENT HAS (owner-reported
+       2026-09-03: "it's saying that this is relevant for both. This is also an overlay
+       only for this program"). Both engines raise the identical sentence because both were
+       handed the Speed share, so the plain de-duplication used to tag it [Both] — reading
+       as if Standard and Silver each capped assignment fees at 10%, which neither does. */
+    if (a.overLimit && sized(ev)) {
+      const line = ev.reasons.find((r) => /assignment fee is financed \(the /.test(r.msg));
+      if (!line || line.program !== 'speed' || !/^\[Speed overlay\] /.test(line.msg)) { s4.badTag++; note('s4tag', { c, line: line && line.msg.slice(0, 90), prog: line && line.program }); }
+    }
   }
 
-  // S6 — attribution: the enforced ceiling is the credited parent's own figure
-  const caps = ev.pricedCeiling, own = { standard: sp.standard.ownCeiling, silver: sp.silver.ownCeiling };
+  /* S6 — attribution, and the two meanings the composition panel prints side by side:
+     `ceiling`    = what that parent PRICED this deal at (its own lattice / sqft rule may
+                    have stepped it below its guideline row) — the figure the enforced
+                    ceiling is the minimum of;
+     `ownCeiling` = that parent's published GUIDELINE ROW for the profile, carrying no
+                    lever of ours — the column the panel shows under "Standard"/"Silver",
+                    and never below what it priced. */
+  const caps = ev.pricedCeiling;
+  const pricedCeil = { standard: sp.standard.ceiling, silver: sp.silver.ceiling };
+  const own = { standard: sp.standard.ownCeiling, silver: sp.silver.ownCeiling };
+  const adminBasis = num(c.ovrAcqLTV) > 0 || num(c.ovrARLTV) > 0 || num(c.ovrLTC) > 0;
   for (const k of ['maxLoan', 'maxAcqLTV', 'maxARLTV', 'maxLTC']) {
-    const who = sp.capDonor[k];
     const enforced = caps[k];
-    const speedWall = k === 'maxLoan' ? WALL : k === 'maxLTC' ? LTC_WALL : Infinity;   // the Speed Program's own walls
-    let want = null;
-    if (who === 'speed') want = speedWall;
-    else if (who === 'both') want = own.standard[k];
-    else want = own[who][k];
-    if (who === 'speed' ? Math.abs(enforced - speedWall) > 1e-9 : Math.abs(enforced - Math.min(want, speedWall)) > 1e-9) { s6.bad++; note('s6', { c, k, who, enforced, want }); }
-    if (own.standard[k] < enforced - 1e-9 || own.silver[k] < enforced - 1e-9) { s6.parentBelow++; note('s6b', { c, k, enforced, own }); }
+    const speedWall = k === 'maxLoan' ? WALL : k === 'maxLTC' ? LTC_WALL : Infinity;   // the Speed Program's own overlays
+    const leastPriced = Math.min(pricedCeil.standard[k], pricedCeil.silver[k]);
+    if (Math.abs(enforced - Math.min(leastPriced, speedWall)) > 1e-9) { s6.bad++; note('s6', { c, k, enforced, leastPriced, speedWall }); }
+    // The overlay is credited only when it is genuinely the binding one.
+    if (sp.capDonor[k] === 'speed' && !(speedWall <= leastPriced + 1e-9)) { s6.bad++; note('s6d', { c, k, leastPriced, speedWall }); }
+    // The PANEL's two parent columns are guideline rows, never below what was priced,
+    // and never a Speed overlay wearing a parent's name (the 2026-09-03 report).
+    if (!adminBasis && (own.standard[k] < pricedCeil.standard[k] - 1e-9 || own.silver[k] < pricedCeil.silver[k] - 1e-9)) { s6.parentBelow++; note('s6b', { c, k, pricedCeil, own }); }
+    if (sp.capDonor[k] === 'speed' && (Math.abs(own.standard[k] - speedWall) < 1e-9 && Math.abs(own.silver[k] - speedWall) < 1e-9 && speedWall < 1e9)) { s6.overlayInParent++; note('s6c', { c, k, own, speedWall }); }
   }
 
   // S5 — the trap: measured against EACH parent's own ceiling on the Speed basis
@@ -279,20 +301,22 @@ for (const c of CASES) {
   }
 }
 
-console.log(`priced ${priced} · eligible ${eligible} · manual ${manual} · ineligible ${inel} · held at the $1M wall ${s7.held}\n`);
+console.log(`priced ${priced} · eligible ${eligible} · manual ${manual} · ineligible ${inel} · held at the $${WALL.toLocaleString('en-US')} maximum ${s7.held}\n`);
 assert(priced > CASES.length * 0.15, `M0 the matrix is meaningful — ${priced} of ${CASES.length} scenarios price on Speed`);
 assert(s1.bad === 0, `S1 worst status wins — Speed is never better than the worse parent (violations: ${s1.bad})`);
 assert(s2.checked > 0 && s2.refused === 0, `S2a dual-sellability: each parent ALONE (its own 15% rule, own caps) accepts every Speed loan (${s2.checked} checks, refusals: ${s2.refused})`);
 assert(s2.offTotal === 0, `S2b …and lands AT the Speed amount, or below it by no more than its own lower-rate reserve — never above (off: ${s2.offTotal})`);
 assert(s2.overCap === 0, `S2c …and every ratio of the Speed structure sits at or under that parent's own ceiling (violations: ${s2.overCap})`);
 assert(s3.bad === 0 && s3.notMax === 0, `S3 the rate is exactly the higher of the two parents' rates at the Speed structure (below: ${s3.bad}, not-the-max: ${s3.notMax})`);
+assert(s4.badTag === 0, `S4d the assignment cap reads as a SPEED OVERLAY, never as a rule both parents raised (violations: ${s4.badTag})`);
 assert(s4.checked > 0 && s4.bad === 0, `S4 the 10% share — financeable = min(fee, 10% × seller), effective = seller + financeable, excess = the rest, maxPct 0.10 (${s4.checked} checked, violations: ${s4.bad})`);
 assert(s5.initOver === 0, `S5a the trap: the initial advance respects EACH parent's acquisition cap measured on the 10% basis (violations: ${s5.initOver})`);
 assert(s5.arvOver === 0, `S5b …and the total respects EACH parent's after-repair cap (violations: ${s5.arvOver})`);
-assert(s5.wallOver === 0, `S7a no Speed loan exceeds $1,000,000 (violations: ${s5.wallOver})`);
-assert(s7.held > 0, `S7b the wall genuinely binds — ${s7.held} scenarios held at exactly $1,000,000`);
-assert(s6.bad === 0, `S6a every enforced ceiling equals the credited parent's own figure (or the wall) (violations: ${s6.bad})`);
-assert(s6.parentBelow === 0, `S6b no parent's own ceiling is below the enforced one — it is a MIN (violations: ${s6.parentBelow})`);
+assert(s5.wallOver === 0, `S7a no Speed loan exceeds the $${WALL.toLocaleString('en-US')} maximum (violations: ${s5.wallOver})`);
+assert(s7.held > 0, `S7b the maximum genuinely binds — ${s7.held} scenarios held at exactly $${WALL.toLocaleString('en-US')}`);
+assert(s6.bad === 0, `S6a every enforced ceiling is the minimum of the two parents' PRICED ceilings and the Speed overlay, and the overlay is credited only when it binds (violations: ${s6.bad})`);
+assert(s6.parentBelow === 0, `S6b each parent's published guideline row is never below what that parent priced (violations: ${s6.parentBelow})`);
+assert(s6.overlayInParent === 0, `S6c a Speed overlay NEVER appears in a parent's own column — the 2026-09-03 report ("the maximum loan amount of the standard and the silver is $1 million … which is not true") (violations: ${s6.overlayInParent})`);
 assert(s8.nondet === 0, `S8a deterministic — same input, same output (violations: ${s8.nondet})`);
 assert(s8.mutated === 0, `S8b the caller's input is never mutated (violations: ${s8.mutated})`);
 assert(s8.leaked === 0, `S8c the parents' markup state is untouched after a Speed quote (violations: ${s8.leaked})`);
@@ -307,11 +331,12 @@ for (const k of Object.keys(first)) console.log(`    first ${k}:`, JSON.stringif
 // ---- S7c — a typed loan amount above the wall is refused, naming the wall ---------
 {
   const c = CASES.find((x) => x.arv === 2200000 && x.loanType === 'Purchase' && !x.isAssignment && sized(SPP.evaluate(x)));
-  const ev = SPP.evaluate(Object.assign({}, c, { loanAmount: 1500000 }));
-  assert(ev.status === 'INELIGIBLE' && ev.reasons.some((r) => /\$1,000,000 maximum/.test(r.msg)),
-    `S7c a typed $1,500,000 is INELIGIBLE on Speed and the reason names the $1,000,000 maximum (got ${ev.status})`);
-  const ok = SPP.evaluate(Object.assign({}, c, { loanAmount: 900000 }));
-  assert(ok.status !== 'INELIGIBLE' || !ok.reasons.some((r) => /\$1,000,000 maximum/.test(r.msg)), 'S7d a typed $900,000 is not refused by the wall');
+  const wallText = '$' + WALL.toLocaleString('en-US') + ' maximum';
+  const ev = SPP.evaluate(Object.assign({}, c, { loanAmount: WALL * 1.5 }));
+  assert(ev.status === 'INELIGIBLE' && ev.reasons.some((r) => r.msg.includes(wallText)),
+    `S7c a typed ${'$' + (WALL * 1.5).toLocaleString('en-US')} is INELIGIBLE on Speed and the reason names the ${wallText} (got ${ev.status})`);
+  const ok = SPP.evaluate(Object.assign({}, c, { loanAmount: WALL - 100000 }));
+  assert(ok.status !== 'INELIGIBLE' || !ok.reasons.some((r) => r.msg.includes(wallText)), 'S7d a typed amount under the maximum is not refused by it');
 }
 
 // ---- S9 — never throws --------------------------------------------------------------

@@ -9,7 +9,7 @@ columns or partial indexes. On this database that is
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 690 numbered migrations in `db/` (highest `db/693`) remain the only thing that builds this database.
+rebuild a database from them.** The 691 numbered migrations in `db/` (highest `db/694`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -20,7 +20,7 @@ the live database.
 | | |
 |---|---|
 | Tables | 412 |
-| Columns | 6611 |
+| Columns | 6618 |
 | Triggers | 39 |
 | Functions | 144 |
 | CHECK constraints | 354 |

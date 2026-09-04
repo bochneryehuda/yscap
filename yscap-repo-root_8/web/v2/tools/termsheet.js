@@ -44,7 +44,7 @@
   // for every retail / borrower / marketing sheet it stays 0 → the broker-fee line
   // and its cash-to-close / liquidity contribution are INERT and every retail
   // number is byte-identical.
-  var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [], markupTiers: null, brokerFeePct: 0, feasibilityFees: { groundUp: 1250, heavyRehab: 750 },
+  var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, markupSpeed: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, origSpeed: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [], markupTiers: null, brokerFeePct: 0, feasibilityFees: { groundUp: 1250, heavyRehab: 750 },
     // Our own fee's two parts, the New York legal ladder and the optional New York settlement
     // agent fee (owner-directed 2026-08-26). `lender` above stays the TOTAL and is derived
     // from these — 1,200 + 995 = 2,195, the number it always held.
@@ -965,7 +965,7 @@
   /* ---------------- THE SPEED PROGRAM (owner-directed 2026-09-03) ----------------
      A COMPOSITION of the Standard and Silver engines — window.SPP (speed-program.js)
      runs both frozen engines on the Speed basis, takes the elementwise lesser of the
-     two ceilings (plus its own $1,000,000 wall), and reports the higher of the two
+     two ceilings, applies its own overlays, and reports the higher of the two
      note rates. This function holds NO math of its own beyond two studio-side knobs
      the module deliberately leaves to the surface that owns the company settings:
        origination      = the HIGHER of the Standard and Silver origination the studio
@@ -977,14 +977,23 @@
      two parents inside it price with the same markups the Standard and Silver cards
      show. Shaped exactly like calcSilver() so every shared renderer works unchanged.
      Returns null when the module isn't loaded. */
-  function speedOrigPct() { return Math.max(adminOrigPct("standard"), adminOrigPct("silver")); }
   function calcSpeed() {
     var SP = (typeof SPP !== "undefined" && SPP) ? SPP : null;
     if (!SP) return null;
     syncAdminMarkup();                                    // both parents at the studio's live markups
     var inp = gather();
     if (speedChosenLTC) inp.targetLTC = speedChosenLTC;   // a chosen rung rides as targetLTC, like Standard
-    var R = SP.evaluate(inp);
+    /* THE SPEED MARGIN IS THIS PROGRAM'S OWN (owner reversal of D5, 2026-09-03). The
+       composition prices BOTH parents and charges the higher rate, and both must run at
+       the SPEED margin while it does — SPP.setMarkup / setMarkupTiers forward to both.
+       Restored immediately afterwards (syncAdminMarkup) so the Standard and Silver cards
+       keep pricing at their own margins, exactly as pricing.js does on the server.
+       Silver's frozen engine clamps any margin it is handed at 1.00%. */
+    var spMk = adminNum("tsYspSpeed", CO.markupSpeed), spTiers = tierMapFor("speed");
+    try { if (SP.setMarkup) SP.setMarkup(spMk / 100); } catch (e) {}
+    try { if (SP.setMarkupTiers) SP.setMarkupTiers(spTiers); } catch (e) {}
+    var R;
+    try { R = SP.evaluate(inp); } finally { syncAdminMarkup(); }
     if (manualOn()) { if (R.status === "INELIGIBLE") R.status = "MANUAL"; R.exitShortfall = 0; }   // admin-priced basis
     var s = R.sizing || {};
     var asg = R.assignment;
@@ -1213,7 +1222,7 @@
 
     // ---- Speed card (owner-directed 2026-09-03) ----
     // The composition of Standard and Silver: the lesser ceiling of the two, the
-    // higher rate, the higher origination, a 10% assignment cap and a $1,000,000
+    // higher rate, the higher origination, and this program's own overlays (a
     // wall. Painted from calcSpeed() so the origination shown is the max(std, silver)
     // the registration would charge — never a third knob.
     var SPd = calcSpeed();
@@ -1234,11 +1243,12 @@
       YS.put("speedOrigPts", origPtStr(adminOrigPct("speed")));
       setBadge("speedBadge", SPd.status, ready);
       var speedWhy = speedExit ? shortMsg(exitMsg(SPd.reasons)) : (SPd.status !== "ELIGIBLE" ? shortReason(SPd.reasons) : "");
-      // The sub-line names the COMPOSITION rather than a tier row — Speed has no tier
-      // of its own, and "Max LTC" here would be whichever parent set it on this deal.
-      var spAsg = (SPd.speedInfo && SPd.speedInfo.assignmentMaxPct > 0) ? SPd.speedInfo.assignmentMaxPct : 0.10;
-      var spWall = (SPd.speedInfo && SPd.speedInfo.maxLoanCap > 0) ? SPd.speedInfo.maxLoanCap : 1000000;
-      YS.put("speedSub", !ready ? EM : (speedWhy || ("Lesser of Standard & Silver \u00b7 max " + YS.fmtUSD(spWall) + " \u00b7 " + pctLbl(spAsg) + " assignment fee")));
+      /* THE CARD SAYS WHAT THIS DEAL IS HELD BY, NOT HOW THE PROGRAM IS BUILT
+         (owner-directed 2026-09-03: "It doesn't need to say this wording big on the
+         outside box of the program. It's okay if it has it inside only after you click
+         it"). The composition and the overlays are the drill-in's job — see
+         renderSpeedComposition. Here: the binding constraint, exactly like its siblings. */
+      YS.put("speedSub", !ready ? EM : (speedWhy || (spSized && SPd.binding ? ("Held by " + SPd.binding) : "Sold to either note buyer")));
     }
 
     // ---- Manual card ----
@@ -1561,10 +1571,10 @@
   function adminOrigPct(prog) {
     if (prog === "gold") return adminNum("tsOrigGold", CO.origGold) / 100;
     if (prog === "silver") return adminNum("tsOrigSilver", CO.origSilver) / 100;
-    // SPEED has no origination knob of its own (owner-directed 2026-09-03: "the higher
-    // origination fees") — the HIGHER of the Standard and Silver points as the studio
-    // resolves them, admin overrides included. Mirrors pricing.js normalize().
-    if (prog === "speed") return Math.max(adminOrigPct("standard"), adminOrigPct("silver"));
+    // SPEED HAS ITS OWN ORIGINATION KNOB since the owner reversed decision D5
+    // (2026-09-03: "adjust the settings and the pricing of the speed program separately,
+    // including … the origination fees"). Blank = the company default, like the others.
+    if (prog === "speed") return adminNum("tsOrigSpeed", CO.origSpeed) / 100;
     // MANUAL falls back to the STANDARD KNOB AS RESOLVED — the Standard FIELD if
     // the staffer typed one, else the company default. NOT the bare company
     // default: that is what the server does (pricing.js `origKey` picks
@@ -1819,8 +1829,8 @@
       try { e.setAttribute("data-ts-seeded", String(v)); } catch (_) { /* chip is cosmetic */ }
       try { e.placeholder = String(v); } catch (_) { /* hint is cosmetic */ }
     };
-    s("tsYspStd", String(CO.markupStd)); s("tsYspGold", String(CO.markupGold)); s("tsYspSilver", String(CO.markupSilver));
-    s("tsOrigStd", String(CO.origStd)); s("tsOrigGold", String(CO.origGold)); s("tsOrigSilver", String(CO.origSilver));
+    s("tsYspStd", String(CO.markupStd)); s("tsYspGold", String(CO.markupGold)); s("tsYspSilver", String(CO.markupSilver)); s("tsYspSpeed", String(CO.markupSpeed));
+    s("tsOrigStd", String(CO.origStd)); s("tsOrigGold", String(CO.origGold)); s("tsOrigSilver", String(CO.origSilver)); s("tsOrigSpeed", String(CO.origSpeed));
     // tsOrigManual is DELIBERATELY NOT SEEDED. Its three siblings have a company
     // default of their own, so seeding them writes back exactly what the server
     // would have used anyway. The Manual knob's default is "whatever Standard
@@ -1881,9 +1891,11 @@
     if (d.markupStdPct != null) CO.markupStd = Number(d.markupStdPct);
     if (d.markupGoldPct != null) CO.markupGold = Number(d.markupGoldPct);
     if (d.markupSilverPct != null) CO.markupSilver = Number(d.markupSilverPct);
+    if (d.markupSpeedPct != null) CO.markupSpeed = Number(d.markupSpeedPct);   // Speed's own margin (db/694)
     if (d.origStdPct != null) CO.origStd = Number(d.origStdPct);
     if (d.origGoldPct != null) CO.origGold = Number(d.origGoldPct);
     if (d.origSilverPct != null) CO.origSilver = Number(d.origSilverPct);
+    if (d.origSpeedPct != null) CO.origSpeed = Number(d.origSpeedPct);
     if (d.lenderFee != null) CO.lender = Number(d.lenderFee);
     // Our fee's parts + the New York ladder. PRESERVE-IF-ABSENT, like feasibilityFees below:
     // a payload that does not carry the key must never silently drop a real fee to nothing.
@@ -1971,7 +1983,7 @@
   function minInterestOn(prog) {
     if (manualOn()) { var e = el("tsMinIntManual"); return e ? !!e.checked : true; }
     // SPEED: ON if either parent's flag is on — the stricter of the two, like every other Speed term.
-    if (prog === "speed") return chk("tsMinIntStd") || chk("tsMinIntSilver");
+    if (prog === "speed") return chk("tsMinIntSpeed");   // its own box since the D5 reversal
     return (prog === "gold") ? chk("tsMinIntGold") : (prog === "silver") ? chk("tsMinIntSilver") : chk("tsMinIntStd");
   }
   // Accrual type — Non-Dutch / As-Drawn by default; admin may switch to Dutch /
@@ -2305,25 +2317,66 @@
      explain block. Nothing is derived here. Hidden on every other program. Staff-facing wording
      says "Standard" / "Silver"; no note buyer is ever named. */
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;"; }); }
+  /* THE DRILL-IN'S TWO SECTIONS, AND THEY ARE NOT THE SAME THING (owner-reported
+     2026-09-03, reading the panel: "it's saying that the maximum loan amount of the
+     standard and the silver is $1 million … which is not true. They have their own
+     stuff. They have their own maximums, but the speed program has some overlays …
+     There's one section where it goes over why the standard program is, why the silver
+     program is, and chooses the middle. Another section of the overlays").
+
+       SECTION 1 — the composition: what STANDARD allows, what SILVER allows, and the
+                   lesser of the two. Both columns are each parent's own published
+                   guideline row (speedInfo.<parent>.ownCeiling), which carries none of
+                   this program's overlays.
+       SECTION 2 — the overlays: this program's own, listed by the engine itself
+                   (speedInfo.overlays) so a figure can never go stale here.
+
+     Then one line for what was actually enforced, and the two rates. */
   function renderSpeedComposition(d, sized) {
     var box = el("rSpeedComp"); if (!box) return;
     if (!d || !d.speed || !d.speedInfo || chosenProgram !== "speed") { box.hidden = true; box.innerHTML = ""; return; }
     var sp = d.speedInfo, own = sp.standard || {}, ownV = sp.silver || {}, cS = own.ownCeiling || {}, cV = ownV.ownCeiling || {};
     var enf = d.caps || {}, donor = sp.capDonor || {};
     var money = function (n) { return YS.fmtUSD(Math.round(n || 0)); };
-    var who = function (k) { var w = donor[k]; return w === "standard" ? "Standard" : w === "silver" ? "Silver" : w === "both" ? "both" : w === "speed" ? ("Speed " + money(sp.maxLoanCap || 1000000) + " maximum") : "\u2014"; };
     var fig = function (c, k, isMoney) { return (c && c[k] > 0) ? (isMoney ? money(c[k]) : pcFull(c[k])) : "\u2014"; };
+    var lesser = function (k, isMoney) {
+      var a = (cS && cS[k] > 0) ? cS[k] : null, b = (cV && cV[k] > 0) ? cV[k] : null;
+      var v = (a != null && b != null) ? Math.min(a, b) : (a != null ? a : b);
+      return v == null ? "\u2014" : (isMoney ? money(v) : pcFull(v));
+    };
+    var lesserWho = function (k) {
+      var a = (cS && cS[k] > 0) ? cS[k] : null, b = (cV && cV[k] > 0) ? cV[k] : null;
+      if (a == null || b == null) return "\u2014";
+      return Math.abs(a - b) < 1e-9 ? "both" : (a < b ? "Standard" : "Silver");
+    };
     var row = function (label, k, isMoney) {
-      return "<tr><td>" + esc(label) + "</td><td>" + esc(fig(cS, k, isMoney)) + "</td><td>" + esc(fig(cV, k, isMoney)) + "</td><td class=\"enf\">" + esc(fig(enf, k, isMoney)) + "</td><td>" + esc(who(k)) + "</td></tr>";
+      return "<tr><td>" + esc(label) + "</td><td>" + esc(fig(cS, k, isMoney)) + "</td><td>" + esc(fig(cV, k, isMoney)) +
+        "</td><td class=\"enf\">" + esc(lesser(k, isMoney)) + "</td><td>" + esc(lesserWho(k)) + "</td></tr>";
     };
     var rate = function (r) { return r > 0 ? fmtRate3(r * 100) + "%" : "unpriced"; };
-    var html = "<h4>How the Speed Program was composed</h4>" +
-      "<div class=\"tsc-wrap\"><table><thead><tr><th>Ceiling</th><th>Standard</th><th>Silver</th><th>Speed enforces</th><th>Set by</th></tr></thead><tbody>" +
+    // Section 2 is rendered from the engine's own list, never from figures typed here.
+    var ovl = (sp.overlays && sp.overlays.length) ? sp.overlays : [];
+    var ovlRows = "";
+    for (var i = 0; i < ovl.length; i++) {
+      ovlRows += "<tr><td>" + esc(ovl[i].label) + "</td><td class=\"enf\">" + esc(ovl[i].value) + "</td><td>" + esc(ovl[i].note || "") + "</td></tr>";
+    }
+    var enforcedBits = [];
+    if (enf.maxLoan > 0) enforcedBits.push("max loan " + money(enf.maxLoan));
+    if (enf.maxAcqLTV > 0) enforcedBits.push("acquisition LTV " + pcFull(enf.maxAcqLTV));
+    if (enf.maxARLTV > 0) enforcedBits.push("after-repair LTV " + pcFull(enf.maxARLTV));
+    if (enf.maxLTC > 0) enforcedBits.push("loan-to-cost " + pcFull(enf.maxLTC));
+    var overlaySet = [];
+    for (var k2 in donor) if (donor[k2] === "speed") overlaySet.push(k2);
+    var html = "<h4>1 \u00b7 How the two programs compose</h4>" +
+      "<div class=\"tsc-wrap\"><table><thead><tr><th>Ceiling</th><th>Standard allows</th><th>Silver allows</th><th>Lesser of the two</th><th>Set by</th></tr></thead><tbody>" +
       row("Maximum loan", "maxLoan", true) + row("Acquisition LTV", "maxAcqLTV") + row("After-repair LTV", "maxARLTV") + row("Loan-to-cost", "maxLTC") +
       "</tbody></table></div>" +
+      "<h4>2 \u00b7 Then the Speed Program\u2019s own overlays</h4>" +
+      (ovlRows ? ("<div class=\"tsc-wrap\"><table><thead><tr><th>Overlay</th><th>Speed</th><th></th></tr></thead><tbody>" + ovlRows + "</tbody></table></div>") : "") +
+      (enforcedBits.length ? ("<p><b>Enforced on this loan</b> \u2014 " + esc(enforcedBits.join(", ")) +
+        (overlaySet.length ? (" (a Speed overlay set the " + esc(overlaySet.map(function (x) { return x === "maxLoan" ? "maximum loan" : x === "maxLTC" ? "loan-to-cost" : x === "maxAcqLTV" ? "acquisition LTV" : "after-repair LTV"; }).join(" and ")) + ")") : "") + ".</p>") : "") +
       "<p>Rate at this structure \u2014 Standard <b>" + esc(rate(own.noteRate)) + "</b>, Silver <b>" + esc(rate(ownV.noteRate)) + "</b>; the Speed Program charges the higher" +
       (sp.rateDonor ? (" (" + (sp.rateDonor === "silver" ? "Silver" : "Standard") + ")") : "") + (d.rate > 0 ? (": <b>" + esc(fmtRate3(d.rate)) + "%</b>") : "") + ".</p>" +
-      (d.asg ? ("<p>Assignment fee financeable to <b>" + esc(asgCapLbl(d.asg)) + "</b> of the seller\u2019s contract price (" + esc(money(d.asg.maxFee)) + ").</p>") : "") +
       (sized ? ("<p>Each program\u2019s own total under the combined ceiling \u2014 Standard " + esc(own.totalLoan > 0 ? money(Math.floor(own.totalLoan)) : "\u2014") + ", Silver " + esc(ownV.totalLoan > 0 ? money(Math.floor(ownV.totalLoan)) : "\u2014") + " (they differ only by the interest reserve each prices at its own rate).</p>") : "");
     box.innerHTML = html; box.hidden = false;
   }
@@ -3063,7 +3116,8 @@
       var pInfo = pd.speedInfo || {};
       speed = [
         ["Status", statusLabel(pd.status)],
-        ["Composition", "Lesser of the Standard and Silver programs \u00b7 max " + money(pInfo.maxLoanCap || 1000000) + " \u00b7 assignment fee financeable to " + pctLbl(pInfo.assignmentMaxPct || 0.10)],
+        ["Composition", "Lesser of the Standard and Silver programs, then this program\u2019s own overlays"],
+        ["Speed overlays", ((pInfo.overlays && pInfo.overlays.length) ? pInfo.overlays.map(function (o) { return o.label + ": " + o.value; }).join(" \u00b7 ") : "\u2014")],
         ["Loan amount", (pExit || pGeo) ? "Manual review" : (pOk && pd.totalLoan ? money(pd.totalLoan) : EM)],
         ["Note rate", (pOk && pd.rate > 0) ? fmtRate3(pd.rate) + "%" : EM],
         (pOk && pInfo.rateDonor) ? ["Rate set by", pInfo.rateDonor === "silver" ? "Silver (the higher of the two)" : "Standard (the higher of the two)"] : null,
@@ -4626,8 +4680,10 @@
     section("How the loan amount was determined", derivRows);
 
     /* HOW THE SPEED PROGRAM WAS COMPOSED (owner-directed 2026-09-03). Speed is not a third
-       guideline book: it is the lesser ceiling of the Standard and Silver programs (and its own
-       $1,000,000 wall) priced at the higher of the two rates. This block is what makes a Speed
+       guideline book: it is the lesser ceiling of the Standard and Silver programs, then this
+       program's OWN overlays, priced at the higher of the two rates. The two parent columns are
+       each program's published guideline row and never carry an overlay of ours (owner-reported
+       2026-09-03); the overlays are listed separately, from the engine's own list. This block is what makes a Speed
        term sheet auditable against either program's guidelines — every figure is read off the
        module's explain block (`speed`), nothing is derived here. Staff-facing wording says
        "Standard" and "Silver"; no note buyer is ever named on a term sheet. */
@@ -4636,7 +4692,7 @@
       var enf = d.caps || {}, donor = sp.capDonor || {};
       var who = function (k) {
         var w = donor[k];
-        return w === "standard" ? "Standard" : w === "silver" ? "Silver" : w === "both" ? "both" : w === "speed" ? ("Speed " + money(sp.maxLoanCap || 1000000) + " maximum") : "\u2014";
+        return w === "standard" ? "Standard" : w === "silver" ? "Silver" : w === "both" ? "both" : w === "speed" ? "a Speed overlay" : "\u2014";
       };
       var fig = function (c, k, isMoney) { return (c && c[k] > 0) ? (isMoney ? money(c[k]) : pc(c[k])) : "\u2014"; };
       var rows = [
@@ -4654,6 +4710,13 @@
         ["Both figures above are each program\u2019s total at the SAME combined ceiling; they differ only by the interest reserve each prices at its own rate.", "", "sub"]
       ];
       section("How the Speed Program was composed", rows);
+      // SECTION 2 — this program's own overlays, from the engine's list so no figure goes stale.
+      var ovl = (sp.overlays && sp.overlays.length) ? sp.overlays : [];
+      if (ovl.length) {
+        var oRows = [["Applied on top of the lesser of the two programs above", "", "sub"]];
+        for (var oi = 0; oi < ovl.length; oi++) oRows.push([ovl[oi].label, ovl[oi].value]);
+        section("The Speed Program\u2019s own overlays", oRows);
+      }
     })();
 
     // The derivation page has to answer "where did this number come from", so it
