@@ -81,6 +81,10 @@ const { parseAddress } = require('./address');   // city recovery from composed/
 // the engine's own `!== 'Purchase'` meaning, so a raw label ("Cash-Out Refinance")
 // can never make normalize() treat as a purchase a deal the engine sized as a refi.
 const { sizesOnAsIsValue } = require('./deal-basis');
+/* The ONE definition of the minimum origination fee — the number, the resolution chain, the
+   rounding order and the wording (owner-directed 2026-09-04, db/696). PURE, so requiring it at
+   the top costs nothing and every surface reads the same rule. */
+const minOrig = require('./min-origination');
 
 /* ---- small coercers ---- */
 // Strips thousands-separator commas before parsing (#143): the studio's dollar
@@ -313,6 +317,13 @@ function buildInputs(app, experience, overrides) {
        as 0, which `feasibilityFeeFor` reads as "no fee on this file" — dropping it here instead
        would silently put the fee back on the next quote. */
     ...(app.file_feasibility_fee != null ? { feasibilityFee: num(app.file_feasibility_fee) } : {}),
+    /* Sticky per-file MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696) — an APPROVED
+       EXCEPTION and nothing else. NULL/absent is the normal state of every file and means "follow
+       the company minimum", which is what makes a re-registered file pick up today's number
+       instead of the one in force the day it first registered (the owner's own rule). A stored 0
+       is a deliberate WAIVER and is carried through as 0, exactly like the feasibility fee above;
+       dropping it here would silently put the minimum back on the next quote. */
+    ...(app.file_min_orig_fee != null ? { minOrigFee: num(app.file_min_orig_fee) } : {}),
     /* Sticky per-file UNDERWRITING / LEGAL / optional NEW YORK SETTLEMENT amounts
        (owner-directed 2026-08-26, db/632) — the studio's manual boxes, persisted exactly
        like the feasibility fee above so a re-quote never drops what an admin typed.
@@ -400,6 +411,10 @@ function buildInputs(app, experience, overrides) {
     'markupGoldT1Pct',
     'origStdPct', 'origGoldPct', 'origSilverPct', 'origSpeedPct', 'origManualPct',
     'lenderFee', 'creditFee', 'appraisalFee', 'titleFee', 'feasibilityFee',
+    /* The per-file MINIMUM ORIGINATION FEE (db/696). A BLANK box is dropped by the loop below —
+       the studio's explicit-blank contract, meaning "use the company minimum" — and a typed 0
+       survives and WAIVES the minimum on this file. */
+    'minOrigFee',
     /* OUR FEE'S TWO PARTS AND THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE (owner-directed
        2026-08-26). Each is a per-file amount typed in the studio's manual section; a BLANK box is
        dropped by the loop below, which is the studio's explicit-blank contract and means "use the
@@ -467,6 +482,14 @@ function buildInputs(app, experience, overrides) {
     if (overrides.legalFee === '') delete out.legalFee;
     if (overrides.settlementFee === '') delete out.settlementFee;
     if (overrides.cemaFee === '') delete out.cemaFee;
+    /* THE MINIMUM ORIGINATION FEE needs the same explicit delete, and it is the owner's own rule
+       that makes it load-bearing (db/696): *"any file, even if it's already in the system, by the
+       next registration, it should follow the rules of the new registration if it gets
+       re-registered again. Shouldn't be locked in where the fee was already locked in."* MEASURED
+       before this line existed: a file registered with an approved WAIVER (a typed 0) and then
+       re-registered with the box cleared went on being priced at the waived fee, because the NUMK
+       loop SKIPS a blank while `fileInputs` has already handed the base object the sticky 0. */
+    if (overrides.minOrigFee === '') delete out.minOrigFee;
     if (overrides.irMonths === '') out.irMonths = 0;
   }
   out.strategy = engineStrategy(out.strategy);   // override labels get the same normalization
@@ -867,7 +890,39 @@ function normalize(program, input, ev, ladder, opts) {
   const cemaFee = cema ? num(cema.amount) : 0;
   const creditFee = numberOverride(input, 'creditFee', cd.creditFee != null ? cd.creditFee : FEES.credit);
   const appraisalFee = numberOverride(input, 'appraisalFee', cd.appraisalFee != null ? cd.appraisalFee : FEES.appraisal);
-  const origination = totalLoan > 0 ? round2(totalLoan * origPct) : 0;
+  /* THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696) — the ONE line this change
+     touches, on EVERY RTL program: *"we're going to enforce right now a minimum origination fee of
+     2,500 dollars … if the loan amount is 100,000 it's going to be more than the origination set by
+     percentage because no matter the percentage it's not going to get to 2500 and 2500 is the
+     minimum."*
+
+     `src/lib/min-origination.js` is the ONE definition of the number, the three-step resolution
+     chain, the rounding order and the wording; this file only asks it. `origination` keeps its
+     exact meaning — the DOLLARS CHARGED — so every existing reader (the closing sum below,
+     cash-to-close, the liquidity to show, the registered quote, the data tapes, DocLab, every
+     printed sheet) is unchanged in shape and inherits the floor with nothing else wired. That
+     cascade is the owner's *"it needs to calculate in the cash to close and the liquidity
+     requirement"*, satisfied by arithmetic rather than by a second wiring:
+
+         origination ──► closingDueAtClose ──► cashToClose ──► liquidityRequired
+
+     NO FROZEN NUMBER MOVES. The loan amount, the note rate, every cap, the initial advance, the
+     holdback and the financed reserve are all computed ABOVE this line and none of them reads it —
+     `ORIG_PCT` is exported as a constant by each engine and never entered into `sizeLoan`. Above
+     the crossover (a $200,000 loan at 1.25%) the floor cannot bind, so the overwhelming majority
+     of files are byte-identical.
+
+     THE PER-FILE MINIMUM IS AN APPROVED EXCEPTION, never a copy of the company number: a blank
+     resolves through the company default so a re-registered file follows today's rules, and an
+     explicit 0 is an approved waiver that `resolveMinFee` honours. */
+  const originationDetail = minOrig.originationFor({
+    totalLoan,
+    origPct,
+    minFee: minOrig.resolveMinFee(
+      hasInput(input, 'minOrigFee') ? input.minOrigFee : null,
+      cd.minOrigFee),
+  });
+  const origination = originationDetail.amount;
   /* TPO BROKER ORIGINATION FEE (owner-directed 2026-08-06) — a NEW additive closing
      cost the BROKER (firm admin) sets on their OWN files, never a rate markup. It is
      present ONLY on a resolved TPO settings object (cd.brokerFeePct, from
@@ -1134,6 +1189,24 @@ function normalize(program, input, ev, ladder, opts) {
       autoTotal: titleAutoTotal, overridden: titleOverridden },
     closingCosts: {
       origination,
+      /* WHY the origination fee is what it is, present ONLY when the program minimum actually
+         bound. Every surface that itemises fees reads THIS rather than re-deciding — the term
+         sheet's qualifier beside the row, the studio panel, the spreadsheet columns, the
+         borrower's terms email and the derivation page — so the paper and the math can never
+         describe one fee two ways. A loan at or above the crossover reports a byte-identical
+         closingCosts object, which is why nothing changes on the files the floor does not reach. */
+      ...(originationDetail.applied ? {
+        originationMinimum: {
+          amount: originationDetail.amount,
+          pctAmount: originationDetail.pctAmount,
+          pct: originationDetail.pct,
+          minimum: originationDetail.minimum,
+          shortfall: originationDetail.shortfall,
+          effectivePct: originationDetail.effectivePct,
+          label: originationDetail.label,
+          note: originationDetail.note,
+        },
+      } : {}),
       // TPO broker origination fee — a disclosed borrower closing cost the broker
       // sets. Added ONLY when > 0 (i.e. only on a TPO file whose firm set a broker
       // fee), so the retail closingCosts object is byte-identical.
@@ -1442,6 +1515,7 @@ function econVersionFor(app) {
     app.rehab_type, app.sqft_pre, app.sqft_post,
     (app.property_address && app.property_address.state) || '',
     app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct, app.file_markup_speed_pct, app.file_feasibility_fee,
+    app.file_min_orig_fee,   // the per-file minimum origination fee (db/696) — a fingerprinted sibling of the feasibility fee
     // Our fee's two parts + the optional New York settlement fee — fingerprinted siblings of
     // the feasibility fee, so a change to one re-quotes rather than serving a stale answer.
     app.file_underwriting_fee, app.file_legal_fee, app.file_settlement_fee, app.file_cema_fee, app.ny_cema,

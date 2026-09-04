@@ -136,9 +136,23 @@ function economics(loan) {
       : (loan.appraisal && (n(loan.appraisal.as_is_value) != null ? n(loan.appraisal.as_is_value) : n(loan.appraisal.appraised_value))),
     arv: n(a.arv) != null ? n(a.arv) : (loan.appraisal && n(loan.appraisal.arv_value)),
     interestRate: q.noteRate != null ? toFraction(q.noteRate) : toFraction(a.rate_pct),
-    // Total Points = the origination fee %, as a fraction (the registered quote's
-    // origination percentage the borrower is charged at close).
-    origPct: n(q.origPct),
+    /* Total Points = the origination fee %, as a fraction (the registered quote's origination
+       percentage the borrower is charged at close).
+
+       WHEN THE PROGRAM MINIMUM BOUND, THE STATED RATE IS NOT WHAT THE BORROWER PAID, and this
+       column is a PERCENTAGE — so on a small loan it would say 1.25% against a fee that is really
+       2.5% of the loan. The owner's own answer, asked directly (2026-09-04): *"Send them a higher
+       percentage, according to how much this is the real percentage for $2,500."*
+
+       BYTE-IDENTICAL ON EVERY LOAN THE FLOOR NEVER REACHES, in two independent ways: the explain
+       block is absent there, and `effectivePct` is EXACTLY `pct` by construction when it is
+       present-but-unbound (dividing the ROUNDED dollars by the loan does NOT give the stated rate
+       back — 1.25% of $200,001 rounds to $2,500.01, and that over $200,001 is 0.0124999875 — which
+       is why `min-origination` returns the stated fraction rather than a division). */
+    origPct: (q.closingCosts && q.closingCosts.originationMinimum
+              && q.closingCosts.originationMinimum.effectivePct != null)
+      ? n(q.closingCosts.originationMinimum.effectivePct)
+      : n(q.origPct),
   };
 }
 

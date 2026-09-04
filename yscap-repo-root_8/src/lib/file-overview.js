@@ -152,8 +152,17 @@ async function buildFileOverview(appId, { audience = 'internal' } = {}, client =
   const RF = require('./rate-format');
   const origPct = quote && quote.origPct != null ? Number(quote.origPct) : null;
   const origDollars = quote && quote.origination != null ? Number(quote.origination) : null;
-  const origination = (origPct || origDollars)
-    ? [origPct ? `${RF.fmtRatePct(origPct)}%` : null, origDollars ? money2(origDollars) : null].filter(Boolean).join(' · ')
+  /* WHEN THE PROGRAM MINIMUM BOUND, THE STATED RATE IS NOT THE RATE CHARGED (owner-directed
+     2026-09-04, db/696) — and this row prints the two side by side, so without the qualifier it
+     reads as a contradiction: "1.25% · $2,500.00" on a $60,000 loan, where 1.25% is $750. The
+     percentage shown becomes the EFFECTIVE one and the row says why, from the quote's own explain
+     block rather than from a second decision here. A loan the floor never reaches is byte-identical
+     (the block is absent), which is every loan at or above the crossover. */
+  const origMin = quote && quote.closingCosts && quote.closingCosts.originationMinimum;
+  const shownPct = origMin && origMin.effectivePct != null ? Number(origMin.effectivePct) : origPct;
+  const origination = (shownPct || origDollars)
+    ? [shownPct ? `${RF.fmtRatePct(shownPct)}%` : null, origDollars ? money2(origDollars) : null]
+        .filter(Boolean).join(' · ') + (origMin ? ' · program minimum applied' : '')
     : null;
 
   /* THE PROGRAM ROW LEADS WITH THE PROGRAM'S NAME (owner-directed 2026-08-26:
