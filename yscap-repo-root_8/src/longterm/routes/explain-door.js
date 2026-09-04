@@ -260,6 +260,28 @@ function askedOf(sc, vendorQ, ident, opts = {}) {
     dscr: s.dscr == null ? null : Number(s.dscr),
     loan: s.loan == null ? null : Number(s.loan),
     value: s.value == null ? null : Number(s.value),
+    /* ⛔ THE FIELDS THAT DECIDE THE LLPA GRIDS, or this block cannot answer the one
+       question it exists for.
+
+       Owner-reported 2026-09-04: our board and the vendor's own screen disagreed by
+       0.875 on a single "Purpose" line, and hours went into hunting an engine bug that
+       was not there — our engine had been asked about a PURCHASE while the vendor's
+       screen had been set to a CASH-OUT REFINANCE. The owner's verdict afterwards was
+       *"That pricing was not an issue at all. It was perfect. The scenario was
+       different."*
+
+       This block already recorded the rate, the lock and the place — none of which
+       moves an adjustment — so it could not have shown that even if it had been drawn.
+       An adjustment grid is read on the PURPOSE, the credit score, the leverage, the
+       occupancy, the property and the prepay term, so those are what a reader comparing
+       two boards needs in front of them. Every one is a fact about the loan WE asked
+       about; no vendor and no investor is named, and this surface is staff-only. */
+    purpose: s.purpose || null,
+    fico: s.fico == null ? null : Number(s.fico),
+    ltv: s.ltv == null ? null : Number(s.ltv),
+    occupancy: s.occupancy || null,
+    propertyType: s.propertyType || null,
+    prepayMonths: s.prepayMonths == null ? null : Number(s.prepayMonths),
   };
   if (opts.reveal) {
     out.price = q.price == null ? null : Number(q.price);

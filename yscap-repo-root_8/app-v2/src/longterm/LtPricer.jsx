@@ -3,7 +3,7 @@ import { rememberPairing } from './LtInvestorLinks.jsx';
 import BoardExplains from './BoardExplains.jsx';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
-import { money, money2, noteRate as rate, price, points as pts } from './format.js';
+import { money, money2, noteRate as rate, price, points as pts, pct } from './format.js';
 // The pure rules that decide what a fee/comp figure MEANS live in their own plain-JS module
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
@@ -973,6 +973,24 @@ const EXPLAIN_REASON = NO_BREAKDOWN;
 function askedLine(a) {
   if (!a || typeof a !== 'object') return null;
   const parts = [];
+  /* ⛔ THE LOAN FIRST, THE QUOTE SECOND — the order is the whole value of this line.
+     What a person comparing our board against a rate sheet's own screen needs to see
+     is WHICH LOAN we asked about, because that is what differs when two boards
+     disagree. The purpose leads because it is the field that cost a day on
+     2026-09-04: the two screens were a purchase and a cash-out refinance, and every
+     adjustment except the purpose one matched, which reads exactly like a bug in one
+     line. The rate and the lock identify the QUOTE and never move an adjustment. */
+  if (a.purpose) parts.push(String(a.purpose));
+  if (a.fico != null && Number.isFinite(Number(a.fico))) parts.push(`FICO ${Number(a.fico)}`);
+  /* Through the SHARED formatter — a screen that writes its own is how two places
+     come to print the same number two ways (`test-lt-pipeline-columns-pure` enforces it). */
+  if (a.ltv != null && Number.isFinite(Number(a.ltv))) {
+    parts.push(`${pct(Number(a.ltv) > 1 ? Number(a.ltv) : Number(a.ltv) * 100)} LTV`);
+  }
+  if (a.dscr != null && Number.isFinite(Number(a.dscr))) parts.push(`DSCR ${Number(a.dscr).toFixed(2)}`);
+  if (a.occupancy) parts.push(String(a.occupancy));
+  if (a.propertyType) parts.push(String(a.propertyType));
+  if (a.prepayMonths != null && Number.isFinite(Number(a.prepayMonths))) parts.push(`${Number(a.prepayMonths)}-mo prepay`);
   if (a.rate != null && Number.isFinite(Number(a.rate))) parts.push(`${Number(a.rate).toFixed(3)}%`);
   // NO PRICE ON THIS LINE. The vendor is asked about ITS price, which carries the holdback, and
   // printing it under a row that shows the held-back price would let a reader subtract the two.
@@ -1112,6 +1130,29 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
   const vendorTotal = nn(b.adjustmentPoints) ? Math.round(b.adjustmentPoints * 1000) / 1000 : null;
   const totalsAgree = vendorTotal == null || Math.abs(summedR - vendorTotal) < 0.0015;
 
+  /* ⛔ DOES THE BUILD LAND ON THE PRICE THIS PANEL PRINTS — the check `totalsAgree`
+     above cannot make, and the one that matters.
+
+     `totalsAgree` compares the lines against `adjustmentPoints`. On a Lender Price row
+     that is real: the vendor states both, from different structures. On a LoanNEX row
+     they are the SAME NUMBERS ADDED TWICE — each line's `value` is derived from the
+     vendor's `priceAdjustment`, and `adjustmentPoints` is derived by summing those same
+     values — so it can never disagree however wrong a line is. Mutation-proven.
+
+     And LoanNEX is exactly where a disagreement is possible: its PRICE comes from the
+     search and its ITEMISATION from a separate on-demand call, so this panel can draw a
+     running total that lands nowhere near the Final price printed directly beneath it.
+     Measured at 0.875 points, in silence, on a row that looked perfect.
+
+     This mirrors `pricing/breakdown.landingOf` on the server, which is the definition;
+     `scripts/test-lt-price-lands-pure.mjs` runs both over the same inputs and fails the
+     moment they disagree. UNKNOWN rather than false when a half is missing — a hole must
+     never read as a clean bill of health. */
+  const landGap = (nn(base.basePoints) && nn(b.adjustmentPoints) && nn(b.adjustedPoints))
+    ? Math.round(((base.basePoints + b.adjustmentPoints) - b.adjustedPoints) * 1000) / 1000
+    : null;
+  const landsOnPrice = landGap == null ? null : Math.abs(landGap) < 0.0005;
+
   const groups = [];
   for (const a of stack) {
     const g = a.group || 'Adjustments';
@@ -1171,6 +1212,19 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
           )}
         </div>
       )}
+      {/* ⛔ …AND ON A PANEL THAT DID ITEMISE, WHICH IS WHERE IT WAS MISSING.
+          This line used to live ONLY inside the note above, which draws only when the
+          panel is EMPTY — so on a row that priced, with a full build on screen, there
+          was no way to see which loan the rate sheet had been asked about. That is
+          precisely the row somebody is looking at when they compare our number against
+          a vendor's own screen, and on 2026-09-04 the answer to a day-long hunt was
+          already in this object and not drawn. Quiet by design: one muted line at the
+          top of the build, never a warning, because a healthy row is the normal case. */}
+      {!explainNote && ev && askedLine(ev.asked) && (
+        <div style={{ fontSize: 11.5, color: MUTED, marginBottom: 10, lineHeight: 1.6 }}>
+          {askedLine(ev.asked)}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
         <Track title="Price build"
           note={`Price is 100 minus points. Every line came from ${buildSubject}; the right-hand column is this page adding them up so the build can be followed.`}>
@@ -1217,10 +1271,24 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
           ))}
           {adj.length === 0 && <Row k="Adjustments" v="none itemized" indent />}
           <div style={{ height: 8 }} />
-          <Row k={engineName ? `Adjustments total (${engineName})` : 'Adjustments total'} v={pts(b.adjustmentPoints)} />
+          {/* ⛔ NOT "(LoanNEX)". This row was captioned with the rate sheet's name on
+              every board, and on a LoanNEX row the number is OURS — the sum of the lines
+              above it, not a total the vendor sent. Saying otherwise dressed our own
+              arithmetic up as the vendor's, which is the one thing a reader checking our
+              price against a rate sheet must not be told. */}
+          <Row k="Adjustments total" v={pts(b.adjustmentPoints)}
+            title={`The lines above, added up. ${engineName ? `${engineName} ` : 'The rate sheet '}states each line; this total is this page adding them.`} />
           {!totalsAgree && (
             <Row k="…the itemized lines add to" v={pts(summedR)} tone="bad"
               title="The lines shown do not add to the vendor's own total. Nothing is adjusted to hide it — both numbers are shown." />
+          )}
+          {/* ⛔ AND THE ONE THAT CANNOT BE A TAUTOLOGY. Never hidden, never rounded away:
+              a build that does not land on its own Final price is shown as exactly that,
+              with the gap named, because the alternative is a panel that looks reconciled
+              while quoting a price nothing supports. */}
+          {landsOnPrice === false && (
+            <Row k="…but the build lands on" v={pts(Math.round((base.basePoints + b.adjustmentPoints) * 1000) / 1000)} tone="bad"
+              title={`The base plus the adjustments above do not come to the points behind the Final price — a gap of ${Math.abs(landGap).toFixed(3)}. The price shown came from the board; these lines came from the rate sheet's own breakdown. Do not quote this row until they agree.`} />
           )}
           {/* OUR OWN RULES, NAMED IN THE LADDER THEY MOVED. The overlay deliberately
               leaves the sheet's own numbers alone and rides beside them — which is
