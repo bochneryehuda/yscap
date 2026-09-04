@@ -19,25 +19,28 @@ import { PROGRAM_SHORT } from '../lib/programLabel.js';
  */
 
 // camelCase keys shared by GET .current / .systemDefaults and the PUT body.
-const KEYS = ['markupStdPct', 'markupGoldPct', 'markupSilverPct', 'origStdPct', 'origGoldPct', 'origSilverPct', 'lenderFee', 'creditFee', 'appraisalFee', 'titleFee'];
+const KEYS = ['markupStdPct', 'markupGoldPct', 'markupSilverPct', 'markupSpeedPct', 'origStdPct', 'origGoldPct', 'origSilverPct', 'origSpeedPct', 'lenderFee', 'creditFee', 'appraisalFee', 'titleFee'];
 
 // THE MARKETED PROGRAMS, and which of them carry pricing knobs. ONE list drives
 // three things — the program ON/OFF switches, the discontinued-note default and
 // the history's "Programs off" column for every program, and the markup-tier grids
 // for the `hasKnobs` ones only. Speed (2026-09-03) is the composition of Standard
-// and Silver: it inherits BOTH programs' markup and origination through the
-// composition and has no knob, sticky per-file markup or column of its own (owner
-// decision), so it is switchable here and priceable nowhere on this screen. Two
-// hand-kept lists — one for the switches, one for the grid — is exactly how a
-// program ends up togglable but unpriceable, or the reverse; hence one list + a flag.
+// and Silver — the lesser leverage, the higher of the two rates — and since the
+// owner's reversal of decision D5 (2026-09-03, "editable and managed like a real
+// program") it carries its OWN markup (`markupSpeedPct`, system default 0.50),
+// origination (`origSpeedPct`, 1.25) and markup-tier row, retail and TPO alike,
+// exactly like Silver's. Two hand-kept lists — one for the switches, one for the
+// grid — is exactly how a program ends up togglable but unpriceable, or the
+// reverse; hence one list + a flag (every program carries knobs today; the flag
+// stays so a knob-less program can be added without a second list).
 export const PROGRAMS = [
   { key: 'standard', label: PROGRAM_SHORT.standard, hasKnobs: true },
   { key: 'gold', label: PROGRAM_SHORT.gold, hasKnobs: true },
   { key: 'silver', label: PROGRAM_SHORT.silver, hasKnobs: true },
-  { key: 'speed', label: PROGRAM_SHORT.speed, hasKnobs: false },
+  { key: 'speed', label: PROGRAM_SHORT.speed, hasKnobs: true },
 ];
 // Per-experience-tier markup (item 15). Company defaults shaped
-// { standard:{1,2,3}, gold, silver } of percents — Tier 1 = the MOST-experienced
+// { standard:{1,2,3}, gold, silver, speed } of percents — Tier 1 = the MOST-experienced
 // tier. A blank cell keeps that program/tier's normal markup (for Gold the top
 // tier is normally 0). Only the programs WITH knobs drive the grid + its save.
 export const KNOB_PROGRAMS = PROGRAMS.filter((p) => p.hasKnobs);
@@ -136,6 +139,13 @@ const tiersToBody = (t) => {
   return out;
 };
 const money = (v) => (v == null || v === '' || isNaN(Number(v))) ? '—' : '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
+/* HOW THE SPEED MARGIN IS EARNED (owner reversal of D5, 2026-09-03). Speed charges the
+   HIGHER of the two parents' rates with BOTH parents run at this one margin. Silver's
+   frozen engine clamps any margin it is handed at 1.00% (its note buyer keeps the spread
+   above one point), so a Speed margin above 1.00% is earned in full only on a deal where
+   Standard donates the rate. Stated next to the box — retail and TPO — so nobody types
+   1.50 and wonders why a Silver-rated Speed loan pays 1.00. */
+export const SPEED_MARKUP_HINT = 'Speed charges the higher of the Standard and Silver buy rates, both run at this margin. Silver’s engine caps any margin at 1.00%, so a margin above 1.00% is earned in full only when Standard sets the rate.';
 const pct = (v) => (v == null || v === '' || isNaN(Number(v))) ? '—' : Number(v) + '%';
 
 /* The program ON/OFF switches — EVERY marketed program, knob or not. A program
@@ -220,10 +230,10 @@ function Field({ form, set, k, label, hint }) {
 // Pricing Center. Every box is OPTIONAL: blank = the same number as retail above.
 // Brokers never see these controls (manage_pricing-gated). Their own broker fee is
 // set per firm by each firm — not here.
-const TPO_KEYS = ['markupStdPct', 'markupGoldPct', 'markupSilverPct', 'origStdPct', 'origGoldPct', 'origSilverPct'];
+const TPO_KEYS = ['markupStdPct', 'markupGoldPct', 'markupSilverPct', 'markupSpeedPct', 'origStdPct', 'origGoldPct', 'origSilverPct', 'origSpeedPct'];
 const toTpoForm = (o) => { const f = {}; for (const k of TPO_KEYS) f[k] = (o && o[k] != null) ? String(o[k]) : ''; return f; };
 
-function TpoField({ form, set, k, label, retailVal }) {
+function TpoField({ form, set, k, label, retailVal, hint }) {
   const rv = (retailVal == null || retailVal === '') ? null : Number(retailVal);
   return (
     <div className="field">
@@ -232,6 +242,7 @@ function TpoField({ form, set, k, label, retailVal }) {
         placeholder={rv != null ? `same as retail (${rv}%)` : 'same as retail'}
         onChange={(e) => set(k, e.target.value)} />
       {rv != null && <div className="hint">Blank = same as retail ({rv}%)</div>}
+      {hint && <div className="hint">{hint}</div>}
     </div>
   );
 }
@@ -281,6 +292,7 @@ function TpoChannelPricing({ isAdmin }) {
         <TpoField form={form} set={set} k="markupStdPct" label="Standard markup (%)" retailVal={retail.markupStdPct} />
         <TpoField form={form} set={set} k="markupGoldPct" label="Gold Standard markup (%)" retailVal={retail.markupGoldPct} />
         <TpoField form={form} set={set} k="markupSilverPct" label="Silver markup (%, max 1.00)" retailVal={retail.markupSilverPct} />
+        <TpoField form={form} set={set} k="markupSpeedPct" label="Speed markup (%)" retailVal={retail.markupSpeedPct} hint={SPEED_MARKUP_HINT} />
       </div>
 
       <h3 style={{ margin: '18px 0 0' }}>Broker markup by experience tier (optional)</h3>
@@ -296,6 +308,7 @@ function TpoChannelPricing({ isAdmin }) {
         <TpoField form={form} set={set} k="origStdPct" label="Standard origination (%)" retailVal={retail.origStdPct} />
         <TpoField form={form} set={set} k="origGoldPct" label="Gold Standard origination (%)" retailVal={retail.origGoldPct} />
         <TpoField form={form} set={set} k="origSilverPct" label="Silver origination (%)" retailVal={retail.origSilverPct} />
+        <TpoField form={form} set={set} k="origSpeedPct" label="Speed origination (%)" retailVal={retail.origSpeedPct} />
       </div>
 
       <div className="row" style={{ gap: 8, marginTop: 14, alignItems: 'center' }}>
@@ -417,11 +430,8 @@ export default function StaffCompanyPricing() {
           <Field form={form} set={set} k="markupStdPct" label="Standard program markup (%)" />
           <Field form={form} set={set} k="markupGoldPct" label="Gold Standard program markup (%)" />
           <Field form={form} set={set} k="markupSilverPct" label="Silver program markup (%, max 1.00)" />
+          <Field form={form} set={set} k="markupSpeedPct" label="Speed program markup (%)" hint={SPEED_MARKUP_HINT} />
         </div>
-        <p className="muted small" style={{ margin: '4px 0 0', maxWidth: 640 }}>
-          The Speed Program has no markup of its own: it is priced at the higher of the Standard and
-          Silver rates after these markups, so it moves with them.
-        </p>
 
         <h3 style={{ margin: '18px 0 0' }}>Markup by experience tier (optional)</h3>
         <p className="muted small" style={{ margin: '2px 0 8px', maxWidth: 640 }}>
@@ -429,7 +439,8 @@ export default function StaffCompanyPricing() {
           {' '}<strong>Tier 1 is the most-experienced tier.</strong> Leave a cell blank to keep
           that program’s normal markup for that tier — for the <strong>Gold Standard</strong> program
           the top tier normally carries <strong>no markup (0%)</strong>. Type a percent to set that
-          exact tier’s markup (Silver stays capped at 1.00%). This is a fine-tune on top of the
+          exact tier’s markup (Silver stays capped at 1.00%, and a Speed tier above 1.00% is earned
+          in full only when Standard sets the rate). This is a fine-tune on top of the
           per-program markup above.
         </p>
         <MarkupTierGrid tiers={tiers} setTier={setTier} placeholder="normal" />
@@ -440,6 +451,7 @@ export default function StaffCompanyPricing() {
           <Field form={form} set={set} k="origStdPct" label="Standard origination (%)" />
           <Field form={form} set={set} k="origGoldPct" label="Gold Standard origination (%)" />
           <Field form={form} set={set} k="origSilverPct" label="Silver origination (%)" />
+          <Field form={form} set={set} k="origSpeedPct" label="Speed origination (%)" />
         </div>
 
         <h3 style={{ margin: '18px 0 0' }}>Flat fees</h3>
@@ -522,7 +534,7 @@ export default function StaffCompanyPricing() {
             <thead>
               <tr>
                 <th>When</th><th>By</th>
-                <th>Markup (Std / Gold / Silver)</th><th>Orig (Std / Gold / Silver)</th>
+                <th>Markup (Std / Gold / Silver / Speed)</th><th>Orig (Std / Gold / Silver / Speed)</th>
                 <th>UW</th><th>Credit</th><th>Appraisal</th><th>Title</th><th>Programs off</th><th>Note</th>
               </tr>
             </thead>
@@ -531,8 +543,8 @@ export default function StaffCompanyPricing() {
                 <tr key={h.id} style={h.is_current ? { fontWeight: 600 } : undefined}>
                   <td>{new Date(h.created_at).toLocaleString()}{h.is_current ? ' · live' : ''}</td>
                   <td>{h.updated_by_name || 'System'}</td>
-                  <td>{pct(h.markup_std_pct)} / {pct(h.markup_gold_pct)} / {pct(h.markup_silver_pct)}</td>
-                  <td>{pct(h.orig_std_pct)} / {pct(h.orig_gold_pct)} / {pct(h.orig_silver_pct)}</td>
+                  <td>{pct(h.markup_std_pct)} / {pct(h.markup_gold_pct)} / {pct(h.markup_silver_pct)} / {pct(h.markup_speed_pct)}</td>
+                  <td>{pct(h.orig_std_pct)} / {pct(h.orig_gold_pct)} / {pct(h.orig_silver_pct)} / {pct(h.orig_speed_pct)}</td>
                   <td>{money(h.lender_fee)}</td>
                   <td>{money(h.credit_fee)}</td>
                   <td>{money(h.appraisal_fee)}</td>

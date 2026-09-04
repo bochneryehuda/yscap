@@ -25,69 +25,11 @@
  * Super-admin only, on the server: `/api/lt/dscr/combined/*` answers 404 to everybody else, and
  * the nav entry is hidden rather than shown and refused.
  */
-import React, { useState } from 'react';
+import React from 'react';
 import LtInvestorLinks from './LtInvestorLinks.jsx';
 import { PricerScreen } from './LtPricer.jsx';
 import { COMBINED_ENGINE } from './pricerEngine.js';
-import { money } from './format.js';
-import { GOLD, GOLD_TEXT, INK, SLATE, MUTED, CAUTION, LINE, card, eyebrow, checkRow, checkBox } from './ppeStyles.js';
-
-/**
- * "YOU ARE ALMOST AT A BETTER TIER" (owner-directed 2026-08-30: *"You can make a nice flag that
- * you're almost at the edge… If it's almost at a tier, make a pop-up"*).
- *
- * ⛔ IT DECIDES NOTHING. Every figure here — the tier, the loan amount that reaches it, the gap on
- * the ratio, and the sentence itself — is computed on the SERVER (`pricing/near-tier.js`) off the
- * scenario the vendors were actually asked about and, where the sheet published one, that
- * investor's own grid cell. This draws it. A screen that worked out its own tier would eventually
- * tell somebody to cut a borrower's loan for a tier the sheet does not have.
- *
- * ⛔ AND IT IS A FLAG, NOT A MODAL. The owner asked for a pop-up; a dialog that interrupts every
- * priced board is one people learn to dismiss without reading, and it would sit between an officer
- * and the prices they just paid for. This is unmissable at the top of the board, states the exact
- * money, and puts the change one press away — the useful half of a pop-up with none of the part
- * that gets closed reflexively.
- *
- * It renders NOTHING when there is nothing to say, which is most of the time.
- */
-export function NearTierFlag({ near, onUse }) {
-  const [shut, setShut] = useState(false);
-  const ltv = near && near.ltv;
-  const dscr = near && near.dscr;
-  if (shut || (!ltv && !dscr)) return null;
-  const line = (o, action) => (
-    <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', marginTop: 6 }}>
-      <span style={{ fontSize: 13.5, color: INK, lineHeight: 1.6, flex: '1 1 320px' }}>{o.message}</span>
-      {action}
-    </div>
-  );
-  return (
-    <div style={{
-      border: `1px solid ${GOLD}`, borderRadius: 10, background: '#FFFBF2',
-      padding: '12px 14px', marginBottom: 10,
-    }}>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap' }}>
-        <div style={{ fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase', color: GOLD_TEXT, fontWeight: 700 }}>
-          Almost at a better tier
-        </div>
-        <button type="button" className="btn ghost" style={{ fontSize: 12 }} onClick={() => setShut(true)}>Dismiss</button>
-      </div>
-      {ltv && line(ltv, ltv.maxLoan != null && onUse ? (
-        <button type="button" className="btn soft" style={{ flex: '0 0 auto' }} onClick={() => onUse(ltv.maxLoan)}>
-          Use {money(ltv.maxLoan)}
-        </button>
-      ) : null)}
-      {dscr && line(dscr, null)}
-      {/* WHERE THE TIER CAME FROM. "Your sheet says so" and "our standing steps say so" are
-          different strengths of claim, and the person about to move a borrower's loan amount
-          should know which one they are acting on. */}
-      <div style={{ fontSize: 11.5, color: MUTED, marginTop: 8, lineHeight: 1.6 }}>
-        {[ltv && ltv.why, dscr && dscr.why].filter(Boolean).join(' ')}
-      </div>
-    </div>
-  );
-}
-
+import { GOLD, SLATE, card, eyebrow, checkRow, checkBox } from './ppeStyles.js';
 
 /**
  * THE COMBINED ENGINE'S OWN PANEL. The general engine has no concept of a second
@@ -101,42 +43,19 @@ export function NearTierFlag({ near, onUse }) {
  * there is nothing here to un-strip. Asking for it is an explicit second request.
  */
 /**
- * "THIS BOARD IS SHORTER THAN IT SHOULD BE" (audit F2).
+ * THE COMBINED ENGINE'S OWN CARD — what this board IS, and the one control the general board has
+ * no concept of.
  *
- * ⛔ IT DECIDES NOTHING AND WORDS NOTHING. Both the fact and the sentence come from the server
- * (`investor-routing.applyRouting` → `completeness`), because a screen that composed this wording
- * would one day word it differently from the server's own idea of the same fact. It renders when
- * there is something to say and nothing at all otherwise — which is almost always.
+ * ⛔ WHAT USED TO BE HERE AND IS NOT ANY MORE: the accounting of who is not on the board, and the
+ * unreadable-settings note. Both moved to the shared `BoardExplains` the moment the general route
+ * started returning `hidden` and `settings` too (2026-09-03) — see that file's header. A panel
+ * both boards have, drawn from a copy each, is two screens disagreeing about one short board.
  *
- * ⛔ AND IT NAMES NO VENDOR. "One of the two rate sheets did not answer" is the whole of what an
- * officer needs to know that prices are MISSING rather than unavailable; which one is provenance,
- * and provenance is what the reveal is for. That is what let this be fixed at all without breaking
- * the one-system rule.
- *
- * Drawn ABOVE the board rather than inside the empty state, because the expensive case is not an
- * empty board — it is a board with SOME prices on it that reads as complete.
+ * The reveal is a re-price, not a client-side unmasking, and that is deliberate: the server strips
+ * the vendor from every row before it leaves (the owner's "it should sound like one system"), so
+ * there is nothing here to un-strip. Asking for it is an explicit second request.
  */
-export function ShortBoardNotice({ completeness }) {
-  const c = completeness;
-  if (!c || c.complete !== false || !c.message) return null;
-  return (
-    <div style={{
-      border: `1px solid ${CAUTION}`, borderRadius: 10, background: '#FFF7F2',
-      padding: '12px 14px', marginBottom: 10,
-    }}>
-      <div style={{
-        fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase',
-        color: CAUTION, fontWeight: 700, marginBottom: 4,
-      }}>
-        This board is short
-      </div>
-      <div style={{ fontSize: 13.5, color: INK, lineHeight: 1.6 }}>{c.message}</div>
-    </div>
-  );
-}
-
-export function CombinedPanel({ hidden, settings, revealed, onReveal, busy }) {
-  const rows = Array.isArray(hidden) ? hidden : [];
+export function CombinedPanel({ revealed, onReveal, busy }) {
   return (
     <div style={{ ...card, borderColor: `${GOLD}55` }}>
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'baseline' }}>
@@ -153,28 +72,10 @@ export function CombinedPanel({ hidden, settings, revealed, onReveal, busy }) {
           <span style={{ fontSize: 13, color: SLATE }}>Show where each row came from</span>
         </label>
       </div>
-      {/* NOTHING IS SILENTLY DROPPED. A board showing six investors where the two programs priced
-          nine must always be able to account for the other three. */}
-      {rows.length > 0 && (
-        <div style={{ marginTop: 12, borderTop: `1px solid ${LINE}`, paddingTop: 10 }}>
-          <div style={{ ...eyebrow, marginBottom: 6 }}>Not on this board ({rows.length})</div>
-          {rows.map((h, i) => (
-            <div key={`${h.key || i}`} style={{ fontSize: 12, color: MUTED, lineHeight: 1.6, marginBottom: 4 }}>
-              <strong style={{ color: SLATE }}>{h.whiteLabel || h.investor || h.key}</strong> — {h.reason}
-            </div>
-          ))}
-        </div>
-      )}
-      {settings && settings.problems && settings.problems.length > 0 && (
-        <div style={{ marginTop: 10, fontSize: 12, color: CAUTION, lineHeight: 1.6 }}>
-          {settings.problems.length} investor setting{settings.problems.length === 1 ? '' : 's'} could not be
-          read and {settings.problems.length === 1 ? 'was' : 'were'} ignored — open the settings screen to fix
-          {settings.problems.length === 1 ? ' it' : ' them'}.
-        </div>
-      )}
     </div>
   );
 }
+
 
 export default function LtCombinedPricer() {
   return (
@@ -186,25 +87,15 @@ export default function LtCombinedPricer() {
            after the search instead of coming back right results."* Four panels sat between the
            press and the prices; three of them are about THIS answer and one was about tidying up
            the names afterwards. That one moved below (see `afterBoard`). */
-        afterStrip: ({ res, busy, reveal, setReveal, reprice, setForm }) => (
-          <>
-            {/* FIRST, because "some of your prices are missing" outranks every other thing on this
-                strip: a person who reads the board without knowing it is short may act on it. */}
-            <ShortBoardNotice completeness={res.completeness} />
-            {/* An offer to CHANGE THE SEARCH — it belongs beside the search, not under the answer
-                it is proposing to replace. */}
-            <NearTierFlag near={res.nearTier} onUse={(loan) => {
-              setForm((p) => ({ ...p, loan: String(loan) }));
-              try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { /* no window in a test render */ }
-            }} />
-            {/* The accounting of what is NOT on the board, which is the other half of the short-board
-                warning above it — an officer reading a board of six where nine priced needs both
-                halves in front of them before they read it. */}
-            <CombinedPanel
-              hidden={res.hidden} settings={res.settings} revealed={reveal} busy={busy}
-              onReveal={(v) => { setReveal(v); reprice(null, { reveal: v }); }}
-            />
-          </>
+        afterStrip: ({ busy, reveal, setReveal, reprice }) => (
+          /* ⛔ WHAT IS LEFT IN THIS SLOT IS ONLY WHAT THE GENERAL BOARD HAS NO CONCEPT OF. The
+             short-board notice, the near-tier flag and the accounting of who is not on the board
+             all draw ABOVE this, from the shared screen, on BOTH engines — the ordering the owner
+             asked for is unchanged and is now enforced in one place instead of two. */
+          <CombinedPanel
+            revealed={reveal} busy={busy}
+            onReveal={(v) => { setReveal(v); reprice(null, { reveal: v }); }}
+          />
         ),
         /* LINK TWO SPELLINGS OF ONE INVESTOR, FROM THE BOARD THAT FOUND THEM. Mounted here as
            well as on the settings screen, and it is the SAME component both times — never a

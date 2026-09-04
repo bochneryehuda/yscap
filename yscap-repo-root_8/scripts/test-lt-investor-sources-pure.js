@@ -35,49 +35,123 @@ const ROOT = path.join(__dirname, '..');
 const sightings = require(path.join(ROOT, 'src/longterm/pricing/investor-sightings'));
 const settingsDefs = require(path.join(ROOT, 'src/longterm/settings/encompass-settings'));
 
+/* ⛔ A FAILURE IS COUNTED, NOT THROWN — the standing lesson of this repo, applied here
+   after the re-audit of 2026-09-03 watched one flaky timing assertion take the whole
+   suite down with it. `assert.ok` throws, so the FIRST failure stopped the run and every
+   later check silently never ran: a mutation proof against any assertion below the
+   failure was worthless, and a red suite reported one problem where there might be six.
+   So each check records its verdict and the run carries on to the end; the tally at the
+   bottom sets the exit code.
+
+   ⛔ AND THAT IS A PROPERTY OF THE ASSERTIONS, NOT OF THESE TWO HELPERS. Counting a
+   failure does not make the NEXT line safe: a mutation that makes the code under test
+   return a different SHAPE still crashes an unguarded dereference below it, and a crash
+   still stops the battery. Every read of the thing under test in this file has to be
+   total for the claim to hold — see `rowOf`/`lockedOf` in section B for the shape. */
 let pass = 0;
-const ok = (c, n) => { assert.ok(c, n); pass++; console.log('  ok  ' + n); };
-const eq = (a, b, n) => { assert.deepStrictEqual(a, b, `${n} — got ${JSON.stringify(a)}, want ${JSON.stringify(b)}`); pass++; console.log('  ok  ' + n); };
+let bad = 0;
+const ok = (c, n) => {
+  if (c) { pass += 1; console.log('  ok  ' + n); }
+  else { bad += 1; console.error('  FAIL ' + n); }
+};
+const eq = (a, b, n) => {
+  let same = true;
+  try { assert.deepStrictEqual(a, b); } catch (_) { same = false; }
+  ok(same, same ? n : `${n} — got ${JSON.stringify(a)}, want ${JSON.stringify(b)}`);
+};
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+
+/* ⛔ EVERY READ OF THE THING UNDER TEST GOES THROUGH THESE, and that is what makes the
+   counted-failure helpers above worth anything. Counting a failure does not make the NEXT
+   line safe: a mutation that changes the SHAPE the register answers with still crashes a
+   bare `answer.lenderprice.state`, and a crash stops the battery where it stands — every
+   assertion below it silently never runs, so a mutation proof against any of them is
+   worthless. MEASURED TWICE. The first round fixed section B2 alone and the commit claimed
+   the whole file; the audit of 2026-09-04 then dropped the `unknown` branch from
+   `availabilityFrom` and the run printed ELEVEN of 160 lines, no tally, no exit code of
+   its own. These state a false fact and let the run reach the end — the `list()` shape
+   from the brackets suite, applied to the whole file rather than to one section. */
+const NO_SOURCE = '(the answer carried no such source)';
+const THREW = '(the code under test THREW: ';
+/* ⛔ A THROW IS A VALUE HERE, NOT AN EXCEPTION — and THAT is the half the previous two
+   rounds kept missing. The readers below used to guard the RETURN VALUE (`|| {}`,
+   `Array.isArray(v) ? v : []`) and nothing at all guarded a THROW, so a mutation that
+   made production code raise still stopped the battery where it stood. MEASURED by the
+   re-audit of 2026-09-04: deleting the `unknown` branch from `availabilityFrom` made
+   production `lockedFrom` dereference `a[s].state` on a source it no longer answers for,
+   and the run printed THIRTEEN of 160 lines with no tally and no exit code of its own —
+   a mutation proof against any assertion below it was worthless. `tot`/`val` catch it and
+   turn it into a value that states a false fact, so the run reaches the end and the tally
+   sets the exit code. */
+const tot = (fn) => { try { return { v: fn() }; } catch (e) { return { threw: `${THREW}${(e && e.message) || e})` }; } };
+const val = (fn) => { const r = tot(fn); return Object.prototype.hasOwnProperty.call(r, 'threw') ? r.threw : r.v; };
+/* ⛔ AND A PATH IS READ TOTALLY TOO. `a.boards.loannex` is a TypeError the moment the
+   register answers with a different SHAPE — the audit renamed `boards` to `boardStamps`
+   and the run printed ZERO of 160. `at` names what was missing instead, and carries a
+   throw message straight through so the assertion prints the real cause. */
+const MISSING = (p) => `(no \`${p}\` in the answer)`;
+const at = (o, p) => {
+  if (typeof o === 'string' && o.indexOf(THREW) === 0) return o;
+  let cur = o;
+  for (const seg of String(p).split('.')) {
+    if (cur !== null && typeof cur === 'object' && seg in cur) cur = cur[seg];
+    else return MISSING(p);
+  }
+  return cur;
+};
+/* A LENGTH that distinguishes "an empty list" from "not a list at all" — the shape check
+   finding 8 of the 2026-09-04 re-audit found had been coerced away by the old `lockedFor`. */
+const lenOf = (v) => (Array.isArray(v) ? v.length : -1);
+const availOf = (key, reg, inUse) => val(() => sightings.availabilityFor(key, reg, inUse));
+const stateOf = (a, src) => at(a, `${src}.state`);
+const fieldOf = (a, src, f) => at(a, `${src}.${f}`);
+/* RAW, deliberately: every caller compares it with `eq` (deepStrictEqual is total and tells
+   `null` from `[]`) or asks `lenOf`, so a shape change states a false fact instead of being
+   silently coerced into a passing one. */
+const lockedFor = (...args) => val(() => sightings.lockedOutFor(...args));
+const keysOf = (o) => (o && typeof o === 'object' ? Object.keys(o) : [NO_SOURCE]);
+const recordOf = (...args) => val(() => sightings.record(...args));
+const readOf = (...args) => val(() => sightings.read(...args));
+const validOf = (...args) => at(val(() => sightings.validate(...args)), 'ok');
 /* Every "must not appear" check reads the COMMENT-STRIPPED source: the code that explains why a
    rule exists necessarily names the thing it forbids, and a guard that read comments would fail on
    its own explanation and then get "fixed" by deleting the explanation. */
-const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+const { stripComments: strip } = require(path.join(ROOT, 'scripts/lib/strip-comments'));
 
 const T1 = '2026-09-03T10:00:00.000Z';
 const T2 = '2026-09-03T12:00:00.000Z';
 
 console.log('\nA · the register records what a board actually returned');
 {
-  const a = sightings.record(null, { source: 'loannex', keys: ['nqm', 'acra'], at: T1 });
-  eq(a.boards.loannex, T1, 'A1 the board stamp says that sheet answered, and when');
-  eq(Object.keys(a.investors).sort(), ['acra', 'nqm'], 'A2 the investors it carried are recorded');
-  ok(a.boards.lenderprice === undefined, 'A3 …and nothing at all is claimed about the other sheet');
+  const a = recordOf(null, { source: 'loannex', keys: ['nqm', 'acra'], at: T1 });
+  eq(at(a, 'boards.loannex'), T1, 'A1 the board stamp says that sheet answered, and when');
+  eq(keysOf(at(a, 'investors')).sort(), ['acra', 'nqm'], 'A2 the investors it carried are recorded');
+  ok(at(a, 'boards.lenderprice') === MISSING('boards.lenderprice'), 'A3 …and nothing at all is claimed about the other sheet');
 
-  const b = sightings.record(a, { source: 'lenderprice', keys: ['verus'], at: T2 });
-  eq(b.boards.lenderprice, T2, 'A4 a second sheet stamps its own board');
-  eq(Object.keys(b.investors).sort(), ['acra', 'nqm', 'verus'], 'A5 …and adds to the register rather than replacing it');
+  const b = recordOf(a, { source: 'lenderprice', keys: ['verus'], at: T2 });
+  eq(at(b, 'boards.lenderprice'), T2, 'A4 a second sheet stamps its own board');
+  eq(keysOf(at(b, 'investors')).sort(), ['acra', 'nqm', 'verus'], 'A5 …and adds to the register rather than replacing it');
 
-  const empty = sightings.record(null, { source: 'loannex', keys: [], at: T1 });
-  eq(empty.boards.loannex, T1,
+  const empty = recordOf(null, { source: 'loannex', keys: [], at: T1 });
+  eq(at(empty, 'boards.loannex'), T1,
     'A6 A SHEET THAT ANSWERED WITH NOBODY STILL STAMPS ITS BOARD — that emptiness is the evidence that turns "unknown" into "never"');
 
-  const refused = sightings.record(a, { source: 'loannex', keys: [], at: T2, answered: false });
-  eq(refused.boards.loannex, T1,
+  const refused = recordOf(a, { source: 'loannex', keys: [], at: T2, answered: false });
+  eq(at(refused, 'boards.loannex'), T1,
     'A7 A SHEET THAT DID NOT ANSWER RECORDS NOTHING — an outage is no evidence about any investor');
-  eq(Object.keys(refused.investors).sort(), ['acra', 'nqm'], 'A7b …and takes nothing away either');
+  eq(keysOf(at(refused, 'investors')).sort(), ['acra', 'nqm'], 'A7b …and takes nothing away either');
 
-  const junk = sightings.record(a, { source: 'nonsense', keys: ['x'], at: T2 });
-  eq(Object.keys(junk.investors).sort(), ['acra', 'nqm'], 'A8 an unrecognised source records nothing');
+  const junk = recordOf(a, { source: 'nonsense', keys: ['x'], at: T2 });
+  eq(keysOf(at(junk, 'investors')).sort(), ['acra', 'nqm'], 'A8 an unrecognised source records nothing');
 }
 
 console.log('\nB · the three answers, and why "never" is not "unknown"');
 {
-  const nx = sightings.record(null, { source: 'loannex', keys: ['nqm'], at: T1 });
-  const seen = sightings.availabilityFor('nqm', nx);
-  eq(seen.loannex.state, 'seen', 'B1 a sheet that produced this investor reads SEEN');
-  eq(seen.loannex.at, T1, 'B1b …and says when');
-  eq(seen.lenderprice.state, 'unknown',
+  const nx = recordOf(null, { source: 'loannex', keys: ['nqm'], at: T1 });
+  const seen = availOf('nqm', nx);
+  eq(stateOf(seen, 'loannex'), 'seen', 'B1 a sheet that produced this investor reads SEEN');
+  eq(fieldOf(seen, 'loannex', 'at'), T1, 'B1b …and says when');
+  eq(stateOf(seen, 'lenderprice'), 'unknown',
     'B2 A SHEET THAT HAS PRODUCED NO BOARD READS UNKNOWN — never "never", or a cold register would lock every button on the screen');
 
   /* ⛔ B3 IS RE-POINTED, NOT LOOSENED (pre-merge audit, 2026-09-03). It used to assert that
@@ -87,30 +161,30 @@ console.log('\nB · the three answers, and why "never" is not "unknown"');
      locked button and 15 had BOTH locked. The property this guard is really about is that a
      sheet which has genuinely never carried an investor reads NEVER and locks; what changed is
      how much evidence "genuinely" takes. See `NEVER_AFTER_SEARCHES`. */
-  const other = sightings.availabilityFor('verus', nx);
-  eq(other.loannex.state, 'not_yet',
+  const other = availOf('verus', nx);
+  eq(stateOf(other, 'loannex'), 'not_yet',
     'B3 ONE answered board is NOT evidence a sheet has never carried an investor — it locks nothing');
-  eq(sightings.lockedOutFor('verus', nx).length, 0,
-    'B3a …proved on the lock itself, which is the thing that costs a person the screen');
+  eq(lockedFor('verus', nx), [],
+    'B3a …proved on the lock itself, which is the thing that costs a person the screen — compared with `eq`, so a lock answering `null` where it once answered `[]` states a false fact rather than being coerced into a pass');
   let many = nx;
   for (let i = 0; i < sightings.NEVER_AFTER_SEARCHES; i += 1) {
-    many = sightings.record(many, { source: 'loannex', keys: ['nqm'], at: T1 });
+    many = recordOf(many, { source: 'loannex', keys: ['nqm'], at: T1 });
   }
-  const proven = sightings.availabilityFor('verus', many);
-  eq(proven.loannex.state, 'never',
+  const proven = availOf('verus', many);
+  eq(stateOf(proven, 'loannex'), 'never',
     'B3b a sheet that has answered enough searches and never once carried this investor reads NEVER');
-  eq(sightings.lockedOutFor('verus', many)[0], 'loannex', 'B3c …and THAT is what locks a button');
-  eq(proven.loannex.sourceLastAnswered, T1, 'B3d …and says on the strength of which board');
+  eq(at(lockedFor('verus', many), '0'), 'loannex', 'B3c …and THAT is what locks a button');
+  eq(fieldOf(proven, 'loannex', 'sourceLastAnswered'), T1, 'B3d …and says on the strength of which board');
   /* ⛔ AND NEVER THE SOURCE IN USE. A row routed to LoanNEX whose LoanNEX button is dead
      cannot be re-routed, and cannot be turned off and back on — it reads as broken. This is
      what made ClearEdge, one of the five investors the owner had just switched to LoanNEX,
      answer with "Off" as its only pressable control. */
-  eq(sightings.lockedOutFor('verus', many, 'loannex').length, 0,
+  eq(lenOf(lockedFor('verus', many, 'loannex')), 0,
     'B3e the sheet an investor is actually SET to is never locked out, however strong the evidence');
 
-  eq(sightings.availabilityFor('nqm', null).loannex.state, 'unknown',
+  eq(stateOf(availOf('nqm', null), 'loannex'), 'unknown',
     'B4 an empty register knows nothing about anybody');
-  eq(sightings.availabilityFor('', many).loannex.state, 'never', 'B5 a blank key is nobody, and nobody was never carried');
+  eq(stateOf(availOf('', many), 'loannex'), 'never', 'B5 a blank key is nobody, and nobody was never carried');
 }
 
 console.log('\nB2 · which buttons are locked out — the rule itself, not a copy of it');
@@ -121,49 +195,152 @@ console.log('\nB2 · which buttons are locked out — the rule itself, not a cop
   const proved = (source, keys) => {
     let reg = null;
     for (let i = 0; i < sightings.NEVER_AFTER_SEARCHES; i += 1) {
-      reg = sightings.record(reg, { source, keys, at: T1 });
+      reg = recordOf(reg, { source, keys, at: T1 });
     }
     return reg;
   };
   const nx = proved('loannex', ['nqm']);
-  eq(sightings.lockedOutFor('nqm', nx), [],
+  eq(lockedFor('nqm', nx), [],
     'B6 an investor that sheet HAS carried locks nothing');
-  eq(sightings.lockedOutFor('verus', nx), ['loannex'],
+  eq(lockedFor('verus', nx), ['loannex'],
     'B7 a sheet that has answered enough searches and never carried them IS locked out');
-  eq(sightings.lockedOutFor('nqm', null), [],
+  eq(lockedFor('nqm', null), [],
     'B8 A COLD REGISTER LOCKS NOTHING — every button stays live until a board says otherwise');
   /* THE MEASURED FAILURE, PINNED: one ordinary search used to lock 26 of 26 rows. */
-  const oneSearch = sightings.record(null, { source: 'loannex', keys: ['nqm'], at: T1 });
-  eq(sightings.lockedOutFor('verus', oneSearch), [],
+  const oneSearch = recordOf(null, { source: 'loannex', keys: ['nqm'], at: T1 });
+  eq(lockedFor('verus', oneSearch), [],
     'B8a ONE search locks nothing — a single scenario is no evidence about a whole rate sheet');
-  ok(!sightings.lockedOutFor('verus', nx).includes('off'),
+  ok(!(lockedFor('verus', nx) || []).includes('off'),
     'B9 OFF IS NEVER IN THE LIST — the owner’s rule is a property of this function, not of the screen that draws it');
   let both = nx;
   for (let i = 0; i < sightings.NEVER_AFTER_SEARCHES; i += 1) {
-    both = sightings.record(both, { source: 'lenderprice', keys: [], at: T2 });
+    both = recordOf(both, { source: 'lenderprice', keys: [], at: T2 });
   }
-  eq(sightings.lockedOutFor('verus', both).sort(), ['lenderprice', 'loannex'],
+  eq(Array.isArray(lockedFor('verus', both)) ? lockedFor('verus', both).slice().sort() : lockedFor('verus', both), ['lenderprice', 'loannex'],
     'B10 an investor neither sheet has ever carried is locked out of both — and can still be turned off');
-  eq(sightings.lockedOutFor('verus', both, 'lenderprice'), ['loannex'],
+  eq(lockedFor('verus', both, 'lenderprice'), ['loannex'],
     'B10a …and even then, the sheet it is SET to stays pressable, so the row is never a dead end');
+
+  /* ── B11 · EVERY ROW AT ONCE, AND IT MUST ANSWER THE SAME THING ────────────
+     The settings screen asked `availabilityFor` and then `lockedOutFor` per row —
+     and `lockedOutFor` asks `availabilityFor` again, so that was THREE full passes
+     over the register per investor and drawing the screen was QUADRATIC. The
+     pre-merge audit of 2026-09-03 measured one render: 8.3 ms at today's 43
+     investors, 624.6 ms at this module's own `MAX_INVESTORS` of 500.
+
+     `availabilityAll` does it off ONE read. What must never drift is the ANSWER,
+     so it is compared row for row against the per-row doors over a register
+     carrying every state at once — seen, never, not_yet and unknown. */
+  const wide = { boards: { lenderprice: T1, loannex: T1 }, searches: { lenderprice: sightings.NEVER_AFTER_SEARCHES, loannex: 1 }, investors: {} };
+  const wideKeys = [];
+  for (let i = 0; i < 60; i += 1) {
+    const k = `inv${i}`;
+    wideKeys.push(k);
+    if (i % 3 === 0) wide.investors[k] = { lenderprice: T1 };
+    else if (i % 3 === 1) wide.investors[k] = { loannex: T2 };
+  }
+  wideKeys.push('never-seen-at-all');
+  const srcOf = (k) => (k === 'inv1' ? 'loannex' : 'lenderprice');
+  const all = val(() => sightings.availabilityAll(wide, wideKeys, srcOf));
+  /* ⛔ EVERY READ OF THE THING UNDER TEST IS TOTAL. A failure here is COUNTED rather
+     than thrown (see the helpers at the head of this file), and that conversion is only
+     worth anything if the run can actually reach the end: a bare `all.get(k).lockedOut`
+     is a TypeError the moment the fast path stops returning the key it is being asked
+     about, and a crash stops the battery where it stands — the "a crashing test also
+     fails, and looks like proof" shape. MEASURED: a mutation dropping `lockedOut` from
+     the fast path printed 30 of 160 lines, never reached the tally, and never ran
+     `process.exit`. It exited 1 on the uncaught error, so it was red rather than falsely
+     green — but every assertion below it proved nothing that run, which is the whole
+     reason the conversion was made. `rowOf` states a false fact and lets the run
+     continue, exactly as `list()` does in the brackets suite. */
+  const rowOf = (k) => (all && typeof all.get === 'function' ? val(() => all.get(k)) : null) || {};
+  const lockedOf = (k) => (Array.isArray(at(rowOf(k), 'lockedOut')) ? rowOf(k).lockedOut : []);
+  let differ = 0; let states = new Set();
+  for (const k of wideKeys) {
+    const a = availOf(k, wide);
+    const l = lockedFor(k, wide, srcOf(k));
+    const got = rowOf(k);
+    if (JSON.stringify(at(got, 'availability')) !== JSON.stringify(a)) differ += 1;
+    if (JSON.stringify(at(got, 'lockedOut')) !== JSON.stringify(l)) differ += 1;
+    for (const src of (Array.isArray(sightings.SOURCES) ? sightings.SOURCES : [])) states.add(stateOf(a, src));
+  }
+  ok(states.size >= 3 && !states.has(NO_SOURCE),
+    `B11 CONTROL: the battery really carries several states at once (${[...states].sort().join(', ')})`);
+  eq(differ, 0,
+    '⛔ B11a THE FAST PATH ANSWERS EXACTLY WHAT THE PER-ROW DOORS ANSWER — it is the same two rules underneath, which is what stops a fast path drifting from the rule it is fast at');
+  ok(lockedOf('inv1').indexOf('loannex') === -1 && Array.isArray(at(rowOf('inv1'), 'lockedOut')),
+    'B11b …including the rule that the source a row is SET to is never locked out — and that the fast path answers with a list at all');
+
+  /* ⛔ A REGRESSION GUARD, NOT A TARGET — AND IT IS A RATIO, NOT A CLOCK.
+     What this is about is that `availabilityAll` is a FAST PATH and not a per-row loop
+     wearing a different name. It was written as a wall-clock ceiling (100 ms against a
+     measured 0.68 ms), and a wall clock measures the MACHINE as much as the code: the
+     re-audit of 2026-09-03 caught it failing at 151.66 ms and again at 125.37 ms on a
+     loaded box, with nothing wrong — a guard that goes red when the build server is
+     busy teaches its reader to ignore it, which is worse than no guard.
+
+     So both paths are measured IN THE SAME RUN, over the same data, and the FAST one
+     has to be a multiple faster. Load lifts both halves together, so the ratio is
+     invariant to it; a return to asking per row collapses the ratio to about 1 and
+     fails whatever the machine is doing.
+
+     ⛔ THE FLOOR IS SET FROM A RANGE, AND THE RANGE IS MACHINE-DEPENDENT. An earlier
+     version of this note quoted "~600×" — one sample of a wide distribution, not
+     reproduced on the next box that tried. Two audits then measured it properly and got
+     DIFFERENT ranges on different hardware: 47×–985× over 33 runs, and 90×–1107× over
+     27, each sweeping unloaded, `--jitless`, `--no-opt`, a squeezed semi-space and 3×
+     CPU oversubscription. So no single range is the truth; what is stable across both
+     is that the WORST margin over the floor was 2.35× and 4.5× respectively, with no
+     spurious failure anywhere. 20 is therefore far under anything either box observed.
+     This must only ever catch a structural regression, never a slow afternoon — and the
+     absolute figures are REPORTED in the message, as measurements rather than as
+     assertions, precisely because they travel badly. */
+  const SPEEDUP_MIN = 20;
+  const big = { boards: { lenderprice: T1, loannex: T1 }, searches: { lenderprice: 50, loannex: 50 }, investors: {} };
+  const bigKeys = [];
+  for (let i = 0; i < sightings.MAX_INVESTORS; i += 1) { const k = `big${i}`; bigKeys.push(k); big.investors[k] = { lenderprice: T1 }; }
+  const srcAll = () => 'lenderprice';
+  const t0 = process.hrtime.bigint();
+  const bigOut = val(() => sightings.availabilityAll(big, bigKeys, srcAll));
+  const msAll = Number(process.hrtime.bigint() - t0) / 1e6;
+  /* THE COMPARISON IS THE REAL PER-ROW PATH, not a model of it: the same two doors the
+     fast path exists to replace, asked once per investor, over the same register. */
+  const t1 = process.hrtime.bigint();
+  let rowChecksum = 0;
+  for (const k of bigKeys) {
+    const a = availOf(k, big);
+    const l = lockedFor(k, big, srcAll(k));
+    rowChecksum += (a ? 1 : 0) + (Array.isArray(l) ? l.length : 0);
+  }
+  const msRows = Number(process.hrtime.bigint() - t1) / 1e6;
+  const bigSize = at(bigOut, 'size');
+  ok(bigSize === sightings.MAX_INVESTORS && rowChecksum > 0,
+    `B11c CONTROL: the whole cap really was answered by BOTH paths (${bigSize} rows fast, ${bigKeys.length} asked per row)`);
+  /* `Math.max(msAll, 0.001)` only stops a divide-by-zero on a clock too coarse to see
+     the fast path at all — which is itself evidence it is fast, so the ratio it yields
+     is enormous and the assertion passes for the right reason. */
+  const speedup = msRows / Math.max(msAll, 0.001);
+  ok(speedup >= SPEEDUP_MIN,
+    `⛔ B11d …and it is ${speedup.toFixed(0)}× faster than asking per row IN THE SAME RUN (${msAll.toFixed(2)} ms against ${msRows.toFixed(2)} ms at the register's own cap of ${sightings.MAX_INVESTORS}) — a ratio, so a loaded machine cannot fail it and a return to a per-row loop cannot pass it`);
 }
 
 console.log('\nC · the register reads what it wrote, and refuses what it cannot');
 {
-  const r = sightings.read({ boards: { loannex: T1, bogus: T1 }, investors: { nqm: { loannex: T1, junk: 'x' } } });
-  eq(Object.keys(r.boards), ['loannex'], 'C1 a board stamp for a source we do not have is dropped');
-  eq(Object.keys(r.investors.nqm), ['loannex'], 'C2 …and so is a sighting on one');
-  eq(sightings.read('nonsense').problems.length, 1, 'C3 a register that is not an object is reported, never guessed at');
-  eq(sightings.read(null).investors, {}, 'C4 nothing stored reads as nothing known');
-  ok(sightings.validate([1, 2]).ok === false, 'C5 the settings door refuses an array');
-  ok(sightings.validate(null).ok === true, 'C6 …and accepts nothing at all');
+  const r = readOf({ boards: { loannex: T1, bogus: T1 }, investors: { nqm: { loannex: T1, junk: 'x' } } });
+  eq(keysOf(at(r, 'boards')), ['loannex'], 'C1 a board stamp for a source we do not have is dropped');
+  eq(keysOf(at(r, 'investors.nqm')), ['loannex'], 'C2 …and so is a sighting on one');
+  eq(lenOf(at(readOf('nonsense'), 'problems')), 1, 'C3 a register that is not an object is reported, never guessed at');
+  eq(at(readOf(null), 'investors'), {}, 'C4 nothing stored reads as nothing known');
+  ok(validOf([1, 2]) === false, 'C5 the settings door refuses an array');
+  ok(validOf(null) === true, 'C6 …and accepts nothing at all');
 
   const many = {};
   for (let i = 0; i < sightings.MAX_INVESTORS + 40; i++) many[`inv${i}`] = { loannex: T1 };
-  const capped = sightings.record({ boards: {}, investors: many }, { source: 'loannex', keys: ['fresh'], at: T2 });
-  ok(Object.keys(capped.investors).length <= sightings.MAX_INVESTORS,
+  const capped = recordOf({ boards: {}, investors: many }, { source: 'loannex', keys: ['fresh'], at: T2 });
+  const cappedKeys = keysOf(at(capped, 'investors'));
+  ok(cappedKeys.length <= sightings.MAX_INVESTORS && cappedKeys[0] !== NO_SOURCE,
     'C7 the register is bounded, so a vendor cannot grow a settings row without limit');
-  ok(capped.investors.fresh, 'C7b …and the NEWEST sighting is the one that survives the trim');
+  ok(at(capped, 'investors.fresh') !== MISSING('investors.fresh'), 'C7b …and the NEWEST sighting is the one that survives the trim');
 }
 
 console.log('\nD · the setting is declared, and validated by the same rule the board writes through');
@@ -206,8 +383,15 @@ console.log('\nF · the availability reaches the screen already decided');
   ok(/availabilityFor/.test(shared), 'F1 the investors door asks the register about every row');
   ok(/lockedOut/.test(shared),
     'F2 …and resolves the LOCK on the server — a browser working that out again would be a second copy of a rule the board prices on');
-  ok(/sightings\.lockedOutFor\(/.test(shared),
-    'F3 …through the ONE function that owns the rule (section B2 runs it) — never a copy of the test re-inlined here');
+  /* ⛔ RE-POINTED, NOT LOOSENED (2026-09-03). This pinned `sightings.lockedOutFor(`,
+     which was ONE SPELLING of the property. The door now asks `availabilityAll` —
+     the SAME two rules in the same module, off one read instead of three per row,
+     because asking per row made drawing this screen quadratic (624 ms at the
+     register's own cap, measured). The property is that the lock comes from that
+     module and is never re-derived here; both spellings satisfy it, and F3b below
+     is what refuses a re-inlined copy of the test itself. */
+  ok(/sightings\.(lockedOutFor|availabilityAll)\(/.test(shared),
+    'F3 …through the ONE module that owns the rule (section B2 runs it) — never a copy of the test re-inlined here');
   ok(!/state === 'never'/.test(strip(shared)),
     'F3b …so the door cannot grow its own reading of what "locked" means');
 }
@@ -317,34 +501,33 @@ console.log('\nI · an investor may restate its OWN client-safe name');
      already showing. This is the owner's own save, not a contrived one. */
   const asTheScreenSends = {};
   for (const [key, whiteLabel] of named) asTheScreenSends[key] = { source: 'lenderprice', enabled: true, whiteLabel };
-  const saved = settings.readSettings(asTheScreenSends, new Map());
-  eq(saved.problems.map((p) => `${p.investor}:${p.error}`), [],
+  const saved = val(() => settings.readSettings(asTheScreenSends, new Map()));
+  const probsOf = (o) => { const v = at(o, 'problems'); return Array.isArray(v) ? v : [String(v)]; };
+  eq(probsOf(saved).map((x) => (x && x.investor ? `${x.investor}:${x.error}` : String(x))), [],
     'I1 THE ONE THAT MATTERS: the whole form saves with NOTHING refused');
-  eq(Object.keys(saved.settings).length, named.length,
+  eq(keysOf(at(saved, 'settings')).length, named.length,
     'I2 …and every row is stored, not a subset');
-  ok(named.every(([k, wl]) => saved.settings[k] && saved.settings[k].whiteLabel === wl),
+  ok(named.every(([k, wl]) => at(saved, `settings.${k}.whiteLabel`) === wl),
     'I3 …each keeping the name it was sent');
 
   /* And the three things the owner said did not work, on one row: off, on, and switched. */
-  const moved = settings.readSettings({
+  const moved = val(() => settings.readSettings({
     [named[0][0]]: { source: 'loannex', enabled: true, whiteLabel: named[0][1] },
     [named[1][0]]: { source: 'lenderprice', enabled: false, whiteLabel: named[1][1] },
-  }, new Map());
-  eq(moved.problems, [], 'I4 turning one off and moving another to the second sheet is refused by nothing');
-  eq(moved.settings[named[0][0]].source, 'loannex', 'I5 …the switched row stores its new sheet');
-  eq(moved.settings[named[1][0]].enabled, false, 'I6 …and the switched-off row stores OFF');
+  }, new Map()));
+  eq(at(moved, 'problems'), [], 'I4 turning one off and moving another to the second sheet is refused by nothing');
+  eq(at(moved, `settings.${named[0][0]}.source`), 'loannex', 'I5 …the switched row stores its new sheet');
+  eq(at(moved, `settings.${named[1][0]}.enabled`), false, 'I6 …and the switched-off row stores OFF');
 
   /* ⛔ THE GUARD STILL BITES — four ways, each a real harm. */
   const [k0, wl0] = named[0]; const [k1] = named[1];
-  ok(settings.readSettings({ [k1]: { whiteLabel: wl0 } }, new Map())
-    .problems.some((p) => p.error === 'white_label_taken'),
+  ok(probsOf(val(() => settings.readSettings({ [k1]: { whiteLabel: wl0 } }, new Map())))
+    .some((x) => x && x.error === 'white_label_taken'),
   'I7 …but ANOTHER investor reaching for that same name is still refused — two investors may never show a client one name');
   const registryName = require(path.join(ROOT, 'src/longterm/encompass/investors')).INVESTORS[0].label;
-  ok(settings.readSettings({ [k0]: { whiteLabel: registryName } }, new Map())
-    .problems.length > 0,
+  ok(probsOf(val(() => settings.readSettings({ [k0]: { whiteLabel: registryName } }, new Map()))).length > 0,
   'I8 …a real investor name is still refused, whoever asks for it');
-  ok(settings.readSettings({ [k0]: { whiteLabel: `${registryName} Group` } }, new Map())
-    .problems.length > 0,
+  ok(probsOf(val(() => settings.readSettings({ [k0]: { whiteLabel: `${registryName} Group` } }, new Map()))).length > 0,
   'I9 …and so is a name the client-facing block would blank out, which would reach a borrower as nonsense');
 }
 
@@ -379,8 +562,42 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
      `belongsOnSettingsList`; it asks the shared twin now, which L18..L20 hold to the server. */
   ok(/staysWithoutSetting\(r\)/.test(src) && !/r\.whiteLabel \? '' :/.test(src),
     'J1c …and the warning about leaving the list asks the shared rule, not the name the row shows now');
-  ok(/setEdits\(\{\}\);\s*load\(\);/.test(src),
-    'J2 after saving, the screen RE-READS the server rather than believing its own patch');
+  /**
+   * ⛔ RE-POINTED, NOT LOOSENED (2026-09-03). This asserted the literal
+   * `setEdits({}); load();`, which was ONE SPELLING of the property — the property
+   * itself is that the state after a save comes FROM THE SERVER, never from the
+   * screen's own patch. The write door used to answer a thinner payload than the
+   * read (no `availability`, no `lockedOut`, the whole registry instead of the
+   * owner's list), so re-reading was the only spelling available; it answers the
+   * read's own payload now (`test-lt-settings-doors-answer-pure` runs both doors
+   * and compares them key for key), so installing it is the same property with one
+   * fewer round trip — and it no longer reports an error on a save that WORKED when
+   * only the re-read failed.
+   *
+   * So both spellings are accepted, and what is REFUSED is the screen deriving the
+   * new rows itself.
+   */
+  ok(/setData\(out\);/.test(src) || /setEdits\(\{\}\);\s*load\(\);/.test(src),
+    'J2 after saving, the screen takes the SERVER’s answer — either the write’s own payload or a re-read');
+  ok(/setEdits\(\{\}\);/.test(src), 'J2a …and the form’s pending edits are cleared either way');
+  /* ⛔ J2b · COUNTED, NOT SPELLED. This listed two shapes (`setData({ ...data` and
+     `setData((d)`) and the re-audit of 2026-09-03 used a third — `setData(out);` KEPT,
+     then `setData(Object.assign({}, out, { investors: ownRows }))` overlaid on top — so
+     every one of these stayed green while the screen believed its own patch again. A
+     list of forbidden spellings is a list somebody has to keep guessing at; what the
+     rule actually says is that the save installs the SERVER's answer and nothing else,
+     which is a COUNT: exactly one `setData` in `save`, and it takes `out` whole. */
+  const saveBody = (() => {
+    const i = src.indexOf('async function save(');
+    if (i < 0) return '';
+    const j = src.indexOf('\n  }', i);
+    return j < 0 ? src.slice(i) : src.slice(i, j);
+  })();
+  const setDataCalls = (saveBody.match(/setData\(/g) || []).length;
+  ok(setDataCalls === 1 && /setData\(out\);/.test(saveBody),
+    `⛔ J2b …EXACTLY ONCE, taking the server's answer whole — never a second call overlaying a row set the screen computed for itself (${setDataCalls} call(s) in save)`);
+  ok(!/setData\(\{\s*\.\.\.data/.test(src) && !/setData\(\(d\)/.test(src),
+    'J2c …and the two shapes that did it before are still absent anywhere in the file');
   /* Scoped to the FILTER, not the file: `sourceOrigin === 'setting'` is also read by
      `patchOf`, where it is CORRECT (the whole map is sent on every save, so a row carrying a
      stored setting must re-state it). A guard written over the whole file would forbid the
@@ -455,6 +672,63 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
   console.log('\nL · a row goes back to the pre-fill');
   const { rowPatch, carriesSetting, resetRequested, mapForSave, staysWithoutSetting } = await import('../app-v2/src/longterm/investorSourcePatch.js');
   const settings = require('../src/longterm/pricing/investor-settings');
+  const routing = require('../src/longterm/pricing/investor-routing');
+  /* Aliased: a later section in this same scope re-declares `sightings` locally, and a
+     `const` shadow makes the module-level one unreachable from here (TDZ). */
+  const sightReg = require('../src/longterm/pricing/investor-sightings');
+
+  /* ⛔ THE ROWS ARE BUILT THE WAY THE ROUTE BUILDS THEM — the re-audit's D-1.
+     Every earlier cut of this section hand-typed its rows as four or five literal keys, so
+     `prefill`, `label`, `availability`, `custom`, `whiteLabelMissing` and `note` were all
+     ABSENT — a fixture thinner than what production sends, which is blind to any rule that
+     reads one of the missing fields. `staysWithoutSetting` reads `prefill.whiteLabel` and
+     `availability`, and both were being supplied by hand right beside the assertion, so the
+     test was agreeing with its own fixture rather than with the screen's own input.
+
+     This is `GET /investors`'s own two steps, in order: `routing.describeSettings` for the
+     row, then the route's map adding `availability`, `lockedOut` and `carriesSetting`. A
+     field the route starts sending arrives here for free; a field it stops sending fails
+     here rather than passing by omission. */
+  const realRows = (saved, sight) => {
+    const d = routing.describeSettings(saved, { origin: 'setting', custom: new Map() });
+    return d.investors.map((r) => ({
+      ...r,
+      availability: val(() => sightReg.availabilityFor(r.key, sight)),
+      lockedOut: val(() => sightReg.lockedOutFor(r.key, sight, r.source)),
+      carriesSetting: settings.carriesOwnSetting(r),
+    }));
+  };
+  /* A register in which one sheet has produced ONE investor and the rest are `not_yet` —
+     the ordinary state of a shop a few searches old, and the state the hand-typed fixture
+     never had.
+     ⛔ `searches` IS AN OBJECT PER SHEET, NOT A NUMBER, and this fixture wrote `20`. `read`
+     ignores a non-object, so `searches` came back `{}` and every row was `not_yet` — which
+     is what the comment above SAYS, so the fixture accidentally described what it claimed.
+     The pre-merge audit of 2026-09-03 caught it: written as intended (a count per sheet at
+     the threshold) the rows would have been `never` — the state that LOCKS a button — and
+     "correcting" it later would silently change what this whole section tests.
+     It is left at a DELIBERATE low count now: the same `not_yet` the comment describes, said
+     in the shape `read` actually understands, so it means what it says and cannot drift. */
+  const L_SIGHT = {
+    boards: { lenderprice: T1, loannex: T1 },
+    searches: { lenderprice: 1, loannex: 1 },
+    investors: { verus: { lenderprice: T1 } },
+  };
+  {
+    const st = val(() => sightReg.availabilityFor('nqm', L_SIGHT));
+    ok(stateOf(st, 'lenderprice') === 'not_yet' && stateOf(st, 'loannex') === 'not_yet',
+      `L_SIGHT CONTROL: the fixture really is the "a few searches old" register it describes (${stateOf(st, 'lenderprice')}/${stateOf(st, 'loannex')}) — it read \`not_yet\` for the WRONG reason before`);
+    ok(lenOf(val(() => sightReg.lockedOutFor('nqm', L_SIGHT))) === 0,
+      'L_SIGHT CONTROL: …so nothing is locked out, which is what every row below is written against');
+  }
+  const L_ROWS = realRows({
+    broadview: { source: 'lenderprice', enabled: false },
+    nqm: { source: 'loannex', enabled: true, whiteLabel: 'Ruby' },
+  }, L_SIGHT);
+  const realRow = (k) => L_ROWS.find((r) => r.key === k);
+  ok(realRow('broadview') && 'prefill' in realRow('broadview') && 'availability' in realRow('broadview')
+    && 'label' in realRow('broadview') && 'custom' in realRow('broadview'),
+    'L0 CONTROL: the rows below are the ROUTE\'s own shape — prefill, label, availability and custom all present, none typed by hand');
 
   /* The owner's own rows: on the list for no reason but a setting somebody saved. */
   const stale = {
@@ -555,19 +829,31 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
      is the owner's own defect restored in full. A regex over the screen can only ever pin
      how the loop is SPELLED. So the loop lives in the module and is HANDED REAL ROWS. */
   const SAVE_ROWS = [
-    stale,                                                                              // asked to reset
-    { key: 'nqm', source: 'loannex', enabled: true, whiteLabel: 'Ruby', carriesSetting: true },  // untouched, has a setting
-    { key: 'fresh', source: 'lenderprice', enabled: true, carriesSetting: false },       // untouched, no setting
-    { key: 'edited', source: 'lenderprice', enabled: true, carriesSetting: false },      // touched
+    realRow('broadview'),   // carries a setting and nothing else — asked to reset
+    realRow('nqm'),         // untouched, carries a setting
+    realRow('amb'),         // untouched, carries no setting at all
+    realRow('verus'),       // touched — and edited on THREE keys at once, see below
   ];
-  const SAVE_EDITS = { broadview: { reset: true }, edited: { choice: 'loannex' } };
+  ok(SAVE_ROWS.every(Boolean) && realRow('broadview').carriesSetting === true
+    && realRow('amb').carriesSetting === false,
+    'L12b CONTROL: those four are real registry rows and the two the save turns on carry what the route says they carry');
+  /* ⛔ A MULTI-KEY EDIT — the re-audit's D-4. Every earlier cut edited exactly ONE field on
+     one row, so a save loop that carried only the first change it found, or that let one
+     field overwrite another, passed. A real officer changes the source, types a name and
+     sets a holdback on one row before pressing Save. */
+  const SAVE_EDITS = {
+    broadview: { reset: true },
+    verus: { choice: 'loannex', whiteLabel: 'Topaz', holdback: 0.5 },
+  };
   const built = mapForSave(SAVE_ROWS, SAVE_EDITS);
   ok(!('broadview' in built.map),
     '⛔ L13 THE ONE THAT MATTERS: the row that asked for the pre-fill is ABSENT from the map the save sends');
-  ok(!('fresh' in built.map),
+  ok(!('amb' in built.map),
     'L14 …an untouched row carrying no setting is absent too, so today’s pre-fill is never pinned on for ever');
-  ok(built.map.nqm && built.map.nqm.source === 'loannex' && built.map.edited && built.map.edited.source === 'loannex',
+  ok(built.map.nqm && built.map.nqm.source === 'loannex' && built.map.verus && built.map.verus.source === 'loannex',
     'L15 …while a row with a setting and a row somebody edited both send what they hold');
+  ok(built.map.verus && built.map.verus.whiteLabel === 'Topaz' && built.map.verus.holdback === 0.5,
+    '⛔ L15a …and EVERY field of a multi-field edit is carried, not just the first one the loop found');
   ok(built.reset === 1,
     'L16 …and the count of settings actually removed is 1 — the reset on a row that had none is not counted');
   eq(mapForSave(null, null), { map: {}, reset: 0 }, 'L17 …and nothing to save is an empty map, never a throw');
@@ -584,6 +870,17 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
     { prefill: { whiteLabel: null }, availability: { lenderprice: { state: 'seen' } } },     // a sheet produced it
     { prefill: { whiteLabel: null }, availability: { loannex: { state: 'seen' } } },
     { prefill: { whiteLabel: null }, availability: { lenderprice: { state: 'never' }, loannex: { state: 'unknown' } } },
+    /* ⛔ `not_yet` — the re-audit's D-2/D-3. It is the ORDINARY state of a shop a few
+       searches old (a sheet has answered, this investor has not appeared in it yet) and
+       it was the ONE state of the four this battery never carried, so a rule that read it
+       as "a sheet produced this" — keeping a row that is about to leave, or the reverse —
+       passed. Both alone and mixed with a sheet that HAS produced the investor. */
+    { prefill: { whiteLabel: null }, availability: { lenderprice: { state: 'not_yet' }, loannex: { state: 'not_yet' } } },
+    { prefill: { whiteLabel: null }, availability: { lenderprice: { state: 'seen' }, loannex: { state: 'not_yet' } } },
+    { prefill: { whiteLabel: null }, availability: { lenderprice: { state: 'not_yet' }, loannex: { state: 'never' } } },
+    /* And two rows built the way the ROUTE builds them, rather than typed here. */
+    { prefill: realRow('broadview').prefill, availability: realRow('broadview').availability },
+    { prefill: realRow('verus').prefill, availability: realRow('verus').availability },
     { prefill: { whiteLabel: null }, availability: {} },
     { prefill: {}, availability: undefined },
     {},
@@ -621,32 +918,41 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
     boards: { lenderprice: '2026-09-01T00:00:00.000Z' },
     investors: { nqm: { lenderprice: '2026-09-01T00:00:00.000Z' } },
   };
-  const tot = (fn) => { try { return { v: fn() }; } catch (e) { return { threw: String((e && e.message) || e) }; } };
-  const a = tot(() => sightings.availabilityFor('nqm', LEGACY));
-  ok(!a.threw && a.v && a.v.lenderprice && a.v.lenderprice.state === 'seen',
-    `M1 a register with no \`searches\` still reads — and still says what it saw (${a.threw || a.v.lenderprice.state})`);
-  const l = tot(() => sightings.lockedOutFor('nqm', LEGACY, 'lenderprice'));
-  ok(!l.threw && Array.isArray(l.v) && l.v.length === 0,
-    `M2 …and locks NOTHING, because a register with no counter has answered no searches — the safe direction (${l.threw || JSON.stringify(l.v)})`);
-  const k = tot(() => sightings.keysSeen(LEGACY));
-  ok(!k.threw && Array.isArray(k.v) && k.v.length === 1,
-    `M3 …and every reader takes the same road, so none of them can be the one that throws (${k.threw || JSON.stringify(k.v)})`);
+  /* ⛔ NO LOCAL `tot` HERE ANY MORE. This section had the only total caller in the file and
+     kept it to itself; the head of the file now owns `tot`/`val`/`at`, so every section reads
+     the code under test the same way and a new section cannot be written without one. */
+  const a = val(() => sightings.availabilityFor('nqm', LEGACY));
+  ok(stateOf(a, 'lenderprice') === 'seen',
+    `M1 a register with no \`searches\` still reads — and still says what it saw (${stateOf(a, 'lenderprice')})`);
+  const l = val(() => sightings.lockedOutFor('nqm', LEGACY, 'lenderprice'));
+  ok(lenOf(l) === 0,
+    `M2 …and locks NOTHING, because a register with no counter has answered no searches — the safe direction (${JSON.stringify(l)})`);
+  const k = val(() => sightings.keysSeen(LEGACY));
+  ok(lenOf(k) === 1,
+    `M3 …and every reader takes the same road, so none of them can be the one that throws (${JSON.stringify(k)})`);
   /* Nothing about the ordinary path moved: a fully-shaped register is still taken as read
      rather than re-read, and a blank one still answers rather than throwing. */
-  const full = sightings.read(LEGACY);
-  ok(sightings.availabilityFor('nqm', full).lenderprice.state === 'seen',
+  const full = readOf(LEGACY);
+  ok(stateOf(availOf('nqm', full), 'lenderprice') === 'seen',
     'M4 CONTROL: an already-read register is unaffected');
-  ok(!tot(() => sightings.availabilityFor('nqm', null)).threw
-    && !tot(() => sightings.availabilityFor('nqm', 'nonsense')).threw
-    && !tot(() => sightings.availabilityFor('nqm', [])).threw,
+  ok(!('threw' in tot(() => sightings.availabilityFor('nqm', null)))
+    && !('threw' in tot(() => sightings.availabilityFor('nqm', 'nonsense')))
+    && !('threw' in tot(() => sightings.availabilityFor('nqm', []))),
     'M5 …and nothing at all, a string or an array still answers rather than throwing');
 
-  /* ⛔ THE SHORTCUT ASKS WHETHER THE KEY IS USABLE, NOT MERELY PRESENT — the SECOND half of
-     the same class, found by the pre-merge audit of 2026-09-03. `=== undefined` is passed by
-     an explicit `null`, so a register carrying `searches: null` was taken as already-read and
-     the next line threw on `cur.searches[s]`. `validate()` stores all three of these shapes
-     happily, and a throw here takes down `GET /investors` — the whole settings screen — in the
-     one place the module's own header promises it never will. */
+  /* ⛔ EVERY READER GOES THROUGH `read`, WHATEVER IT IS HANDED — and the shortcut that
+     used to sit in front of it is GONE, not merely corrected.
+     THE HISTORY, because two versions of this comment contradicted each other and the
+     re-audit of 2026-09-03 caught it. There was a shortcut that treated an already-read
+     register as read and skipped `read`; it asked `=== undefined`, which an explicit
+     `null` passes, so `searches: null` was taken as read and the next line threw on
+     `cur.searches[s]`. `validate()` stores all of these shapes happily.
+     ⛔ AND THE SEVERITY IS STATED HONESTLY: this was LATENT, never live. The one
+     production caller, `investorConfig.sightingsRaw()`, spreads `sightings.read(...)`,
+     so a raw blob never reached it — an earlier version of this note claimed a throw
+     here "takes down GET /investors, the whole settings screen", and that was not
+     reachable. It is worth holding because the module is exported so the rule can be
+     asked without an HTTP door. */
   let survived = 0;
   const NULLED = [
     { boards: {}, searches: null, investors: {} },
@@ -665,8 +971,60 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
   }
   ok(survived === NULLED.length,
     `⛔ M6 a register with a NULL where an object should be still answers rather than throwing (${survived}/${NULLED.length})`);
-  ok(NULLED.every((b) => sightings.validate(b).ok),
+  ok(NULLED.every((b) => validOf(b) === true),
     'M7 …and the settings door would have stored every one of them, which is why M6 is not hypothetical');
+
+  /* ⛔ M8 · WHAT THE REMOVAL ACTUALLY CHANGED, and it is not nothing. Restoring the exact
+     shortcut left all eight suites green (measured by the pre-merge audit), so this is the
+     assertion that was missing: a stamp that is NOT a usable timestamp must resolve through
+     `read`, which drops it — so the sheet reads as having NEVER carried that investor.
+     THE CONSEQUENCE IS NAMED because it is the expensive direction: `never` is the state
+     that LOCKS a source button, so an unreadable stamp costs that button rather than
+     leaving it live. That is the right answer (an unreadable stamp is no evidence the sheet
+     carried anything) and it is the one worth stating out loud. */
+  const CORRUPT = {
+    boards: { lenderprice: T1 },
+    searches: { lenderprice: sightings.NEVER_AFTER_SEARCHES },
+    investors: { nqm: { lenderprice: 'not-a-date' } },
+  };
+  const c8 = val(() => sightings.availabilityFor('nqm', CORRUPT));
+  ok(stateOf(c8, 'lenderprice') === 'never',
+    `⛔ M8 an unusable stamp resolves through \`read\` and is DROPPED — the sheet reads as never having carried it (${stateOf(c8, 'lenderprice')}), not as "seen at not-a-date"`);
+  const c8l = val(() => sightings.lockedOutFor('nqm', CORRUPT));
+  ok(Array.isArray(c8l) && c8l.indexOf('lenderprice') !== -1,
+    `M8a …and that is the state that LOCKS the button, which is the cost of the fix, stated rather than left to be discovered (${JSON.stringify(c8l)})`);
+  ok(validOf(CORRUPT) === true,
+    'M8b …and the settings door would have STORED that register, so M8 is not hypothetical either');
+
+  /* ⛔ M8c · AND NOT ONLY ON THE SHAPE THIS FIXTURE HAPPENS TO CARRY. The re-audit of
+     2026-09-03 restored the shortcut GATED on a key the fixture above does not have —
+
+         if (stored && typeof stored === 'object' && !Array.isArray(stored)
+             && Array.isArray(stored.problems)) return stored;
+
+     — and every LT suite in the chain stayed green while `availabilityFor` THREW on that register
+     and a garbage stamp read as `seen`, lighting a source button on no evidence. One
+     shape proves the rule for that shape; the register is stored as free-form JSON by a
+     door that will accept any of these, so the rule is asked about all of them. */
+  const SHAPES = [
+    ['carrying a problems array', { ...CORRUPT, problems: [] }],
+    ['carrying a populated problems array', { ...CORRUPT, problems: ['acra'] }],
+    ['carrying an unknown key', { ...CORRUPT, somethingElse: { a: 1 } }],
+    ['already normalised-looking', { ...CORRUPT, investors: { ...CORRUPT.investors }, boards: { ...CORRUPT.boards } }],
+    ['with a null stamp', { ...CORRUPT, investors: { nqm: { lenderprice: null } } }],
+    ['with a numeric stamp', { ...CORRUPT, investors: { nqm: { lenderprice: 0 } } }],
+    ['with an object stamp', { ...CORRUPT, investors: { nqm: { lenderprice: {} } } }],
+  ];
+  let m8cBad = 0; let m8cFirst = null;
+  for (const [what, reg] of SHAPES) {
+    const r = val(() => sightings.availabilityFor('nqm', reg));
+    const good = stateOf(r, 'lenderprice') === 'never';
+    if (!good) { m8cBad += 1; if (!m8cFirst) m8cFirst = `${what}: ${JSON.stringify(at(r, 'lenderprice'))}`; }
+  }
+  ok(m8cBad === 0,
+    `⛔ M8c an unusable stamp is dropped WHATEVER ELSE the stored register carries — ${SHAPES.length} shapes, none throwing and none reading as seen${m8cFirst ? ` — first ${m8cFirst}` : ''}`);
+  ok(SHAPES.every(([, reg]) => validOf(reg) === true),
+    'M8d …and the settings door would have stored every one of them, so none of these shapes is hypothetical');
 
   /* The three wirings no run of the rule can see: the list must ASK the shared function
      rather than keep a fourth copy of the four-clause test, the route must put its answer
@@ -684,5 +1042,6 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
     && /onClick=\{\(\) => undoReset\(r\.key\)\}/.test(screen),
     'L24 …with a one-click undo beside it, so a mis-press never costs a setting');
 
-  console.log('\n' + pass + ' checks passed\n');
+  console.log(`\n${bad ? 'FAILED' : 'ALL PASSED'} (${pass} passed, ${bad} failed)\n`);
+  process.exit(bad ? 1 : 0);
 })();

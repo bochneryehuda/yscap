@@ -217,9 +217,10 @@ if (!esbuild) {
 import React from 'react';
 import { renderToString } from 'react-dom/server';
 import LtPricer, { PricerScreen } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtPricer.jsx'))};
-import LtCombinedPricer, { NearTierFlag, CombinedPanel } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtCombinedPricer.jsx'))};
+import LtCombinedPricer, { CombinedPanel } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtCombinedPricer.jsx'))};
+import BoardExplains, { NearTierFlag, NotOnThisBoard } from ${JSON.stringify(path.join(appv2, 'src/longterm/BoardExplains.jsx'))};
 import { GENERAL_ENGINE, COMBINED_ENGINE } from ${JSON.stringify(path.join(appv2, 'src/longterm/pricerEngine.js'))};
-globalThis.__x = { React, renderToString, LtPricer, PricerScreen, LtCombinedPricer, NearTierFlag, CombinedPanel, GENERAL_ENGINE, COMBINED_ENGINE };
+globalThis.__x = { React, renderToString, LtPricer, PricerScreen, LtCombinedPricer, BoardExplains, NearTierFlag, NotOnThisBoard, CombinedPanel, GENERAL_ENGINE, COMBINED_ENGINE };
 `;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lt-shared-'));
   const outfile = path.join(tmp, 'bundle.cjs');
@@ -238,7 +239,7 @@ globalThis.__x = { React, renderToString, LtPricer, PricerScreen, LtCombinedPric
   } catch (e) { ok(false, `G0 both screens bundle: ${String(e && e.message).slice(0, 300)}`); }
   if (built) {
     require2(outfile);
-    const { React, renderToString, LtPricer, PricerScreen, LtCombinedPricer, NearTierFlag, CombinedPanel, GENERAL_ENGINE, COMBINED_ENGINE } = globalThis.__x;
+    const { React, renderToString, LtPricer, PricerScreen, LtCombinedPricer, BoardExplains, NearTierFlag, NotOnThisBoard, CombinedPanel, GENERAL_ENGINE, COMBINED_ENGINE } = globalThis.__x;
     const draw = (el) => { try { return renderToString(el); } catch (e) { return `THREW: ${e.message}`; } };
 
     /* ⛔ THE ONE THE FINGERPRINT COULD NEVER MAKE — and it took two goes to write honestly.
@@ -327,14 +328,45 @@ globalThis.__x = { React, renderToString, LtPricer, PricerScreen, LtCombinedPric
         why: 'No ratio band was published on this quote, so this uses the standing tiers.' } },
       onUse() {} }));
     ok(dscrFlag.ok && /1\.25/.test(dscrFlag.h), 'H3 …and on a real DSCR tier it states the ratio');
-    const panel = drew(React.createElement(CombinedPanel, {
+    const panel = drew(React.createElement(NotOnThisBoard, {
       hidden: [{ investor: 'Acme', reason: 'switched off in settings' }],
-      settings: { off: 1 }, revealed: false, busy: false, onReveal() {} }));
+      settings: { problems: [] } }));
     ok(panel.ok && /switched off/.test(panel.h),
-      'H4 the combined panel names what is OFF the board and why — a short board is never a silent one');
+      'H4 the accounting names what is OFF the board and why — a short board is never a silent one');
+    /* ⛔ AND IT PRINTS OUR OWN NAME FOR AN INVESTOR, never the vendor's spelling: `whiteLabel`
+       wins wherever one is set, which is the rule every other surface follows. */
+    const wl = drew(React.createElement(NotOnThisBoard, {
+      hidden: [{ investor: 'NQM Funding', whiteLabel: 'Ruby', reason: 'the rate sheet did not answer' }],
+      settings: null }));
+    ok(wl.ok && /Ruby/.test(wl.h) && !/NQM/.test(wl.h),
+      'H4a …under OUR white label, never the vendor\'s spelling');
+    ok(drew(React.createElement(NotOnThisBoard, { hidden: [], settings: {} })).h === '',
+      'H4b …and draws NOTHING when there is nothing to account for, which is most boards');
+    /* An unreadable SETTING is its own fact and must be said even on a board with nobody hidden —
+       the two halves of this panel are independent. */
+    const probs = drew(React.createElement(NotOnThisBoard, {
+      hidden: [], settings: { problems: ['acra'] } }));
+    ok(probs.ok && /could not be/.test(probs.h),
+      'H4c …and an unreadable investor setting is said on its own, with nobody hidden');
     ok(drew(React.createElement(CombinedPanel, {
-      hidden: [], settings: {}, revealed: true, busy: false, onReveal() {} })).ok,
-      'H5 …and renders once an admin has asked where each row came from');
+      revealed: true, busy: false, onReveal() {} })).ok,
+      'H5 the combined engine keeps its own card — the one control the general board has no concept of');
+    /* THE THREE TOGETHER, off ONE answer, which is what both screens actually mount. */
+    const all = drew(React.createElement(BoardExplains, {
+      res: {
+        completeness: { complete: false, message: 'One of the two rate sheets did not answer.' },
+        nearTier: null,
+        hidden: [{ investor: 'Acme', reason: 'switched off in settings' }],
+        settings: null,
+      },
+      onUseLoan() {},
+    }));
+    ok(all.ok && /This board is short/.test(all.h) && /switched off/.test(all.h),
+      'H6 the shared explainer draws the short-board warning and the accounting off ONE answer');
+    ok(drew(React.createElement(BoardExplains, { res: {}, onUseLoan() {} })).h === '',
+      'H6a …and draws NOTHING at all on an ordinary whole board');
+    ok(drew(React.createElement(BoardExplains, {})).ok,
+      'H6b …and cannot throw on an answer that is not there yet');
   }
 }
 
@@ -382,13 +414,21 @@ console.log('\nI. the answer comes back FIRST — only what decides whether the 
     'I4 …it is mounted below it');
 
   /* What may STAY above, and why each one earns it — a guard that only banned one panel would let
-     the next one land there without a reason. */
-  ok(/<ShortBoardNotice/.test(inStrip),
-    'I5 "some of your prices are missing" stays above — a person reading a short board without knowing it is short may act on it');
+     the next one land there without a reason.
+
+     THE THREE THE OWNER KEPT ABOVE THE BOARD MOVED OUT OF THIS SLOT ON 2026-09-03 and are drawn by
+     the SHARED screen, on both engines, the moment the general route started returning them. So
+     the placement rule is asserted where it is now enforced — and it is now enforced ONCE rather
+     than in each screen that happens to want it. */
   ok(/<CombinedPanel/.test(inStrip),
-    'I6 …and so does the accounting of what is not on the board, which is the other half of that warning');
-  ok(/<NearTierFlag/.test(inStrip),
-    'I7 …and an offer to CHANGE THE SEARCH belongs beside the search, not under the answer it would replace');
+    'I6 the combined card — the one control the general board has no concept of — stays above the board');
+  const gStrip = g.slice(0, g.indexOf('slots.afterStrip('));
+  ok(/<BoardExplains/.test(gStrip),
+    'I5 …and the shared explainer draws ABOVE the board too, on BOTH engines');
+  ok(g.indexOf('<BoardExplains') < board,
+    'I7 …before the answer, because an offer to CHANGE THE SEARCH belongs beside the search and "some of your prices are missing" outranks the prices themselves');
+  ok(!/<ShortBoardNotice|<NearTierFlag|hidden=\{res\.hidden\}/.test(c),
+    'I8 …and the combined screen keeps no second copy of any of them — one arrangement, or two screens disagree about one short board');
 }
 
 console.log(bad ? `\nFAILURES: ${bad}` : '\nOFFLINE: all passed');

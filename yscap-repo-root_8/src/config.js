@@ -1305,6 +1305,12 @@ module.exports = {
     callbackUrl:      (process.env.CLASS_CALLBACK_URL || '').trim() || null,
     callbackUser:     process.env.CLASS_CALLBACK_USER || null,
     callbackPassword: process.env.CLASS_CALLBACK_PASSWORD || null,
+    // ROTATION WINDOW. Their API has no update operation — rotating the password is a
+    // delete-and-recreate at Class — and their guide asks that the endpoint "accepts
+    // both the old and new credentials during the swap". Set this to the OLD password
+    // while the new one is being registered (docs/CLASS-CALLBACKS-RUNBOOK.md), then
+    // clear it. Unset = no second password is accepted.
+    callbackPasswordPrevious: process.env.CLASS_CALLBACK_PASSWORD_PREVIOUS || null,
     // Their registration also allows an ApiToken mode (a token in a header we name)
     // instead of Basic. We register Basic; these exist so the mode can be switched at
     // Class's end without a deploy. Unset = that mode is simply off.

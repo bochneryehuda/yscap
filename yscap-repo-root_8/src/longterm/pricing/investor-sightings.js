@@ -159,7 +159,7 @@ function newestOf(row) {
  * not evidence about any investor; passing `answered: false` records nothing, so
  * an hour of LoanNEX being down can never lock out five investors.
  */
-function record(stored, { source, keys, at, answered = true } = {}) {
+function record(stored, { source, keys, at, answered = true, counts = true } = {}) {
   const cur = read(stored);
   const base = { boards: { ...cur.boards }, searches: { ...cur.searches }, investors: {} };
   for (const [k, v] of Object.entries(cur.investors)) base.investors[k] = { ...v };
@@ -169,10 +169,28 @@ function record(stored, { source, keys, at, answered = true } = {}) {
   const when = isIso(at) ? at : new Date(at || Date.now()).toISOString();
   if (!isIso(when)) return base;
 
-  base.boards[source] = when;
-  // Counted per ANSWERED board, which is the same event `boards` timestamps — so the
-  // two can never disagree about how much this sheet has actually told us.
-  base.searches[source] = (Number(base.searches[source]) || 0) + 1;
+  /* ⛔ `counts: false` RECORDS WHAT WAS SEEN WITHOUT COUNTING A SEARCH — and the two
+     lines below move TOGETHER, deliberately, so the stated lock-step holds either way.
+
+     ONE PRESS ON THE GENERAL ENGINE IS TWO DOORS (post-merge audit 2026-09-03).
+     `LtPricer` fires the immediate board and then the band board on the same press, and
+     both now record. Counting that as two searches makes `NEVER_AFTER_SEARCHES` — twenty
+     VARIED searches — arrive after about ten presses, so a source button is locked out on
+     half the evidence the three-state rule was designed to demand. Locking a button early
+     is the one harm that design exists to avoid.
+
+     So the door that knows another is following records its sightings as part of the SAME
+     search: the investor keys land (they are a fact about what the sheet carried), and the
+     evidence COUNTER is left to the door that finishes the press. The board stamp goes with
+     the counter rather than being set alone, or `boards` and `searches` would start
+     disagreeing about how much this sheet has actually told us — which is what the comment
+     below has always promised they cannot do. */
+  if (counts) {
+    base.boards[source] = when;
+    // Counted per ANSWERED board, which is the same event `boards` timestamps — so the
+    // two can never disagree about how much this sheet has actually told us.
+    base.searches[source] = (Number(base.searches[source]) || 0) + 1;
+  }
   for (const raw of keys || []) {
     const key = asKey(raw);
     if (!key) continue;
@@ -192,39 +210,48 @@ function record(stored, { source, keys, at, answered = true } = {}) {
  * See the three-state note at the top — `never` is the only one that locks a button.
  */
 /**
- * THE READ, SKIPPED WHEN THE CALLER ALREADY HANDS US A READ ONE.
+ * ALWAYS THE READ — the shortcut is gone, and that is the fix rather than a tidy-up.
  *
- * ⛔ THE TEST ASKS ABOUT EVERY KEY THE SHAPE HAS, DERIVED FROM `EMPTY` — never a
- * hand-typed pair. It used to test `boards` and `investors` only, and when
- * `searches` was added the shortcut went stale in the one direction nobody would
- * notice: a register written BEFORE that counter existed carries both of the old
- * keys, so it was taken as already-read and the very next line threw on
- * `cur.searches[s]`. The one production caller passes a normalized object, so it
- * was latent — but this module is exported precisely so the rule can be asked
- * without an HTTP door, and every fixture in its own suite is a `record()` output,
- * which is exactly the shape that CANNOT catch it. Deriving the key list means the
- * next key added to `EMPTY` cannot re-open it.
+ * ⛔ IT TRIED TWICE TO ASK "IS THIS ALREADY READ?" AND BOTH ANSWERS WERE WRONG IN THE
+ * SAME WAY: they judged the SHAPE and never the CONTENTS.
+ *   · `stored[k] === undefined` — an explicit `null` passes, and the next line threw.
+ *   · `typeof v === 'object'` — a key holding `{ nqm: { lenderprice: 'not-a-date' } }`
+ *     passes, and an UNUSABLE TIMESTAMP then lights a source button and keeps a row on
+ *     the settings list. Measured (re-audit 2026-09-03): a bad stamp read as `seen`
+ *     through the shortcut and `unknown` through `read`, and `validate()` stores it.
  *
- * ⛔ AND IT ASKS WHETHER THE KEY IS USABLE, NOT MERELY PRESENT. The first cut tested
- * `=== undefined`, which an explicit `null` passes — so a register carrying
- * `searches: null` was taken as already-read and the next line threw on
- * `cur.searches[s]`. `validate()` stores all three of those shapes happily, and a
- * throw here takes down `GET /investors` — the whole settings screen — in the one
- * place this module's own header promises it never will (*"a register that cannot be
- * parsed costs the 'available on' column, never a board"*). `read()` is total, so
- * handing it anything unusable is always the right answer.
+ * There is no third test that is right, because "already read" is not a property of the
+ * shape at all — only `read` itself can answer it, and `read` is TOTAL and IDEMPOTENT
+ * (its own output fed back in is unchanged). So this asks it every time. The cost is one
+ * pass over a small object; the class it closes is every future value nobody validated.
+ *
+ * ⛔ AND THE SEVERITY IS STATED HONESTLY. An earlier version of this note claimed a throw
+ * here "takes down `GET /investors`, the whole settings screen". That is NOT reachable:
+ * the one production caller, `investorConfig.sightingsRaw()`, spreads `sightings.read(...)`,
+ * so a raw blob never arrives. It was LATENT, exactly as the paragraph beside it said —
+ * two paragraphs of one comment contradicting each other, which the re-audit caught. It
+ * is worth fixing because this module is exported so the rule can be asked without an
+ * HTTP door, not because a screen was falling over.
  */
-function normalized(stored) {
-  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return read(stored);
-  for (const k of Object.keys(EMPTY)) {
-    const v = stored[k];
-    if (!v || typeof v !== 'object' || Array.isArray(v)) return read(stored);
-  }
-  return stored;
+function availabilityFor(key, stored) {
+  return availabilityFrom(read(stored), key);
 }
 
-function availabilityFor(key, stored) {
-  const cur = normalized(stored);
+/**
+ * THE PER-ROW RULE, OVER AN ALREADY-READ REGISTER — the one definition both doors
+ * above and `availabilityAll` below are built from.
+ *
+ * ⛔ WHY IT IS SPLIT OUT AT ALL, and it is a cost rather than a taste. A settings
+ * screen asks about EVERY investor, and `availabilityFor` + `lockedOutFor` each
+ * re-read the whole register — with `lockedOutFor` calling `availabilityFor`, that
+ * was THREE full passes per row, so drawing the screen was quadratic in the number
+ * of investors. MEASURED by the pre-merge audit of 2026-09-03, on one render:
+ * 43 investors 8.3 ms, 100 24.8 ms, 200 91.5 ms, and 624.6 ms at `MAX_INVESTORS`
+ * — six tenths of a second of BLOCKING CPU at the cap this module itself declares.
+ * At today's roster it is harmless; at the cap it is not, and a limit a module sets
+ * for itself is a limit it should survive.
+ */
+function availabilityFrom(cur, key) {
   const row = cur.investors[asKey(key)] || {};
   const out = {};
   for (const s of SOURCES) {
@@ -265,14 +292,45 @@ function availabilityFor(key, stored) {
  * HTTP door.
  */
 function lockedOutFor(key, stored, currentSource) {
-  const a = availabilityFor(key, stored);
+  return lockedFrom(availabilityFor(key, stored), currentSource);
+}
+
+/** The lock rule over an availability already in hand. One definition; see above. */
+function lockedFrom(a, currentSource) {
   const inUse = typeof currentSource === 'string' ? currentSource : null;
   return SOURCES.filter((s) => a[s].state === 'never' && s !== inUse);
 }
 
+/**
+ * EVERY ROW AT ONCE, OFF ONE READ — what a settings screen actually asks for.
+ *
+ * The answer per row is byte-identical to calling `availabilityFor` and
+ * `lockedOutFor` (they are the same two functions underneath, which is what stops
+ * a fast path drifting from the rule it is fast at). What changes is the cost:
+ * one `read` for the whole screen instead of three per row.
+ *
+ * `sourceOf` is asked for the setting in force for each key, so the source an
+ * investor is actually routed to is never locked — the same guarantee
+ * `lockedOutFor`'s third argument makes, and for the same reason.
+ *
+ * NON-THROWING, like everything else here: a key `sourceOf` cannot answer for is
+ * treated as having no setting, which locks strictly less.
+ */
+function availabilityAll(stored, keys, sourceOf) {
+  const cur = read(stored);
+  const out = new Map();
+  for (const key of (keys || [])) {
+    const availability = availabilityFrom(cur, key);
+    let inUse = null;
+    if (typeof sourceOf === 'function') { try { inUse = sourceOf(key); } catch (_) { inUse = null; } }
+    out.set(key, { availability, lockedOut: lockedFrom(availability, inUse) });
+  }
+  return out;
+}
+
 /** Every investor key the register has ever seen, on either source. */
 function keysSeen(stored) {
-  const cur = normalized(stored);
+  const cur = read(stored);
   return Object.keys(cur.investors).sort();
 }
 
@@ -287,7 +345,7 @@ function validate(v) {
 }
 
 module.exports = {
-  SETTING_KEY, SOURCES, MAX_INVESTORS, EMPTY,
+  SETTING_KEY, SOURCES, MAX_INVESTORS, EMPTY, availabilityAll,
   read, record, availabilityFor, lockedOutFor, keysSeen, validate, NEVER_AFTER_SEARCHES,
   _internals: { isIso, newestOf },
 };

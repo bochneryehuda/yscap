@@ -19,7 +19,8 @@
         have been sized at).
      D. The Pricing Admin Center offers a Speed ON/OFF switch and NO Speed markup
         field or markup-tier row: the switch list and the knob grid are derived
-        from ONE program list and a `hasKnobs` flag, never two hand-kept lists.
+        from ONE program list and a `hasKnobs` flag, never two hand-kept lists. Speed
+        carries its own knobs since the owner reversed decision D5 on 2026-09-03.
      E. The studio bridge: an active `#pcardSpeed` reads as program 'speed', the
         chosen quote `d` is the studio's own `_calcSpeed()`, the snapshot carries
         `speed` beside `silver`, and the selection label is "Speed Program".
@@ -121,13 +122,26 @@ globalThis.__out = { React, renderToStaticMarkup, programLabel, PROGRAM_LABEL, P
 
   /* ── B + C. the registered-product panel on a Speed quote ─────────────── */
   console.log('\n--- B. the panel renders a Speed registration with its composition ---');
+  /* `ceiling` = what that parent PRICED this deal at; `ownCeiling` = its published
+     guideline row, which is the column the panel shows and which never carries one of
+     this program's overlays (the 2026-09-03 report). They are deliberately DIFFERENT
+     here so a panel that read the wrong one is caught. */
   const speedBlock = {
-    maxLoanCap: 1000000, assignmentMaxPct: 0.10, rateDonor: 'silver',
-    capDonor: { maxLoan: 'speed', maxAcqLTV: 'silver', maxARLTV: 'standard', maxLTC: 'both' },
+    maxLoanCap: 800000, maxLtcCap: 0.90, assignmentMaxPct: 0.10, rateDonor: 'silver',
+    financedReserveAllowed: false,
+    overlays: [
+      { key: 'max_loan', label: 'Maximum loan', value: '$800,000' },
+      { key: 'max_ltc', label: 'Maximum loan-to-cost', value: '90%' },
+      { key: 'no_reserve', label: 'Financed interest reserve', value: 'Not allowed' },
+      { key: 'assignment', label: 'Assignment fee financeable', value: '10%' },
+    ],
+    capDonor: { maxLoan: 'speed', maxAcqLTV: 'silver', maxARLTV: 'silver', maxLTC: 'both' },
     standard: { status: 'ELIGIBLE', tier: 1, tierLabel: 'Tier 1', noteRate: 0.1025, totalLoan: 510000, initialAdvance: 400000,
-      ceiling: { maxLoan: 2000000, maxAcqLTV: 0.90, maxARLTV: 0.75, maxLTC: 0.90 }, ownCeiling: null },
+      ceiling: { maxLoan: 2000000, maxAcqLTV: 0.90, maxARLTV: 0.75, maxLTC: 0.90 },
+      ownCeiling: { maxLoan: 2500000, maxAcqLTV: 0.90, maxARLTV: 0.75, maxLTC: 0.925 } },
     silver: { status: 'ELIGIBLE', tier: 2, tierLabel: 'Tier 2', noteRate: 0.1075, totalLoan: 495000, initialAdvance: 385000,
-      ceiling: { maxLoan: 1500000, maxAcqLTV: 0.85, maxARLTV: 0.70, maxLTC: 0.90 }, ownCeiling: null },
+      ceiling: { maxLoan: 1500000, maxAcqLTV: 0.85, maxARLTV: 0.70, maxLTC: 0.90 },
+      ownCeiling: { maxLoan: 4500000, maxAcqLTV: 0.90, maxARLTV: 0.75, maxLTC: 0.925 } },
   };
   const baseQuote = (over) => ({
     program: 'speed', programLabel: 'Speed Program', status: 'ELIGIBLE', eligible: true, noteRate: 0.1075,
@@ -149,12 +163,22 @@ globalThis.__out = { React, renderToStaticMarkup, programLabel, PROGRAM_LABEL, P
   }));
   assert(/<strong>Speed Program<\/strong>/.test(speedHtml), 'the heading names the Speed Program');
   assert(/data-speed-composition="1"/.test(speedHtml) && /How Speed was composed/.test(speedHtml), 'the "How Speed was composed" block renders on a Speed quote');
-  assert(/Max loan — Standard \$2,000,000 · Silver \$1,500,000/.test(speedHtml) && /\$1,000,000 · Speed’s own cap/.test(speedHtml),
-    'max loan: both donors\' figures, then Speed\'s own $1,000,000 cap as the one enforced');
-  assert(/Acquisition LTV — Standard 90\.0% · Silver 85\.0%/.test(speedHtml) && /85\.0% · Silver/.test(speedHtml), 'acquisition LTV: Silver\'s 85.0% enforced, and it says Silver set it');
-  assert(/After-repair LTV — Standard 75\.0% · Silver 70\.0%/.test(speedHtml) && /70\.0% · Silver/.test(speedHtml) === false && /75\.0% · Standard/.test(speedHtml),
-    'after-repair LTV: the donor the engine named (Standard) is credited, even where Silver\'s own number is lower');
-  assert(/Loan-to-cost — Standard 90\.0% · Silver 90\.0%/.test(speedHtml) && /90\.0% · Both \(equal\)/.test(speedHtml), 'loan-to-cost: equal figures read as "Both (equal)"');
+  /* SECTION 1 shows each program's OWN row — $2,500,000 and $4,500,000, not the pinned
+     ceilings and never Speed's own $800,000 (owner-reported 2026-09-03). */
+  assert(/Max loan — Standard \$2,500,000 · Silver \$4,500,000/.test(speedHtml),
+    'max loan: each program\'s OWN maximum in its column, never a Speed overlay');
+  assert(!/Max loan — Standard \$800,000|Silver \$800,000/.test(speedHtml), 'the Speed maximum never appears as a parent\'s own figure');
+  assert(/\$800,000 · A Speed overlay/.test(speedHtml), 'max loan enforced: $800,000, credited to the overlay and not to a program');
+  assert(/Acquisition LTV — Standard 90\.0% · Silver 90\.0%/.test(speedHtml) && /85\.0% · Silver/.test(speedHtml),
+    'acquisition LTV: both programs allow 90%, Silver priced 85% and that is what is enforced');
+  assert(/Loan-to-cost — Standard 92\.5% · Silver 92\.5%/.test(speedHtml) && /90\.0% · Both \(equal\)/.test(speedHtml),
+    'loan-to-cost: both allow 92.5%, and the enforced 90.0% is a percentage — never the maximum-loan overlay reused as a dollar amount');
+  assert(!/Loan-to-cost[^<]*<\/span><span class="v">\$/.test(speedHtml), 'the loan-to-cost row never prints a dollar figure');
+  /* SECTION 2 — the overlays, their own block. */
+  assert(/Section 2/.test(speedHtml) && /data-speed-overlay="max_loan"/.test(speedHtml) && /data-speed-overlay="no_reserve"/.test(speedHtml)
+    && /data-speed-overlay="max_ltc"/.test(speedHtml) && /data-speed-overlay="assignment"/.test(speedHtml),
+    'the four Speed overlays render as their own section, from the engine\'s list');
+  assert(/Not allowed/.test(speedHtml), 'the no-financed-reserve overlay is stated');
   assert(/Rate — Standard 10\.25% · Silver 10\.75%/.test(speedHtml) && /10\.75% · Silver/.test(speedHtml), 'both rates, and the higher (Silver) is the one charged');
   assert(/Assignment fee financeable<\/span><span class="v">10% of the seller’s contract price/.test(speedHtml), 'the 10% assignment share is stated');
   assert(/Standard \$510,000 · Silver \$495,000/.test(speedHtml), 'each donor\'s own loan is there for reference');
@@ -186,23 +210,25 @@ globalThis.__out = { React, renderToStaticMarkup, programLabel, PROGRAM_LABEL, P
   /* ── D. the Pricing Admin Center ────────────────────────────────────────── */
   console.log('\n--- D. Pricing Admin Center: a Speed switch, no Speed knob ---');
   eq(O.PROGRAMS.map((p) => p.key).join(','), 'standard,gold,silver,speed', 'ONE program list carries all four');
-  eq(O.KNOB_PROGRAMS.map((p) => p.key).join(','), 'standard,gold,silver', 'and the knob list is DERIVED from it (hasKnobs), not hand-kept');
+  eq(O.KNOB_PROGRAMS.map((p) => p.key).join(','), 'standard,gold,silver,speed', 'and the knob list is DERIVED from it (hasKnobs) — Speed carries its own since the owner reversed D5 on 2026-09-03');
   const avail = Object.fromEntries(O.PROGRAMS.map((p) => [p.key, { on: true, note: '' }]));
   const switchesHtml = html(h('div', null, h(O.ProgramSwitches, { avail, setProgOn: () => {}, setProgNote: () => {} })));
   assert(/data-program-switch="speed"/.test(switchesHtml) && /name="prog-speed"/.test(switchesHtml), 'a Speed ON/OFF switch renders');
   assert(/data-program-switch="silver"/.test(switchesHtml) && /data-program-switch="gold"/.test(switchesHtml) && /data-program-switch="standard"/.test(switchesHtml), 'beside the three it always had');
-  assert(/No markup or origination settings of its own/.test(switchesHtml), 'and the Speed row SAYS it has no knobs, so nobody looks for one');
+  assert(!/No markup or origination settings of its own/.test(switchesHtml), 'and the Speed row no longer claims it has no knobs — it has its own');
   const tiers = Object.fromEntries(O.KNOB_PROGRAMS.map((p) => [p.key, { 1: '', 2: '', 3: '' }]));
   const gridHtml = html(h(O.MarkupTierGrid, { tiers, setTier: () => {}, placeholder: 'normal' }));
   assert(/data-markup-tier-row="standard"/.test(gridHtml) && /data-markup-tier-row="gold"/.test(gridHtml) && /data-markup-tier-row="silver"/.test(gridHtml), 'the markup-tier grid has the three knob programs');
-  assert(!/data-markup-tier-row="speed"/.test(gridHtml) && !/Speed/.test(gridHtml), 'and NO Speed row');
+  assert(/data-markup-tier-row="speed"/.test(gridHtml) && /Speed/.test(gridHtml), 'and a Speed row, so its per-tier markup is set here like the others');
   const pricingSrc = readFileSync(join(APP, 'src/screens/StaffCompanyPricing.jsx'), 'utf8');
-  assert(!/markupSpeedPct|origSpeedPct|Speed program markup|Speed program origination/.test(pricingSrc), 'no Speed markup / origination field exists on the screen');
+  assert(/markupSpeedPct/.test(pricingSrc) && /origSpeedPct/.test(pricingSrc), 'a Speed markup AND a Speed origination field exist on the screen (retail)');
+  assert(/SPEED_MARKUP_HINT\s*=/.test(pricingSrc) && /caps any margin at 1\.00%/.test(pricingSrc) && /hint=\{SPEED_MARKUP_HINT\}/.test(pricingSrc),
+    'and the Speed margin box carries the hint saying where a margin above 1.00% is actually earned (Silver\'s engine caps it)');
   // The screen itself iterates PROGRAMS only for the history's "Programs off" column and
   // the discontinued-note lookup — never to draw a knob input.
   assert(!/PROGRAMS\.map\([^]*?<input/.test(pricingSrc.replace(/KNOB_PROGRAMS/g, '').replace(/export function (ProgramSwitches|MarkupTierGrid)[^]*?\n}\n/g, '')), 'no PROGRAMS.map in the screen body draws an input (a knob) for every program');
   assert(/<ProgramSwitches /.test(pricingSrc) && (pricingSrc.match(/<MarkupTierGrid /g) || []).length === 2, 'the screen mounts ONE switch list and the SAME grid component for company + TPO channel');
-  assert(/Markup \(Std \/ Gold \/ Silver\)/.test(pricingSrc) && /Orig \(Std \/ Gold \/ Silver\)/.test(pricingSrc), 'the history table keeps its three markup / origination columns');
+  assert(/Markup \(Std \/ Gold \/ Silver \/ Speed\)/.test(pricingSrc) && /Orig \(Std \/ Gold \/ Silver \/ Speed\)/.test(pricingSrc), 'the history table shows all four programs\' markup / origination');
 
   /* ── E. the studio bridge ───────────────────────────────────────────────── */
   console.log('\n--- E. the studio bridge reads the Speed card ---');

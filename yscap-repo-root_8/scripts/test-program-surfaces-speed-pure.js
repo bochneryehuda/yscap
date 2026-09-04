@@ -98,8 +98,19 @@ console.log('\n5. The register doors: ONE normalizer, no fourth ternary; the tap
   ok(/Pick a real program \(\$\{progAvail\.PROGRAM_KEYS\.join\(', '\)\}\)/.test(staff), 'the program-exception refusal lists PROGRAM_KEYS, never a typed trio');
   ok(/tapes\.programsForProvider\(tape\.buyerKey\)/.test(staff) && /pr\.program = ANY\(\$\$\{params\.length\}::text\[\]\)/.test(staff), 'the bulk-tape loan picker gates on the derived program LIST');
   ok(!/programForProvider\(tape\.buyerKey\)/.test(staff), '…and no longer on the single 1:1 program');
-  // No Speed markup / origination knob anywhere (owner decision 2026-09-03): nothing sticks a Speed markup to a file.
-  ok(!/markupSpeedPct|file_markup_speed_pct|origSpeedPct/.test(staff + borrower + tpo + read('src/routes/admin-pricing.js') + read('src/routes/admin-tpo.js')), 'no Speed markup/origination knob on any route');
+  /* THE SPEED PROGRAM IS PRICED LIKE A REAL PROGRAM (owner-directed 2026-09-03, reversing
+     decision D5: "adjust the settings and the pricing of the speed program separately …
+     It should be able to be editable and managed like a real program. Also controlled by
+     the TPO Control center"). Its own margin and origination reach every door: the retail
+     Pricing Admin Center, the TPO channel, the per-firm overrides, and the sticky per-file
+     markup — exactly the four places Silver's live. */
+  ok(/markupSpeedPct/.test(read('src/routes/admin-pricing.js')) && /origSpeedPct/.test(read('src/routes/admin-pricing.js')),
+    'the retail Pricing Admin Center accepts a Speed markup and origination');
+  ok(/markup_speed_pct/.test(read('src/routes/admin-tpo.js')) && /orig_speed_pct/.test(read('src/routes/admin-tpo.js')),
+    'the TPO Control Center accepts them at channel and firm level');
+  ok(/markupSpeedPct/.test(read('src/lib/tpo-pricing.js')), 'the TPO resolver carries the Speed knobs into a broker quote');
+  ok(/file_markup_speed_pct/.test(staff), 'the register door sticks a per-file Speed markup');
+  ok(/file_markup_speed_pct/.test(borrower), 'and a borrower can never overwrite it');
 }
 
 console.log(fail ? `\nFAIL ${fail} assertion(s) failed (${pass} passed)` : `\nPASS test-program-surfaces-speed-pure: ${pass} assertions`);

@@ -377,7 +377,12 @@ const nexRowOf = (out) => (out.programs || []).find((p) => p.program === 'DSCR 3
        the ladder and explains itself only when ASKED. So the general engine has a door of its
        OWN now; what must never happen is a SECOND IMPLEMENTATION of it, which is what the
        next two assertions pin. */
-    ok(/key: 'general',[\s\S]{0,3000}?explain: \(quote, scenario, option\) => ltApi\.dscrExplain\(/.test(eng),
+    /* SLICED ON THE NEXT ENGINE, NOT ON A CHARACTER BUDGET. `[\s\S]{0,3000}?` is a guess about
+       how long the general engine's declaration happens to be today, so adding a paragraph of
+       comment to it turns a correct engine red — which is a defect the guard invented. The
+       boundary that actually means something is where the NEXT engine starts. */
+    const generalDecl = eng.slice(eng.indexOf("key: 'general'"), eng.indexOf("key: 'combined'"));
+    ok(/explain: \(quote, scenario, option\) => ltApi\.dscrExplain\(/.test(generalDecl),
       'WIRE-1 the GENERAL engine has its own explain door — a LoanNEX row on that board can be asked to itemise itself');
     ok(/dscrExplain: \(quote, scenario, option\) => ltPost\(lt\('\/dscr\/explain'\)/.test(api),
       'WIRE-1b …at this engine\'s own path');

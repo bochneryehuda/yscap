@@ -59,9 +59,11 @@ const DEFAULTED_OVERRIDE_KEYS = Object.freeze({
   markupStdPct:  { label: 'Rate markup / YSP — Standard',              unit: 'pct',   revenueUp: true },
   markupGoldPct: { label: 'Rate markup / YSP — Gold',                  unit: 'pct',   revenueUp: true },
   markupSilverPct: { label: 'Rate markup / YSP — Silver',              unit: 'pct',   revenueUp: true },
+  markupSpeedPct:  { label: 'Rate markup / YSP — Speed',               unit: 'pct',   revenueUp: true },
   origStdPct:    { label: 'Origination points — Standard',             unit: 'pct',   revenueUp: true },
   origGoldPct:   { label: 'Origination points — Gold',                 unit: 'pct',   revenueUp: true },
   origSilverPct: { label: 'Origination points — Silver',               unit: 'pct',   revenueUp: true },
+  origSpeedPct:  { label: 'Origination points — Speed',                unit: 'pct',   revenueUp: true },
   // The Manual product prices on the Standard engine and has NO company default of
   // its own — a blank manual field means "use Standard" (owner-directed 2026-07-30,
   // mirrored in pricing.js `origKey`). So it is compared against the STANDARD

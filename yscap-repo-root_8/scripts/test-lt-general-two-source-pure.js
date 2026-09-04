@@ -638,9 +638,65 @@ const byInvestor = (programs) => {
      `boardForScenario` in its hands. */
   {
     const searchRecord = require(path.join(ROOT, 'src/longterm/pricing/search-record.js'));
-    const board = await run(lpOk, nexOk);
+
+    /* ⛔ THE BOARD IS BUILT FROM THE REAL `loadConfig`, NOT FROM `{}` — the re-audit's D-7.
+       Every earlier cut of this section passed an EMPTY opts object, so the board was built
+       with `routes`, `custom`, `settings`, `links`, `extraFor`, `heldSetting` and
+       `wantLoanNex` all undefined. That is a fixture THINNER than what production builds,
+       and a fixture thinner than the real thing is blind to any gate on the missing fields:
+       a `if (!opts.settings) return {...no sightings...}` added tomorrow would leave this
+       whole section green while silencing both doors in production — the exact shape of the
+       defect SEAM was written to catch, one layer down.
+
+       `loadConfig` runs with NO DATABASE when it is handed its three inputs (it reports the
+       unreadable settings store as `problem` and answers with empty maps), which is what
+       makes the real config reachable from a pure suite. MEASURED: the board it produces is
+       identical to the `{}` one today — 14 programmes, the same six investors, the same
+       sightings — so this changes nothing about what is asserted and everything about what
+       a future gate can walk past. */
+    const cfg = await gb.loadConfig({ routes: {}, links: {}, marginHoldback: 0.25 });
+    const board = await run(lpOk, nexOk, cfg);
     ok(board.ok && board.programs.length > 0,
       'SEAM-0 CONTROL: the board under test priced something, so the assertions below mean something');
+
+    /* AND THE KEY LIST IS DERIVED FROM THE TWO FUNCTIONS THEMSELVES, never hand-kept: a
+       config key added to `loadConfig` and read by the board arrives here for free, and a
+       key the BOARD reads that `loadConfig` does not supply fails until somebody says which
+       kind it is. `raw` / `staticRequest` / `debug` are per-CALL, not config — a caller
+       decides them per search, so they are named once, here, and nowhere else. */
+    {
+      const fs = require('fs');
+      const all = fs.readFileSync(path.join(ROOT, 'src/longterm/pricing/general-board.js'), 'utf8');
+      const start = all.indexOf('async function boardForScenario');
+      const after = all.slice(start + 1);
+      const nextDecl = after.search(/\n(?:async )?function [A-Za-z_]|\nmodule\.exports/);
+      /* Through the SHARED stripper — the two-regex idiom is a skeleton key that can
+         swallow a whole file and make a "must not appear" rule pass over nothing. */
+      const { stripComments } = require(path.join(ROOT, 'scripts/lib/strip-comments'));
+      const body = stripComments(nextDecl === -1 ? after : after.slice(0, nextDecl));
+      const readKeys = Array.from(new Set((body.match(/opts\.[A-Za-z_]+/g) || [])
+        .map((m) => m.slice(5)))).sort();
+      const PER_CALL = ['debug', 'raw', 'staticRequest'];
+      const cfgKeys = Object.keys(cfg);
+      const fromConfig = readKeys.filter((k) => !PER_CALL.includes(k));
+      const missingFromCfg = fromConfig.filter((k) => !cfgKeys.includes(k));
+      ok(missingFromCfg.length === 0,
+        `SEAM-0a the board reads no opts key its own loadConfig cannot supply (per-call: ${PER_CALL.join(', ')}) — unaccounted: ${missingFromCfg.join(', ') || 'none'}`);
+      /* ⛔ SEAM-0b's FIRST CLAUSE IS IMPLIED BY SEAM-0a, and the pre-merge audit of
+         2026-09-03 verified it: `!(k in cfg)` and `!cfgKeys.includes(k)` agree on every
+         key, so `notPassed` can never be non-empty once `missingFromCfg` is empty. It is
+         kept because the two ask about DIFFERENT objects in principle (own keys versus
+         the prototype chain) and the cost is nothing — but the message no longer claims
+         it is what earns its place.
+         WHAT ACTUALLY EARNS IT is `fromConfig.length >= 5`: without a floor, a board that
+         read NO opts keys at all would satisfy both clauses vacuously, and SEAM-0a with
+         it. That is the assertion doing the work. */
+      const notPassed = fromConfig.filter((k) => !(k in cfg));
+      ok(fromConfig.length >= 5,
+        `SEAM-0b CONTROL: the board really reads its config from opts — ${fromConfig.length} keys (${fromConfig.join(', ')}) — so SEAM-0a cannot pass vacuously`);
+      ok(notPassed.length === 0,
+        `SEAM-0b1 …and every one of them is handed to it here${notPassed.length ? ` — not passed: ${notPassed.join(', ')}` : ''}`);
+    }
 
     let sighted = null; let missed = null;
     const col = searchRecord.collector({
@@ -666,7 +722,7 @@ const byInvestor = (programs) => {
     /* A sheet that genuinely refused says nothing — the property the `answered` flag is
        FOR. This is the control that stops SEAM-1 being satisfiable by ignoring the flag. */
     const lpDown = { price: async () => ({ ok: false, error: 'down' }), parseFull: lpModel.parseFull };
-    const downBoard = await run(lpDown, nexOk);
+    const downBoard = await run(lpDown, nexOk, cfg);
     let sightedDown = null;
     const col2 = searchRecord.collector({
       recordSightings: async (s) => { sightedDown = s; return { ok: true }; },
@@ -676,6 +732,118 @@ const byInvestor = (programs) => {
     await col2.flush({ scenario: SC, searchKey: 'k-down', door: 'immediate' });
     ok(!sightedDown || !sightedDown.lenderprice || sightedDown.lenderprice.keys.length === 0,
       'SEAM-4 CONTROL: a sheet that refused records no sighting at all, which is what the flag is for');
+
+    /* ⛔ SEAM-5 · THE FRESH INSTALL, which is the state every one of the assertions above
+       leaves untested. The re-audit of 2026-09-03 gated the whole sightings block on a
+       config key —
+
+           const noRegister = opts.wantLoanNex !== true;
+           const sightings = noRegister ? {} : { … }
+
+       — and every LT suite in the chain stayed green, because `loadConfig` on THIS fixture supplies
+       `wantLoanNex: true` and every board built here goes down the passing side. SEAM-0's
+       own comment says it exists to stop exactly that shape, and it could not: the gate
+       reads a key that IS in `readKeys` and IS handed over, so SEAM-0a, SEAM-0b and
+       SEAM-0b1 are all satisfied.
+
+       In production the gate fires whenever no investor is routed to LoanNEX — the state
+       of the whole system before the owner switched the five over, and the state of any
+       deployment whose admin turns them off again. So the board is built again with nobody
+       routed to LoanNEX, and the register must still be fed what Lender Price carried.
+
+       ⛔ AND THE FIXTURE HAS TO EARN THAT STATE, WHICH THE FIRST CUT DID NOT. It passed
+       `wantLoanNex: false` to `loadConfig` — and `loadConfig` DERIVES that key from the
+       routes rather than taking it, so the flag was ignored, the config still came back
+       `wantLoanNex: true`, and the main assertion below proved nothing. The CONTROL is
+       what caught it: it read the config back and failed while SEAM-5 itself passed —
+       the exact tautology class this whole round is about. A fixture that STATES a
+       derived value is stating a wish; it has to supply the INPUT the value is derived
+       from.
+
+       So the state is reached the way an admin reaches it: by ROUTES. The keys are read
+       out of the shipped configuration through the board's OWN `expectedFromLoanNex`,
+       never hand-typed, so an investor moved to LoanNEX tomorrow is switched off here
+       for free and this can never go stale. OFF (rather than re-pointing them at Lender
+       Price) because Off is the one setting available for EVERY investor — two of the
+       five are LoanNEX-only, so the settings screen locks their Lender Price button out
+       and a fixture that set it would be describing a state nobody can reach.
+
+       The Lender Price half is untouched by it: `sightings` is read off the MERGE, which
+       happens BEFORE the routing, so turning investors off cannot shrink what Lender
+       Price is recorded as having carried — which is precisely what makes this fixture
+       able to tell a silenced register from a shorter board. */
+    const settingsOf = require(path.join(ROOT, 'src/longterm/pricing/investor-settings.js'));
+    const routedToNex = gb._internals.expectedFromLoanNex(settingsOf.roster(cfg.settings, cfg.custom));
+    ok(routedToNex.length > 0,
+      `SEAM-5 CONTROL A: the shipped configuration really does route somebody to LoanNEX (${routedToNex.join(', ') || 'nobody'}), so switching them off is a real change`);
+    const nobodyOnNex = {};
+    for (const k of routedToNex) nobodyOnNex[k] = { enabled: false };
+    const freshCfg = await gb.loadConfig({ routes: nobodyOnNex, links: {}, marginHoldback: 0.25 });
+    ok(freshCfg.wantLoanNex !== true,
+      `SEAM-5 CONTROL B: with those investors switched off the config really does say nobody is routed to LoanNEX (wantLoanNex ${JSON.stringify(freshCfg.wantLoanNex)})`);
+    const freshBoard = await run(lpOk, nexOk, freshCfg);
+    let sightedFresh = null;
+    const col3 = searchRecord.collector({
+      recordSightings: async (x) => { sightedFresh = x; return { ok: true }; },
+      recordMisses: async () => ({ ok: true }),
+    });
+    col3.observe(freshBoard);
+    await col3.flush({ scenario: SC, searchKey: 'k-fresh', door: 'immediate' });
+    /* ⛔ THE COUNT, AND IT IS ANCHORED OUTSIDE THE THING UNDER TEST.
+       `> 0` would pass a gate that TRUNCATED the list to one, and a shorter sightings
+       list locks investors out of the settings screen just as surely as an empty one.
+       The first fix compared the fresh board against the ORDINARY one — which catches a
+       gate that shortens only when the routing changes, and is blind to one that
+       shortens on the SHARED path: the audit of 2026-09-04 sliced `sightedOn` to one key
+       unconditionally and this read "1 of 1", green, with the whole long-term chain green behind
+       it.
+
+       So the expectation is DERIVED FROM THE FIXTURE — and the road it is derived down
+       has to be one the register's own road does not JOIN.
+
+       ⛔ THE FIRST TWO ANCHORS WERE BOTH DOWNSTREAM OF THE SAME FUNCTION, and the second
+       one read as if it were not. It parsed the same answer with the vendor's parser and
+       counted `decorate(...).roster`, whose comment claimed "two roads to one number" —
+       and the re-audit of 2026-09-04 proved they are ONE road with a shared ancestor:
+       `decorate` resolves every row through `investor-roster.effectiveResolve`, which is
+       exactly what `merge` builds `presentIn` from and what `sightedOn` then reads. Mutated
+       so the shared resolver answers for about half the rows, BOTH sides fell from 4 to 1
+       TOGETHER and this assertion stayed green; taken to the limit ("0 fresh / 0 ordinary,
+       against 0") it passed on nothing at all, because the count had no floor of its own.
+
+       So the anchor is now the RAW FIXTURE ITSELF — the distinct lender labels in the
+       payload, read straight off the JSON with no parser, no registry and no resolver
+       anywhere in reach. Nothing our code does can move it, which is the whole point: a
+       resolver that stops resolving now DISAGREES with it instead of dragging it along.
+       (It is an equality rather than a floor because this fixture carries no link that
+       could collapse two spellings into one investor — `links: {}` on both configs —
+       so every distinct label is a distinct investor, and CONTROL C says so out loud.) */
+    const LP_RAW_LABELS = [...new Set((((LP_RAW || {}).results || {}).qualifiedNonQMData || {})
+      .childs ? LP_RAW.results.qualifiedNonQMData.childs.map((c) => c && c.keyLabel).filter(Boolean) : [])];
+    const lpRawCount = LP_RAW_LABELS.length;
+    /* The registry road is KEPT beside it — not as the anchor, but as the thing being
+       checked against it: the two now genuinely differ, so a resolver that stops resolving
+       fails HERE rather than moving both halves of a comparison at once.
+       `decorate` answers `{programs, roster, unmapped}` — read through a total accessor, so
+       a shape change states a false fact and lets the run reach the end rather than throwing
+       (this very line threw on its first cut, and grepping the output for the assertion names
+       hid it — the crash printed no assertion at all, which is exactly the "a crashing test
+       looks like proof" trap this file keeps running into). */
+    const lpParsedForCount = lpModel.parseFull(LP_RAW);
+    const lpDecorated = investorPrograms.decorate((lpParsedForCount && lpParsedForCount.programs) || []) || {};
+    const lpExpect = Array.isArray(lpDecorated.roster) ? lpDecorated.roster.length : -1;
+    const lpFull = (sighted && sighted.lenderprice && Array.isArray(sighted.lenderprice.keys) ? sighted.lenderprice.keys.length : 0);
+    const lpFresh = (sightedFresh && sightedFresh.lenderprice && Array.isArray(sightedFresh.lenderprice.keys) ? sightedFresh.lenderprice.keys.length : 0);
+    ok(lpRawCount > 1,
+      `SEAM-5 CONTROL C0: the fixture itself carries several distinct lenders, counted off the raw payload with none of our code in reach (${lpRawCount}: ${LP_RAW_LABELS.join(', ')})`);
+    ok(lpExpect === lpRawCount,
+      `SEAM-5 CONTROL C: …and the registry road agrees with the raw payload about how many investors that is (${lpExpect} against ${lpRawCount}) — the two are only equal while every label resolves, so this is what fails when the shared resolver stops resolving`);
+    ok(sightedFresh && sightedFresh.lenderprice && sightedFresh.lenderprice.answered === true
+      && lpFresh === lpRawCount && lpFull === lpRawCount,
+      `⛔ SEAM-5 …and with nobody routed to LoanNEX the register is STILL fed EVERY investor Lender Price carried (${lpFresh} fresh / ${lpFull} ordinary, against ${lpRawCount} lenders in the answer itself) — a gate on the routing silences the register, a truncating one shortens it, and neither can pass by dragging the expectation down with it`);
+    ok(REG.SOURCES.every((sname) => freshBoard.sightings && freshBoard.sightings[sname]
+      && typeof freshBoard.sightings[sname].answered === 'boolean'),
+      'SEAM-5a …and the board still describes every sheet the register knows, so nothing became unrecordable');
   }
 
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);

@@ -653,8 +653,20 @@ console.log('LT Pricing Engine — structural guards\n');
   ok(!/comp/i.test(scen.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
       .replace(/complete/gi, '')),
     'PE-110 the scenario builder knows nothing called comp — the wire is untouched');
-  ok(/dscrPrice\(scenario, \{ full: true \}\)/.test(generalBlock),
-    'PE-111 ...and the price call sends the scenario and nothing else about the switch');
+  /* ⛔ ON THE ARGUMENT, NOT THE SHAPE OF THE CALL — the lesson PE-3 in this very file already
+     states, and which this assertion had to learn the hard way. It pinned the one-line spelling
+     `dscrPrice(scenario, { full: true })`, so when `bandsFollow` was added to that object in
+     ba2c583a (bookkeeping about the PRESS, not a pricing input, and nothing to do with the comp
+     overlay) this went red on correct code and stayed red — the defect the guard invented, and
+     the worst kind, because the obvious fix is to bend the code to suit the test. What it is
+     ACTUALLY about is that nothing about the compensation switch reaches the wire, so that is
+     what it asks: the scenario goes as-is, the full capture is requested, and no argument
+     anywhere in the call mentions comp. */
+  const genPriceCall = (generalBlock.match(/ltApi\.dscrPrice\(([\s\S]{0,240})/) || ['', ''])[1];
+  ok(/^scenario,/.test(genPriceCall.trim()) && /full:\s*true/.test(genPriceCall),
+    'PE-111 the general price call sends the scenario itself and asks for the full capture');
+  ok(!/comp/i.test(genPriceCall.replace(/complete/gi, '')),
+    'PE-111a ...and nothing in that call mentions the compensation switch — it is a lens, never a wire value');
 
   // (3) FAIL TO RAW, NEVER TO A WRONG NUMBER — the null-plan path forces the raw identity.
   ok(/compProblem\s*\?\s*\{ mode: 'raw', shift: 0/.test(code),

@@ -90,10 +90,130 @@ function authed(req) {
   const at = decoded.indexOf(':');
   if (at < 0) return false;
   // BOTH halves are compared, and both comparisons always run — an early return on
-  // the username would leak, by timing, whether the username was right.
+  // the username would leak, by timing, whether the username was right. During a
+  // password rotation (their API is delete-and-recreate, so there is a window in
+  // which Class still sends the old password) the PREVIOUS password is accepted too
+  // — only while CLASS_CALLBACK_PASSWORD_PREVIOUS is set, and compared the same way.
+  const pw = decoded.slice(at + 1);
   const userOk = sameSecret(decoded.slice(0, at), c.callbackUser);
-  const passOk = sameSecret(decoded.slice(at + 1), c.callbackPassword);
-  return userOk && passOk;
+  const passOk = sameSecret(pw, c.callbackPassword);
+  const prevOk = c.callbackPasswordPrevious ? sameSecret(pw, c.callbackPasswordPrevious) : false;
+  return userOk && (passOk || prevOk);
+}
+
+// THEIR DELIVERY IDENTITY. Their self-registration guide states the contract in so
+// many words: deliveries are at-least-once, "deduplicate on orderId + eventName +
+// created". A retry is NOT guaranteed byte-identical (the `sent` stamp moves), so a
+// payload hash alone would file a retry as a second event and process it twice. When
+// the envelope carries both an order id and a parseable `created`, the dedupe key is
+// theirs — PLUS a digest of the content with the transport stamps (`sent`, `created`)
+// removed. Their three fields are the identity of a retry; the content digest is what
+// keeps two DIFFERENT legitimate events that happen to share all three (two notes on
+// one order in the same second, a status change re-fired with new data) from
+// silently collapsing to one. A retry carries the same content, so it still collapses.
+// Otherwise (a malformed or partial body, a marker) it falls back to the payload
+// bytes + the day, which still collapses a verbatim retry.
+//
+// `created` without a timezone is read as UTC: their examples are `…Z`, and
+// Date.parse treats an offset-less ISO string as LOCAL time, which would make the
+// same instant hash differently on two servers in two zones. The lowercase `t` and
+// the SQL-style space separator are accepted for the same reason — V8 reads both as
+// local time too.
+const ISO_NO_OFFSET = /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+const TRANSPORT_KEYS = new Set(['sent', 'Sent', 'created', 'Created']);
+// ITERATIVE on purpose — an explicit stack, no recursion, no depth cap. JSON.parse is
+// iterative too, so anything it can hand this router, this can canonicalise, however
+// deep. The recursive version had a cap, and the band between that cap and the point
+// where the STORED body overflows into the marker was exactly where a deep retry with
+// a moved `sent` digested differently and was processed twice.
+function canonical(root) {
+  // A string on the stack is text to emit; an object or array is a node to expand.
+  // Scalars and separators go on as their final text, so the only allocation per
+  // element is the key label — the first cut wrapped every element in a small object
+  // and ran 3-9x slower than the recursive form on a wide body.
+  if (root === null || typeof root !== 'object') return scalar(root);
+  const out = [];
+  const stack = [root];
+  while (stack.length) {
+    const it = stack.pop();
+    if (typeof it === 'string') { out.push(it); continue; }
+    if (Array.isArray(it)) {
+      // A leaf array is emitted by the native serializer in one call: with no keys to
+      // sort its JSON IS the canonical form, element for element (undefined and holes
+      // both print null, -0 prints 0 — exactly what scalar() does).
+      if (it.length === 0) { out.push('[]'); continue; }
+      if (allScalar(it)) { out.push(JSON.stringify(it)); continue; }
+      out.push('[');
+      stack.push(']');
+      for (let i = it.length - 1; i >= 0; i--) {
+        pushValue(stack, it[i]);
+        if (i) stack.push(',');
+      }
+    } else {
+      const keys = Object.keys(it).sort();
+      if (keys.length === 0) { out.push('{}'); continue; }
+      if (allScalarValues(it, keys)) {
+        out.push('{' + keys.map((k) => JSON.stringify(k) + ':' + scalar(it[k])).join(',') + '}');
+        continue;
+      }
+      out.push('{');
+      stack.push('}');
+      for (let i = keys.length - 1; i >= 0; i--) {
+        pushValue(stack, it[keys[i]]);
+        stack.push(JSON.stringify(keys[i]) + ':');
+        if (i) stack.push(',');
+      }
+    }
+  }
+  return out.join('');
+}
+function scalar(v) {
+  const j = JSON.stringify(v === undefined ? null : v);
+  return j === undefined ? 'null' : j;
+}
+function allScalar(arr) {
+  // A toJSON reachable on the array itself would let the native call answer for it —
+  // only a polluted Array/Object prototype can put one there, but then the slow path
+  // is the one that still emits the elements.
+  if (typeof arr.toJSON === 'function') return false;
+  for (let i = 0; i < arr.length; i++) { const v = arr[i]; if (v !== null && typeof v === 'object') return false; }
+  return true;
+}
+function allScalarValues(obj, keys) {
+  for (let i = 0; i < keys.length; i++) { const v = obj[keys[i]]; if (v !== null && typeof v === 'object') return false; }
+  return true;
+}
+function pushValue(stack, v) {
+  if (v !== null && typeof v === 'object') stack.push(v);
+  else stack.push(scalar(v));
+}
+// The digest is over the body sans the transport stamps. `rest` has a null prototype
+// so a top-level "__proto__" key — which JSON.parse does produce as an own property —
+// is data, not an assignment to the object's prototype. The catch is a floor, not a
+// rung a parsed body can reach: canonical only throws on a value JSON.stringify
+// refuses (a BigInt, say), which JSON.parse never yields. There the stored marker's
+// raw-body digest stands in — distinguishing, though a moved `sent` would then count
+// as a second delivery, which is why the floor must stay unreachable for JSON.
+function contentDigest(p, payload) {
+  const rest = Object.create(null);
+  if (p && typeof p === 'object') for (const k of Object.keys(p)) if (!TRANSPORT_KEYS.has(k)) rest[k] = p[k];
+  let material;
+  try { material = canonical(rest); }
+  catch (_) { material = String(payload); }
+  return crypto.createHash('sha256').update(material).digest('hex');
+}
+function deliveryKey(env, p, payload, day) {
+  const createdRaw = p && (p.created != null ? p.created : p.Created);
+  let createdStr = createdRaw == null || createdRaw === '' ? null : String(createdRaw).trim();
+  if (createdStr && ISO_NO_OFFSET.test(createdStr)) createdStr = createdStr.replace(/[t ]/, 'T') + 'Z';
+  const createdMs = createdStr == null ? NaN : Date.parse(createdStr);
+  if (env.classOrderId && Number.isFinite(createdMs)) {
+    return {
+      keyed: true,
+      material: `k|${env.eventName}|${env.classOrderId}|${new Date(createdMs).toISOString()}|${contentDigest(p, payload)}`,
+    };
+  }
+  return { keyed: false, material: `${env.eventName}|${day}|${payload}` };
 }
 
 // Their events all carry the same envelope; these are the only fields we index on.
@@ -165,11 +285,12 @@ async function receive(req, res) {
       payload = marker(`unserializable: ${(e && e.message) || 'error'}`.slice(0, 200));
     }
 
-    // Dedupe. Their retries repeat a delivery verbatim, so the same bytes on the same
-    // day collapse; the day is inside the hash because a byte-identical legitimate
-    // event weeks later is a real second event, not a retry.
+    // Dedupe — on THEIR identity (orderId + eventName + created) when the envelope
+    // carries it, see deliveryKey(); else the same bytes on the same day collapse. The
+    // day is inside the fallback hash because a byte-identical legitimate event weeks
+    // later is a real second event, not a retry.
     const day = new Date().toISOString().slice(0, 10);
-    const hash = crypto.createHash('sha256').update(`${env.eventName}|${day}|${payload}`).digest('hex');
+    const hash = crypto.createHash('sha256').update(deliveryKey(env, p, payload, day).material).digest('hex');
 
     await db.query(
       `INSERT INTO class_callback_events (event_name, class_order_id, reference_number, payload, payload_hash)
@@ -195,3 +316,4 @@ router.post('/', receive);
 router.post('/:event', receive);
 
 module.exports = router;
+module.exports._internals = { authed, deliveryKey, envelope, sameSecret, canonical, contentDigest };

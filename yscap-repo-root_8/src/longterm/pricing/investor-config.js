@@ -94,16 +94,101 @@ async function sightingsRaw() {
  * nothing else, so every failure is swallowed and reported in the return value. It also
  * refuses a source that did not ANSWER — a vendor outage is no evidence about any
  * investor, and recording one would lock out every investor that sheet normally carries.
+ *
+ * ⛔ IT IS A READ-MODIFY-WRITE OF ONE SHARED KEY, SO IT TAKES A LOCK (post-merge audit
+ * 2026-09-03, REPRODUCED before it was changed).
+ *
+ * `store.save` is a per-key `ON CONFLICT … DO UPDATE SET value = EXCLUDED.value` —
+ * last-writer-wins, no compare-and-set — so two passes that read the same `stored` and
+ * then both write produce ONE of the two answers and silently drop the other. While the
+ * bands door was the only writer that could not happen. It can now: `LtPricer` fires the
+ * immediate board AND the band board on ONE press, and both record.
+ *
+ * MEASURED against this function with a 15 ms read and a 15 ms write: overlapping, one
+ * press recorded `acra, phh` and lost NQM's sighting entirely; sequential, the same two
+ * calls recorded `acra, nqm, phh`. A lost sighting is exactly the defect this register
+ * was built to fix — the settings screen goes on saying a sheet has never produced an
+ * investor it produced today.
+ *
+ * A PER-KEY ADVISORY LOCK, not a JS mutex: it holds across the web process, the worker
+ * and every Render instance, which is what a two-officer shop or a scaled-out service
+ * actually needs. It FAILS OPEN — a lock that cannot be taken lets the write proceed,
+ * because a missed lock costs at worst the sighting this already loses today, while
+ * refusing to record would cost the column outright. It is always released in the
+ * `finally`, including on a throw.
+ *
+ * ⛔ IT IS `pg_try_advisory_lock`, NOT `pg_advisory_lock`, AND THAT IS THE WHOLE DESIGN —
+ * the blocking form was shipped in ba2c583a and the re-audit of 2026-09-03 measured what
+ * it costs. `src/longterm/db.js` opens the Long-Term pool with `max: 5` and a 10-second
+ * connect timeout, and `settingsStore.get`/`save` borrow from THAT SAME POOL. A blocking
+ * waiter holds one of the five for as long as it waits, so five concurrent calls leave
+ * the lock HOLDER unable to get a connection for its own read — it waits out the whole
+ * connect timeout and its sighting is lost, with the lock held throughout. MEASURED, at
+ * a faithful simulation of that pool: 5 concurrent calls, 2,128 ms elapsed, one call
+ * back with `{ok:false}` and its sighting gone. The lock added to stop a lost sighting
+ * was losing them, and taking the rest of Long-Term's pool with it. "Two officers
+ * pricing at once" is the case it was written for.
+ *
+ * SO A WAITER NEVER HOLDS A CONNECTION. The client is released the instant the lock is
+ * refused, and the retry takes a fresh one — the same non-blocking shape
+ * `pricing/snapshot.js` and `lib/track-record/self-search.js` already chose. At most ONE
+ * caller holds a lock connection at a time, whatever the concurrency, so four of the
+ * five are always free for the work itself. The retry budget (${LOCK_TRIES} tries about
+ * ${LOCK_WAIT_MS} ms apart) is an order of magnitude under the connect timeout on
+ * purpose: it is long enough to serialise the overlapping presses this exists for, and
+ * short enough that exhausting it costs a fraction of a second rather than ten.
  */
+/** Bounded, and deliberately far below `connectionTimeoutMillis` — see the note above. */
+const LOCK_TRIES = 6;
+const LOCK_WAIT_MS = 25;
+/* ⛔ A REF'D TIMER, DELIBERATELY. The unref'd habit is for a background tick that must
+   never hold a process open (the keep-warm lesson); this one is a step INSIDE a request
+   that is being awaited, so unref'ing it lets the process exit mid-operation and leaves
+   the await hanging — which is exactly what happened the first time this was written. It
+   is bounded at a few tens of milliseconds, so it can hold nothing open meaningfully. */
+const napFor = (ms) => new Promise((r) => { setTimeout(r, ms); });
+
+/**
+ * Take the register's write lock, or answer null having released everything.
+ *
+ * ⛔ NEVER RETURNS WHILE HOLDING A CLIENT IT DID NOT GET THE LOCK ON. That single
+ * property is what makes the pool starvation above impossible, so it is asserted
+ * directly rather than left to reading.
+ */
+async function takeLock(key, deps = {}) {
+  const getClient = deps.getClient || (() => require('../db').getClient());
+  const nap = deps.nap || napFor;
+  for (let i = 0; i < LOCK_TRIES; i += 1) {
+    let conn = null;
+    try {
+      conn = await getClient();
+      const got = await conn.query('SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS ok', [key]);
+      if (got && got.rows && got.rows[0] && got.rows[0].ok === true) return conn;
+      try { conn.release(); } catch (_) { /* releasing is best-effort */ }
+    } catch (_) {
+      if (conn) { try { conn.release(); } catch (_e) { /* releasing is best-effort */ } }
+      return null;                         // a pool or database hiccup — fail open at once
+    }
+    if (i < LOCK_TRIES - 1) await nap(LOCK_WAIT_MS);
+  }
+  return null;                             // busy for the whole budget — fail open
+}
 async function recordSightings(observed, opts = {}) {
   const at = opts.at || new Date().toISOString();
+  const lockKey = 'lt-sightings:company';
+  const lockConn = await takeLock(lockKey, opts._lockDeps);
   try {
     const stored = await settingsStore.get(KEYS.sightings, 'company');
     let next = stored;
     for (const source of sightings.SOURCES) {
       const o = observed && observed[source];
       if (!o || o.answered === false) continue;
-      next = sightings.record(next, { source, keys: o.keys || [], at, answered: true });
+      /* `counts` decides whether this board COUNTS AS A SEARCH — see the note on
+         `sightings.record`. A door that knows another is following on the same press
+         records what it saw without counting the press twice. */
+      next = sightings.record(next, {
+        source, keys: o.keys || [], at, answered: true, counts: opts.counts !== false,
+      });
     }
     if (next === stored) return { ok: true, wrote: false };
     await settingsStore.save({ [KEYS.sightings]: next }, {
@@ -112,10 +197,15 @@ async function recordSightings(observed, opts = {}) {
     return { ok: true, wrote: true };
   } catch (e) {
     return { ok: false, wrote: false, problem: reasonOf(e) };
+  } finally {
+    if (lockConn) {
+      try { await lockConn.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]); } catch (_) { /* the lock dies with the session anyway */ }
+      try { lockConn.release(); } catch (_) { /* releasing is best-effort */ }
+    }
   }
 }
 
 module.exports = {
   KEYS, investorsRaw, holdbackRaw, linksRaw, customRaw, sightingsRaw, recordSightings,
-  _internals: { reasonOf },
+  _internals: { reasonOf, takeLock, LOCK_TRIES, LOCK_WAIT_MS },
 };

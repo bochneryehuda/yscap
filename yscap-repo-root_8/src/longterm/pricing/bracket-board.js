@@ -32,10 +32,121 @@
  *   1. WHAT A BRACKET IS — `./dscr-tiers`, the owner's own eleven-tier ladder,
  *      SHARED rather than rebuilt (their explicit instruction). The board and
  *      the re-price refusal read one table, so they cannot disagree.
- *   2. WHAT A RATIO IS — `encompass/formulas.computeDscr`, the tenant's own
- *      Round(rent / PITIA, 2).
+ *   2. WHAT A RATIO IS — rent / PITIA, taken to two decimals through
+ *      `./tier-rounding.sendAs('dscr', …)`: CUT DOWN, never rounded to nearest.
+ *      See the owner-authorised change below.
  *   3. WHAT A PAYMENT IS — `termsheet/overlay.monthlyPI`, already the server's
  *      one definition, and only used when the vendor did not quote its own.
+ *
+ * ── THE BANDS CUT THE DSCR DOWN — OWNER-AUTHORISED CHANGE (2026-09-03) ───────
+ * ⛔ THIS MOVES PRICES, and it is here on the owner's explicit written
+ * authorisation. Asked what to do about the bands still rounding to nearest,
+ * they answered: *"Round it down, same as everywhere else."* That is the
+ * standing rule of 2026-08-30 — *"The DSCR should always be rounded down, and
+ * the LTV should always be rounded up, so we should never see better"* — finally
+ * applied to the one surface that had been left out.
+ *
+ * ⛔ WHAT WAS ACTUALLY WRONG. This file used `encompass/formulas.computeDscr`,
+ * which is `Round(rent / PITIA, 2)` — the TENANT'S OWN formula, correct for
+ * mirroring what Encompass shows and wrong as the question to ask a rate sheet.
+ * Rounding to nearest lifts a 1.245 loan to 1.245 → 1.25 and searches the band
+ * ABOVE the one the property earns, which is exactly the too-good price the
+ * bracket board exists to stop. `computeDscr` is UNTOUCHED and stays frozen —
+ * only its CALLER moved, which is the same shape the term-sheet fix took.
+ *
+ * ⛔ MEASURED — AND RE-MEASURED ON EVERY TEST RUN, which is the only reason these
+ * numbers may be quoted at all. The battery lives in the tree as DATA
+ * (`scripts/lib/dscr-round-down-battery.js`: 11 rents × 8 loan amounts × 6 tax
+ * figures × 4 insurance figures × 3 HOA figures = 6,336 deals × 51 rates from
+ * 5.25% to 11.5%), and section N17 of `scripts/test-lt-dscr-brackets-pure.js`
+ * runs it and asserts every figure below. ONE COMMAND REPRODUCES THEM:
+ *
+ *     node scripts/test-lt-dscr-brackets-pure.js
+ *
+ * The BEFORE engine is built by neutralising this file's own changed line rather
+ * than by reading git (a git baseline proves inertness only until the change is
+ * committed, after which it compares the engine to itself), through the one
+ * definition that suite and battery share.
+ *
+ * Over 323,136 deal/rate combinations:
+ *   · the ratio moves a cent in 161,448 of them (49.963%)
+ *   · the BAND moves in 9,033 (2.795%)
+ *   · every one of those 9,033 moves to a WORSE band. ZERO move to a better one.
+ *   · nothing becomes unworkable: 0 nulls before, 0 after.
+ * And over the same 6,336 deals × the whole 11-band ladder (69,696 pairs): 0
+ * bands LOST, 0 newly reachable, 0 searched ratios outside their own band, and
+ * the SEARCHED ratio moves in 5,308 of them.
+ *
+ * ⛔ THE SEARCHED RATIO IS NOT ALWAYS CUT DOWNWARD, AND THIS LINE USED TO SAY IT
+ * WAS. The pre-merge audit of 2026-09-03 measured the claim false and it is
+ * corrected here rather than quietly dropped: of those 5,308 moves, 3,942 go DOWN
+ * and 1,366 go UP (the first is band 9 on a $120,000 loan, 1.30 → 1.31).
+ *
+ * THE MECHANISM, and it is why an up-move is the SAFE direction. `sendRatioFor`
+ * asks for the LOWEST ratio any rate in the band achieves. Cutting each rate's
+ * ratio down can push the rate that USED to be that minimum out of the band
+ * altogether — and the new minimum is then a HIGHER ratio. So we ask the vendor
+ * for a STRONGER DSCR than before, which can only ever fetch a worse price, never
+ * a better one. Nothing is over-stated about the loan; the request is simply more
+ * conservative in that band.
+ *
+ * WHAT IS ACTUALLY ONE-WAY, and what the safety of this rests on — THREE measured
+ * properties: the RATIO A RATE ACHIEVES never moves up (0 of 161,448), no band moves
+ * to a BETTER one, and no band is lost or newly reached. All three are falsifiable and
+ * asserted hard in N17a/N17b; the totals are pinned in N17c/N17d so they cannot drift
+ * quietly.
+ *
+ * ⛔ AND A FOURTH FIGURE THAT IS NOT EVIDENCE, said plainly because two drafts of this
+ * paragraph counted it as one. "0 of 69,696 searched ratios outside their own band" is
+ * TRUE BY CONSTRUCTION: `sendRatioFor` ends `return dscrTier(rounded) === tier ? rounded
+ * : null`, so a non-null answer is in-band by definition and the measurement skips the
+ * nulls. It cannot be nonzero, whatever the rounding does — the audit of 2026-09-04
+ * pushed every searched ratio a whole band out and it still read 0. It is not one of
+ * the three.
+ *
+ * ⛔ AND TWO CLAIMS THIS PARAGRAPH USED TO MAKE ABOUT IT WERE BOTH WRONG, corrected
+ * here rather than quietly dropped, because a note whose subject is what is and is not
+ * evidence must not itself be unreproducible:
+ *
+ *   · It said N17b caught that whole-band mutation "on `lost`/`gained`". It did not.
+ *     Run two ways — the shift inside `sendRatioFor`'s lever argument, and inside
+ *     `tierRounding.sendAs` itself — N17b PASSED both times (0 lost, 0 gained, 0
+ *     outside, 0 nulls either side). The mutation is caught loudly, but by N17a, N17d,
+ *     N15, N4 and N1b. `gained` IS falsifiable in general (cutting the DSCR to one
+ *     decimal gives 5,365 newly reachable and N17b fires); `lost` was not falsified.
+ *   · It called `outside` a "CONTRACT tripwire for the day that return line changes".
+ *     It was not one: DELETING the in-band test (`return rounded;`) leaves the whole
+ *     suite green, because `outside` only counts a ratio that is BOTH un-tested AND
+ *     pushed out of band. So the line is pinned DIRECTLY instead — N18 in the brackets
+ *     suite reads it out of the source — and `outside` is what remains: a measurement
+ *     that says nothing on its own and is reported, not relied on.
+ *
+ * ⛔ HONEST NOTE ON THE FIGURES, AND THE REASON THE BATTERY IS NOW IN THE TREE.
+ * The script that produced the ORIGINAL numbers was never committed, and the
+ * paragraph recorded the battery's SHAPE without one of its values — so it could
+ * not be re-derived. FOUR different searched-move figures are on the record, from
+ * four attempts at the same battery (checked against git, not remembered):
+ *
+ *   5fcfaf43  161,915 moved · 9,722 band · 5,176 searched — "always downward",
+ *             no split stated
+ *   bc5a893d  5,165 searched · 3,951↓ · 1,214↑ — the reconstruction that found the
+ *             "always downward" claim false, and that preserved 5,176 in its own
+ *             honest note
+ *   2026-09-03 re-audit  5,690 · 4,202↓ · 1,488↑
+ *   this battery (above) 161,448 · 9,033 · 5,308 · 3,942↓ · 1,366↑
+ *
+ * An earlier draft of this paragraph labelled the second row's split "as first
+ * written" and dropped 5,176 entirely — wrong on both counts, and the pre-merge
+ * audit of 2026-09-04 caught it: a paragraph whose whole subject is unreproducible
+ * numbers had the provenance of those numbers wrong. All four agree EXACTLY on the
+ * four safety properties, which is the finding; the totals were never reproducible
+ * and the earlier ones are superseded rather than defended. A count nobody can
+ * re-derive is a claim, not a measurement — so the axes are data now, and the suite
+ * prints what it measured.
+ *
+ * So the only thing this can do is search a band the loan has genuinely earned
+ * instead of the one above it. A borrower quoted at the better band was being
+ * shown a price the investor would not honour at lock.
  *
  * ── THE INVARIANT THIS EXISTS TO HOLD ────────────────────────────────────────
  * ⛔ FOR EVERY QUOTE ON THE FINISHED BOARD, THE BRACKET IT WAS PRICED IN IS THE
@@ -55,7 +166,7 @@
 
 const { DSCR_TIERS, dscrTier, tierRow, tierLabel } = require('./dscr-tiers');
 const { monthlyPI } = require('../termsheet/overlay');
-const { computeDscr } = require('../encompass/formulas');
+const tierRounding = require('./tier-rounding');
 
 const nn = (v) => typeof v === 'number' && Number.isFinite(v);
 const num = (v) => {
@@ -144,7 +255,12 @@ function ratioAtRate(figures, ratePct, vendorMonthlyPi = null) {
   if (!nn(pi) || pi <= 0) return null;
   const pitia = Math.round((pi + f.taxMonthly + f.insuranceMonthly + f.hoaMonthly) * 100) / 100;
   if (!(pitia > 0)) return null;
-  return computeDscr(f.rentMonthly, pitia);
+  if (!nn(f.rentMonthly)) return null;
+  /* ⛔ CUT DOWN, NEVER ROUNDED TO NEAREST — the owner's own rule, applied here by their
+     explicit written authorisation (see the header). `sendAs` is the ONE door that rule
+     lives behind, and going through it by NAME rather than by direction is what makes it
+     impossible to get backwards at a call site. */
+  return tierRounding.sendAs('dscr', f.rentMonthly / pitia, 2);
 }
 
 /** The bracket one rate lands in, or null. */
@@ -190,7 +306,12 @@ function sendRatioFor(tier, figures, rates) {
      is ever clamped. The band test below is what keeps this honest rather than
      convenient: a clamp that moved the figure into a neighbouring band would
      search the wrong scenario, so it yields null and that band is not priced. */
-  const rounded = Math.min(Math.round(best * 100) / 100, VENDOR_MAX_DSCR);
+  /* THE SAME DOOR, so the two places this file settles a ratio cannot answer differently.
+     MEASURED: it moves nothing today — `best` is either a ratio `ratioAtRate` has already
+     cut to two decimals, or a band edge that is 2dp by construction — so this is a
+     one-definition fix rather than a second numeric change. It is what stops the two
+     drifting the day either side gains a third decimal. */
+  const rounded = Math.min(tierRounding.sendAs('dscr', best, 2), VENDOR_MAX_DSCR);
   return dscrTier(rounded) === tier ? rounded : null;
 }
 
