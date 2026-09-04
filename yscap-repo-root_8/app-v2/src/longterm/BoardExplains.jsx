@@ -175,7 +175,9 @@ export function OurOwnRules({ houseRules }) {
      holds back margin — legal, since only two STOPS are forbidden — was listed
      as having priced a row it had just taken off the board. A stopping rule is
      never an adjustment, however its summary happens to read. */
-  const adjusted = Array.isArray(h.applied) ? h.applied.filter((a) => a && a.points && !a.stops) : [];
+  const adjusted = Array.isArray(h.applied)
+    ? h.applied.filter((a) => a && a.points && !a.stops && a.adjustedQuotes !== 0)
+    : [];
   const problems = Array.isArray(h.problems) ? h.problems : [];
   if (!refused.length && !blocked.length && !adjusted.length && !problems.length && !h.problem) return null;
 
