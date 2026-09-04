@@ -368,14 +368,22 @@ console.log('Two programs, one loan — parity');
     ],
     unmapped: [],
   });
+  /* ⛔ VISIO CARRIES A CLIENT-SAFE NAME IN THESE SETTINGS ON PURPOSE, and it is not a
+     loosening. Since the owner's 2026-09-04 rule — an investor with no white label is OFF
+     until somebody names it and turns it on — an UNNAMED key is hidden before routing is
+     ever consulted, so a fixture that left it unnamed failed ROUTE-3 for a reason that has
+     nothing to do with routing. Naming it isolates the rule this block is about; the naming
+     rule has its own guard in SET-6. The name is deliberately not one the owner's own sheet
+     uses, or the settings door correctly refuses it as another investor's. */
+  const named = { visio: { whiteLabel: 'Vermilion' } };
   // ONE INVESTOR, ONE SOURCE. The pre-fill is Lender Price — that is where the
   // system fetches everything today, and the owner's own framing is "not touch
   // our own pricing engine that we currently have".
-  const dflt = routing.applyRouting(board(), { routes: {}, revealSource: true });
+  const dflt = routing.applyRouting(board(), { routes: { ...named }, revealSource: true });
   const pm = dflt.investors.find((i) => i.key === 'pennymac');
   ok(pm && pm.source === 'lenderprice' && pm.sourceOrigin === 'default' && pm.programCount === 1,
     'ROUTE-1 with nothing set an investor comes from ONE program — Lender Price, the one everything is fetched from today');
-  const one = routing.applyRouting(board(), { routes: { pennymac: { source: 'loannex' } }, revealSource: true });
+  const one = routing.applyRouting(board(), { routes: { ...named, pennymac: { source: 'loannex' } }, revealSource: true });
   const moved = one.investors.find((i) => i.key === 'pennymac');
   ok(moved.shownFrom.join() === 'loannex' && moved.bySource.lenderprice.length === 0 && moved.bySource.loannex.length === 1,
     'ROUTE-2 switching an investor to LoanNEX shows LoanNEX\'s programs and drops the other side\'s');
@@ -624,11 +632,24 @@ console.log('Two programs, one loan — parity');
     `SET-5a every investor the owner moved is on LoanNEX and says so (${ownerSourced.length}: ${ownerSourced.join(', ')})`);
   ok(d.investors.filter((r) => r.sourceOrigin !== 'owner_directed').every((r) => r.source === 'lenderprice'),
     'SET-5 …and every OTHER investor is pre-filled to Lender Price — where the system fetches everything today');
-  /* The owner turned the last pre-filled-off investor ON (2026-09-02). What still
-     has to hold is that nothing is off WITHOUT an instruction behind it — an
-     investor silently missing from the board is the failure this counts. */
-  ok(d.summary.off === d.investors.filter((r) => r.enabledOrigin === 'owner_directed' && r.enabled === false).length,
-    `SET-6 nobody is switched off except by an explicit instruction (${d.summary.off} off)`);
+  /* The owner turned the last pre-filled-off investor ON (2026-09-02), and then on 2026-09-04
+     added a STANDING instruction that switches one off: *"even if it's populating on LoanPass,
+     it should be automatically turned off till I go and I put in the white label name and I turn
+     it on."* So this can no longer count `owner_directed` rows and call the rest a defect — the
+     first cut did, and went red on the owner's own rule working.
+     WHAT STILL HAS TO HOLD IS THE SUBJECT, UNCHANGED: an investor silently missing from the
+     board is the failure. So every OFF row must NAME the instruction behind it, that reason must
+     be one this codebase recognises, and `default` — "nobody said anything" — may never be one of
+     them. Plus the standing rule is held to its own terms: a row off for being UNNAMED must
+     genuinely carry no client-safe name, or "unnamed" becomes a blanket excuse for a silent drop. */
+  const offRows = d.investors.filter((r) => !r.enabled);
+  const OFF_REASONS = ['setting', 'owner_directed', 'unnamed'];
+  ok(d.summary.off === offRows.length && offRows.every((r) => OFF_REASONS.includes(r.enabledOrigin)),
+    `SET-6 nobody is switched off except by an explicit instruction (${d.summary.off} off: ${[...new Set(offRows.map((r) => r.enabledOrigin))].join(', ') || 'none'})`);
+  ok(!d.investors.some((r) => !r.enabled && r.enabledOrigin === 'default'),
+    'SET-6a …and never by DEFAULT, which is the silent drop this counts');
+  ok(offRows.filter((r) => r.enabledOrigin === 'unnamed').every((r) => !r.whiteLabel),
+    'SET-6b …and a row off for having no client-safe name genuinely has none — the standing rule cannot excuse a named investor');
   const set = routing.readSettings('{"acra":{"enabled":"yes"},"not_an_investor":{"source":"loannex"}}');
   ok(set.problems.some((p) => p.investor === 'acra' && p.error === 'non_boolean_enabled') && set.settings.acra === undefined,
     'SET-7 a non-boolean "on" is REFUSED rather than coerced — the string "no" is truthy, and a coerced switch is a lender switched on by a typo');

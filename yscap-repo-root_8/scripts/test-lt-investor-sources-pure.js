@@ -1042,6 +1042,110 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
     && /onClick=\{\(\) => undoReset\(r\.key\)\}/.test(screen),
     'L24 …with a one-click undo beside it, so a mis-press never costs a setting');
 
+  /* ── N. AN INVESTOR NOBODY HAS NAMED STARTS OFF ─────────────────────────
+     Owner-directed 2026-09-04: *"Something that is populating on LenderPric should
+     automatically add to the list, or even if it's populating on LoanPass, it
+     should be automatically turned off till I go and I put in the white label name
+     and I turn it on."*
+
+     ⛔ THE INDEPENDENT REASON, which is why this is a safety property and not only
+     a preference: a programme with no white label cannot go on a term sheet at all
+     (`termsheet/snapshot` refuses it, `program_not_named`), so quoting one offers a
+     price nobody can issue.
+
+     ⛔ AND THE OWNER'S LIST IS MEASURED HERE, not restated: the 26 names come from
+     the sheet itself, so a name added to it is on the settings list for free and a
+     name removed leaves it — which is the whole point of the sheet being one file. */
+  {
+    const st = require(path.join(ROOT, 'src/longterm/pricing/investor-settings'));
+    const rows = st.roster({}, undefined);
+    const named = rows.filter((r) => r.whiteLabel);
+    const unnamed = rows.filter((r) => !r.whiteLabel);
+    ok(named.length > 0 && unnamed.length > 0,
+      `M0 the registry has both named and unnamed investors to tell apart (${named.length}/${unnamed.length})`);
+    ok(named.every((r) => r.enabled),
+      'N1 every investor the owner has named is on by default — unchanged');
+    ok(unnamed.every((r) => !r.enabled),
+      'N2 every investor nobody has named yet is OFF by default');
+    ok(unnamed.every((r) => r.enabledOrigin === 'unnamed'),
+      'N3 …and says WHY, so "off because nobody named it" is not read as "off because the owner said so"');
+    ok(unnamed.every((r) => r.prefill.enabled === false),
+      'N4 "use the pre-fill" cannot turn an unnamed investor back on');
+    // A SAVED ANSWER STILL WINS — this is a default, never an override of a decision.
+    const key = unnamed[0].key;
+    ok(st.roster({ [key]: { enabled: true } }).find((r) => r.key === key).enabled === true,
+      'N5 somebody who deliberately turned an unnamed investor on keeps it on');
+    // The second half of the owner's sentence: naming it turns it back on by itself.
+    ok(st.roster({ [key]: { whiteLabel: 'Topazite' } }).find((r) => r.key === key).enabled === true,
+      'N6 naming an investor turns it back on with no second setting');
+    // THE SETTINGS SCREEN IS THE OWNER'S LIST — with nothing sighted, exactly the named ones.
+    const shown = rows.filter((r) => st.belongsOnSettingsList(r, {}));
+    ok(shown.length === named.length && shown.every((r) => !!r.whiteLabel),
+      `M7 with nothing sighted the settings list is exactly the named investors (${shown.length})`);
+    // …and one a rate sheet has ACTUALLY produced joins it, unnamed and off.
+    const seen = { [key]: { lenderprice: { state: 'seen' } } };
+    ok(st.belongsOnSettingsList(unnamed[0], seen[key]),
+      'N8 an investor a sheet has actually produced joins the list, unnamed');
+    ok(!st.roster({}, undefined).find((r) => r.key === key).enabled,
+      'N9 …and joins it switched OFF, which is the owner\'s rule in full');
+  }
+
+  /* ── N10. THE BOARD SAYS WHY, AND SAYS SOMETHING THE READER CAN ACT ON ────────────────
+     The standing rule takes 17 investors off the general board, so what the board says about
+     them is the whole of what an officer gets. 'Switched off in the investor settings' is
+     TRUE of every off row and USELESS on this kind: nobody switched them off, and it sends
+     the reader to a toggle nobody moved instead of to the missing NAME. Same class as the
+     document card that told somebody to "request a fresh copy from whoever uploaded it"
+     about a file PILOT generated itself — advice a reader cannot act on is a defect.
+
+     Asserted against a CONTROL that is genuinely switched off, so this proves the two are
+     TOLD APART rather than that some sentence exists. */
+  {
+    const routing = require(path.join(ROOT, 'src/longterm/pricing/investor-routing'));
+    const board = (key, investor) => ({
+      sources: { lenderprice: { answered: true } }, summary: {}, unmapped: [],
+      investors: [{
+        key, investor, presentIn: ['lenderprice'],
+        programs: { lenderprice: [{ source: 'lenderprice' }] }, best: { lenderprice: { rate: 7 } },
+      }],
+    });
+    const unnamed = (routing.applyRouting(board('visio', 'Visio Lending'), { routes: {} }).hidden || [])[0];
+    const switched = (routing.applyRouting(board('nqm', 'NQM Funding'), { routes: { nqm: { enabled: false } } }).hidden || [])[0];
+    ok(unnamed && switched, 'N10 both kinds of off row reach the board\'s own accounting');
+    ok(unnamed.why === 'switched_off' && switched.why === 'switched_off',
+      'N10a …under the same machine reason, which is exactly why the SENTENCE has to tell them apart');
+    /* \`/name/i\` alone is TOO LOOSE — a mutation that replaced the instruction with 'This
+       investor is not on the board.' still matched, because the trailing sentence about a
+       term sheet also contains the word. What has to be there is the ACTION. */
+    ok(typeof unnamed.reason === 'string' && /\bname it\b/i.test(unnamed.reason),
+      `N10b an investor nobody has NAMED is told to name it (${JSON.stringify(unnamed.reason || null)})`);
+    ok(!/switched off/i.test(unnamed.reason),
+      'N10c …and is NOT sent to a toggle nobody moved');
+    ok(typeof switched.reason === 'string' && /switched off/i.test(switched.reason),
+      `N10d while one somebody really did switch off still says so (${JSON.stringify(switched.reason || null)})`);
+    ok(unnamed.reason !== switched.reason,
+      'N10e …so the two are genuinely different sentences, not one wording covering both');
+    /* AN OWNER-DIRECTED NOTE OUTRANKS BOTH GENERATED SENTENCES.
+       ⛔ AND IT HAS TO BE INJECTED TO BE SEEN AT ALL: `OWNER_DISABLED` is EMPTY today (the
+       owner turned the last pre-filled-off investor on, 2026-09-02), so `row.note` is
+       unreachable on the live roster and an assertion taken without injecting would pass on
+       a branch that never runs — which is the vacuous shape this file keeps finding. The map
+       is exported for exactly this. The first cut of this assertion instead invented a
+       user-typed `note` settings field, which does not exist; it tested a capability rather
+       than the code. */
+    const settingsOf = require(path.join(ROOT, 'src/longterm/pricing/investor-settings'));
+    const hadOwn = Object.prototype.hasOwnProperty.call(settingsOf.OWNER_DISABLED, 'visio');
+    const prev = settingsOf.OWNER_DISABLED.visio;
+    settingsOf.OWNER_DISABLED.visio = 'Paused while we renegotiate.';
+    let noted;
+    try { noted = (routing.applyRouting(board('visio', 'Visio Lending'), { routes: {} }).hidden || [])[0]; }
+    finally { if (hadOwn) settingsOf.OWNER_DISABLED.visio = prev; else delete settingsOf.OWNER_DISABLED.visio; }
+    ok(noted && noted.reason === 'Paused while we renegotiate.',
+      `N10f …and an owner-directed note outranks both generated sentences (${JSON.stringify(noted ? noted.reason : null)})`);
+    ok(!Object.prototype.hasOwnProperty.call(settingsOf.OWNER_DISABLED, 'visio'),
+      'N10g …and the injection is cleaned up, so no later assertion reads a roster this one changed');
+  }
+
   console.log(`\n${bad ? 'FAILED' : 'ALL PASSED'} (${pass} passed, ${bad} failed)\n`);
   process.exit(bad ? 1 : 0);
 })();

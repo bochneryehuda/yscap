@@ -412,9 +412,29 @@ const nexRowOf = (out) => (out.programs || []).find((p) => p.program === 'DSCR 3
       'WIRE-11 an unexplained build SAYS SO on the panel — computed from the server\'s own verdict and actually rendered, because a back end nobody can see is not a feature');
     ok(/o\.terms\.interestOnly != null/.test(pricer),
       'WIRE-12 an unstated interest-only flag draws an em dash, never a confident "Fully amortising" — Lender Price fills it on every option, so the general board is unchanged');
-    ok(/\$\{engine\.sheetSubject\} returned no fee lines/.test(pricer)
-      && /\$\{engine\.sheetSubject\} returned no comp lines/.test(pricer),
-      'WIRE-13 the two empty states no longer name one vendor on a board quoted by two');
+    /* ⛔ RE-POINTED 2026-09-04, NOT LOOSENED. Its subject has never been the spelling
+       `engine.sheetSubject` — it is that these two empty states must not name ONE
+       vendor on a board quoted by two. They now read the ROW's own engine
+       (`buildSubject`), which is a stronger answer on the general board (the owner:
+       *"I need to understand from where it's coming and populate correctly"*) and
+       must stay the SAME answer here, because a source on THIS board is shown only
+       when an admin asks. So the guard now pins both halves: the sentences read the
+       row, and the combined engine refuses to let a row name its engine at all. */
+    ok(/\$\{buildSubject\} returned no fee lines/.test(pricer)
+      && /\$\{buildSubject\} returned no comp lines/.test(pricer),
+      'WIRE-13 the two empty states read the ROW\'s own engine, never one name for a board quoted by two');
+    ok(/const buildSubject = engineName \|\| engine\.sheetSubject/.test(pricer),
+      'WIRE-13b …and a row nothing named falls back to this engine\'s own vendor-neutral subject');
+    /* Asserted by POSITION rather than by a distance window: the two engines are
+       hundreds of lines apart and a character budget would break the day either
+       gains a paragraph, which is how a guard gets "fixed" by being loosened. */
+    ok((eng.match(/namesRowEngine: true/g) || []).length === 1
+      && (eng.match(/namesRowEngine: false/g) || []).length === 1
+      && eng.indexOf('namesRowEngine: true') < eng.indexOf("key: 'combined',")
+      && eng.indexOf('namesRowEngine: false') > eng.indexOf("key: 'combined',"),
+    'WIRE-13c …and the COMBINED board names no engine at all — ONE SYSTEM, and a source only when an admin asks');
+    ok(/const rowEngine = engine\.namesRowEngine/.test(pricer),
+      'WIRE-13d …which is the ENGINE\'s decision, read by the panel rather than made by it');
   }
 
   console.log('\n── THE LOANNEX ROW SAYS WHAT LOAN IT WAS QUOTED FOR ──');

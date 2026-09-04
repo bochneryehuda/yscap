@@ -116,6 +116,46 @@ const byInvestor = (programs) => {
   ok(by.get('eresi') > 0 && by.get('button_finance') > 0,
     `GEN-4 eResi (${by.get('eresi')}) and Button Finance (${by.get('button_finance')}) reach the board, which only LoanNEX quotes`);
 
+  /* ⛔ EVERY ROW ON THIS BOARD NAMES THE ENGINE THAT PRICED IT — END TO END, through the
+     REAL board rather than through the builder alone (owner-directed 2026-09-04: *"a stamp
+     … it should say from where this scenario was priced exactly"*). This is the half no
+     unit test of `quote-shape.programsForBoard` can reach: the stamp is the CALLER's
+     decision (`stampEngine`), so the builder can be perfect while this screen asks for
+     nothing and the panel silently prints no attribution. Asserted here because this is
+     the one place both halves of the board are proven present at once — a stamp that only
+     ever said "lenderprice" would pass any assertion taken on one sheet. */
+  const stamped = out.programs.filter((p) => p.pricedBy);
+  const engines = [...new Set(stamped.map((p) => p.pricedBy))].sort();
+  ok(stamped.length === out.programs.length,
+    `GEN-4a every programme on the board says which engine priced it (${stamped.length} of ${out.programs.length})`);
+  ok(engines.join(',') === 'lenderprice,loannex',
+    `GEN-4b …and BOTH engines are named, so the stamp is read off the row and not one wording for the whole board (${engines.join(', ') || 'none'})`);
+  /* SHARPENED after a mutation walked the first cut of this: it read
+     `(pricedBy === 'loannex') === <routed> || pricedBy === 'lenderprice'`, and the second
+     clause makes EVERY Lender Price row vacuously true — so stamping the whole board
+     'lenderprice' (the original defect) satisfied it. The honest statement is a PARTITION:
+     the set of investors stamped LoanNEX is exactly the set routing sent there. */
+  const stampedBy = (eng) => [...new Set(out.programs.filter((p) => p.pricedBy === eng).map((p) => p.investorKey))].sort();
+  const nexSide = stampedBy('loannex');
+  const lpSide = stampedBy('lenderprice');
+  ok(nexSide.length > 0 && lpSide.length > 0 && !nexSide.some((k) => lpSide.includes(k)),
+    `GEN-4c …and the two stamps PARTITION the board — no investor is quoted as both (LoanNEX: ${nexSide.join(', ')} | Lender Price: ${lpSide.join(', ')})`);
+  ok(nexSide.includes('nqm') && nexSide.includes('acra') && lpSide.includes('deephaven') && lpSide.includes('verus'),
+    'GEN-4d each side is the one routing actually sent there — the owner\'s three on LoanNEX, the untouched two on Lender Price');
+  /* THE VENDOR TRAIL IS A DIFFERENT FACT AND STILL LEAVES.
+     HONEST NOTE ON WHAT THIS FIXTURE CAN SEE: only the `source` half is live here. A
+     LoanNEX row is BUILT field by field by `programsFromLoanNex`, so `lenderId` and the
+     investor GUID never reach it at all — they are absent by construction, not by the
+     strip, and cannot fail on this board. The Lender Price rows this stub parses carry
+     no trail either. The strip itself is exercised where a fixture genuinely carries one:
+     C4/C5/C6 in test-lt-engine-stamp-pure and D11/D12 in test-lt-loannex-same-loan-pure. `pricedBy` is one key from a
+     closed list of OUR engines; `source`/`lenderId`/the investor GUID are the VENDOR's own
+     identifiers and go only on an admin reveal. Both must hold on the same answer, or the
+     stamp has quietly become the trail. */
+  ok(out.programs.every((p) => p.source === undefined && p.lenderId === undefined
+    && p.investorOrganizationGuid === undefined),
+  'GEN-4e …while the vendor trail still leaves this board, so the stamp is not the trail wearing a new name');
+
   /* ⛔ THE DUPLICATE IS THE FAILURE THIS EXISTS FOR. Both sheets quote NQM and Acra.
      Routing must take each investor from ONE sheet, so the count has to equal the
      LoanNEX count alone — not the two added together. */

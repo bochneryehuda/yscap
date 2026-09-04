@@ -93,7 +93,16 @@ function applyRouting(merged, opts = {}) {
         // today, because this engine is super-admin only; a rule-10 breach the day it is promoted,
         // which is the stated plan. Two shapes for one question is how that day arrives unnoticed.
         whiteLabel: row.whiteLabel, whiteLabelMissing: row.whiteLabelMissing,
-        reason: row.note || 'This investor is switched off in the investor settings.',
+        /* ⛔ THE REASON MUST NAME AN ACTION THE READER CAN TAKE. 'Switched off in the
+           investor settings' is TRUE of every off row and USELESS on the one kind nobody
+           switched off: since the owner's 2026-09-04 standing rule an investor with no
+           client-safe name starts off by itself, so that sentence sends an officer to a
+           toggle nobody moved instead of to the name that is missing. `enabledOrigin`
+           already tells the two apart — it exists for exactly this — so the sentence reads
+           it. A hand-written note still outranks both. */
+        reason: row.note || (row.enabledOrigin === 'unnamed'
+          ? 'No client-safe name yet, so it starts off — name it in the investor settings and it prices. A programme with no name cannot go on a term sheet, so a price here could not be issued.'
+          : 'This investor is switched off in the investor settings.'),
       });
       continue;
     }
