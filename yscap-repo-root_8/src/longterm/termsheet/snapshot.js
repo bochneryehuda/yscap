@@ -36,6 +36,7 @@
 
 const crypto = require('crypto');
 const pricePoints = require('../pricing/price-points');
+const priceLanding = require('../pricing/price-landing');
 const audience = require('../audience');
 const priceAdjust = require('./price-adjust');
 const overlay = require('./overlay');
@@ -358,42 +359,58 @@ function buildMember(sel, plan, opts = {}) {
   /* ⛔ AND THE SAME CROSS-CHECK ON THE PRICE, WHICH IS WORTH MORE THAN THE PAYMENT.
      Owner-reported 2026-09-04, and found again by two independent audits: a LoanNEX
      row's PRICE comes from the search call and its ITEMISATION from a separate
-     on-demand call, and nothing anywhere compared them. So a board row could show a
-     price that the rate sheet's own breakdown does not support — measured at 0.875
-     points, in silence — and this function would put it on a document a borrower
-     signs. The asymmetry was indefensible: the guard above already refuses over a
-     dollar of monthly payment, while the PRICE, which sets the origination, the
-     closing sheet and the cash to close, was validated only as "is it a number".
+     on-demand call, and until 3983ea46 nothing anywhere compared them. So a board
+     row could show a price that the rate sheet's own breakdown does not support —
+     measured at 0.875 points, in silence — and this function would put it on a
+     document a borrower signs. The asymmetry was indefensible: the guard above
+     already refuses over a dollar of monthly payment, while the PRICE, which sets
+     the origination, the closing sheet and the cash to close, was validated only as
+     "is it a number".
 
-     The board sends its own build (`priceLanding`) when the itemisation has been
-     fetched; this asks whether base + adjustments come to the points behind the
-     price being issued. Same trust boundary as the payment check — both figures are
-     the board's — but it catches the divergence that check cannot see.
+     ⛔ THE ARITHMETIC IS `pricing/price-landing`'S. It was written out here as a
+     THIRD copy of a rule that already existed in `breakdown.landingOf` and in the
+     browser twin; a pre-merge audit named it, and three copies of the rule that
+     stops a document is exactly the drift this repo's rules forbid.
+
+     ⛔ AND IT REFUSES IN ONE DIRECTION ONLY. `overstated` means the board is
+     claiming a BETTER price than its own itemisation supports — the incident, and
+     the direction that reaches a borrower as a number nobody can stand behind. The
+     opposite is not a defect and REFUSING IT WAS A REPRODUCED BUG: `vendor-margin`
+     holds back a quarter point, and when the base shift that pairs with it cannot
+     be applied (an unreadable settings store makes `explain-door` fall back to a
+     zero shift) the gap is exactly minus the holdback — a perfectly good row
+     refused, with advice that could not clear it.
 
      ABSENT IS NOT A FAILURE. Most rows are issued without anybody opening the
      breakdown, and refusing those would stop the desk working over a check nobody
-     asked for. What is refused is a build that HAS been fetched and does not add up:
-     silence stays silence, and a contradiction stops. */
+     asked for. What is refused is a build that HAS been fetched and claims too
+     much: silence stays silence, and a contradiction stops. */
   const land = s && s.priceLanding;
   if (land && typeof land === 'object') {
-    const bp = num(land.basePoints);
-    const ap = num(land.adjustmentPoints);
-    const dp = num(land.adjustedPoints);
-    if (bp != null && ap != null && dp != null) {
-      const gap = Math.round(((bp + ap) - dp) * 1000) / 1000;
-      if (Math.abs(gap) >= 0.0005) {
-        /* Through the ONE price<->points definition. A re-inlined `100 - x` here is
-           exactly the drift `pricing/price-points` was written to end, and its own
-           guard refuses one — rightly: a refusal that quoted a price computed a
-           second way would be arguing with the board in the board's own units. */
-        const fromBuild = pricePoints.priceFromPoints(bp + ap).toFixed(3);
-        const onBoard = pricePoints.priceFromPoints(dp).toFixed(3);
-        return refuse('price_disagreement',
-          `The rate sheet's own breakdown for this quote does not come to the price on the board — `
-          + `the base and adjustments add up to ${fromBuild} while the board shows `
-          + `${onBoard}, a gap of ${Math.abs(gap).toFixed(3)}. Nothing was issued. `
-          + `Re-price the scenario and open the price build before issuing.`);
-      }
+    const check = priceLanding.landingGap(land.basePoints, land.adjustmentPoints, land.adjustedPoints);
+    if (check.overstated === true) {
+      /* Through the ONE price<->points definition. A re-inlined `100 - x` here is
+         exactly the drift `pricing/price-points` was written to end, and its own
+         guard refuses one — rightly: a refusal that quoted a price computed a
+         second way would be arguing with the board in the board's own units. */
+      const bp = num(land.basePoints);
+      const ap = num(land.adjustmentPoints);
+      const fromBuild = pricePoints.priceFromPoints(bp + ap).toFixed(3);
+      /* ⛔ THE BOARD'S PRICE IS THE ONE THE DOCUMENT IS BUILT FROM, not one derived
+         a second way. `rawPrice` is what `buildMember` puts on the sheet; deriving
+         it back out of the points can land a thousandth off (the same reason
+         `vendor-margin` anchors rather than recomputes), and a refusal quoting a
+         price the officer never saw is a refusal they cannot act on. The derived
+         figure is the fallback for a selection that carries no price at all. */
+      const boardNum = num(s.rawPrice);
+      const onBoard = boardNum != null
+        ? boardNum.toFixed(3)
+        : pricePoints.priceFromPoints(num(land.adjustedPoints)).toFixed(3);
+      return refuse('price_disagreement',
+        `The rate sheet's own breakdown for this quote does not come to the price on the board — `
+        + `the base and adjustments add up to ${fromBuild} while the board shows `
+        + `${onBoard}, a gap of ${Math.abs(check.gapPoints).toFixed(3)}. Nothing was issued. `
+        + `Re-price the scenario and open the price build before issuing.`);
     }
   }
 

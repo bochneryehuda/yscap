@@ -64,6 +64,32 @@ const SCRIPTS = path.join(ROOT, 'scripts');
  * improvement and needs no permission.
  */
 const QUARANTINE = {
+  /* ── THE BROWSER HARNESSES, 2026-09-04 ───────────────────────────────────
+     `render-*` only came into this sweep on 2026-09-04, so twelve harnesses had
+     been running nowhere. SEVEN were run by hand that day and PASS, and are now
+     registered (admin-layout, fee-audit, fee-panel-rows, min-origination,
+     panel-line-wrap, term-sheet-fees — each SKIPs exit 0 without Playwright, so
+     a box with no browser is unaffected).
+
+     THESE FIVE FAIL, and every one of them fails the same way: `password
+     authentication failed` — they need a real Postgres AND a browser and carry a
+     skip guard for NEITHER, so on a box with neither they exit 1 and would fail
+     the deploy gate for a reason that is about the box rather than the code.
+     Giving each the `SKIPs (exit 0) without Playwright/DATABASE_URL` guard its
+     six registered siblings already have is a small, real pass — and it is its
+     own pass, because until somebody has actually watched each of them go green
+     against a database, registering them would be asserting something nobody has
+     checked. Quarantined so the fact is on the record instead of invisible. */
+  'scripts/render-address-box.mjs': 'needs a database and a browser; no skip guard for either (2026-09-04)',
+  'scripts/render-api-health-chip.mjs': 'needs a database and a browser; no skip guard for either (2026-09-04)',
+  'scripts/render-street-fallback.mjs': 'needs a database and a browser; no skip guard for either (2026-09-04)',
+  'scripts/render-research-screens.mjs': 'needs a database and a browser; no skip guard for either (2026-09-04)',
+  'scripts/render-research-section.mjs': 'needs a database and a browser; no skip guard for either (2026-09-04)',
+  /* This one PASSES here, and is still held back: it has no skip guard at all, so
+     on a box with no Playwright it would not skip — it would throw. Registering a
+     harness that cannot skip is how the deploy gate starts failing for want of a
+     browser nobody promised it. */
+  'scripts/render-tpo-broker-fee-studio.mjs': 'passes, but has no skip-without-Playwright guard, so it cannot go in the chain yet (2026-09-04)',
   // test-cure-pure.js was here and is now REGISTERED. Settled 2026-08-16: the
   // TEST was wrong, not the rule. cure.js and that suite were added in the SAME
   // commit (cc78975, #1127), so it had never passed — its "entity not screened"
@@ -123,9 +149,16 @@ function chainFiles() {
   return out;
 }
 
+/* ⛔ `render-*` COUNTS AS A SUITE. This read `^test-` only, so seventeen browser
+   harnesses were outside the sweep entirely — twelve of them in the chain
+   nowhere, running only when somebody remembered. CLAUDE.md already records what
+   that costs: `render-fee-audit` sat RED through a merge and a deploy because it
+   still read a DOM id that had been deleted, and CI never noticed. A harness
+   nobody runs is not a guard; the point of this file is that the fact is VISIBLE,
+   so a harness is either registered, or quarantined with a reason a person wrote. */
 function suiteFiles() {
   return fs.readdirSync(SCRIPTS)
-    .filter((f) => /^test-.*\.(js|mjs)$/.test(f))
+    .filter((f) => /^(test|render)-.*\.(js|mjs)$/.test(f))
     .map((f) => `scripts/${f}`)
     .sort();
 }

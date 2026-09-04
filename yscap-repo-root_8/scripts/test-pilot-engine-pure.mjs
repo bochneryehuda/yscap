@@ -324,8 +324,18 @@ ok(/MutationObserver/.test(LAYOUT_CODE),
    a MutationObserver never fires for any of that: nothing is added or removed,
    an existing bar simply gets taller. A re-audit set `const ro = null` and every
    suite stayed green while the header sat under a bar that had grown. */
-ok(/new ResizeObserver\(/.test(LAYOUT_CODE),
+/* ⛔ AND CONSTRUCTED IS NOT OBSERVING. A pre-merge audit pointed out that this
+   read only `new ResizeObserver(` — so `const ro = new ResizeObserver(apply);`
+   with the `ro.observe(el)` deleted passes it while measuring nothing, which is
+   byte-for-byte the incident: the header sits under a bar that grew and no suite
+   says a word. Both halves are pinned, and so is WHAT they call: an observer
+   wired to a callback that is not the measuring function is the same silence. */
+ok(/new ResizeObserver\(apply\)/.test(LAYOUT_CODE),
   'C7c2 …and when a banner merely GROWS (wrapping, late fonts) — which no MutationObserver ever sees');
+ok(/\bro\.observe\(el\)/.test(LAYOUT_CODE),
+  'C7c3 …and that observer is actually pointed at the banner stack');
+ok(/new MutationObserver\(apply\)/.test(LAYOUT_CODE) && /\bmo\.observe\(el,/.test(LAYOUT_CODE),
+  'C7c4 …as is the one watching for a banner that arrives late');
 ok(/paddingTop: bannerH/.test(LAYOUT_CODE),
   'C7d …and pushes its own content below them');
 
@@ -354,8 +364,20 @@ ok(headerAt >= 0, 'C8a the sticky header was found at all — a check that reads
 const headerTop = (headerTag.match(/top:\s*(`[^`]*`|'[^']*'|"[^"]*"|[^,\n]+)/) || [])[1] || '';
 ok(/position:\s*'sticky'/.test(headerTag),
   'C8b …it is the sticky header (a static one could not be covered)');
-ok(/--cobrowse-bar/.test(headerTop) && /bannerH/.test(headerTop),
-  `C8 …and ITS OWN top clears BOTH the co-browse bar and the measured banner stack (top: ${headerTop.trim() || 'NOT FOUND'})`);
+/* ⛔ THE EXPRESSION IS EVALUATED, NOT SCANNED FOR TWO NAMES. A pre-merge audit
+   pointed out that reading `--cobrowse-bar` and `bannerH` out of the string is
+   satisfied by `` `calc(var(--cobrowse-bar, 0px) + ${bannerH * 0}px)` `` — both
+   names present, the measured height multiplied away, and the header back under
+   the stack it was moved out from. So the template literal is RUN with a known
+   height and the CSS it produces is asserted: a real measurement has to reach
+   the output. */
+let headerTopCss = '';
+try {
+  // eslint-disable-next-line no-new-func
+  headerTopCss = String(new Function('bannerH', `return ${headerTop.trim()};`)(37));
+} catch { headerTopCss = ''; }
+ok(/var\(--cobrowse-bar/.test(headerTopCss) && /\b37px\b/.test(headerTopCss),
+  `C8 …and ITS OWN top clears BOTH the co-browse bar and the measured banner stack, measured height included (37px -> ${headerTopCss || 'DID NOT EVALUATE'})`);
 
 /* THE BANNER IS SHARED, NEVER A SECOND COPY. It was inline in StaffLayout; two
    banners drift, and the one that drifts is the one that stops saying whose
@@ -399,8 +421,21 @@ ok(/exitStaffView/.test(SVB) && /Back to my own screen/.test(SVB),
    unwrapped for months. The engine needs the wrap; the console never had it. */
 ok(/position: 'static', flexWrap: 'wrap'/.test(SVB),
   'C10e the wrap belongs to the engine\u2019s in-flow bar…');
-ok(!/fontSize: 14, flexWrap/.test(SVB),
-  'C10f …and not to the console\u2019s, which must render exactly as it did before the extraction');
+/* ⛔ PINNED BY POSITION, NOT BY ONE NEIGHBOURING STRING. This read
+   `!/fontSize: 14, flexWrap/` — the exact spelling of the line the incident was
+   written on — so a pre-merge audit put `flexWrap: 'wrap'` one line further
+   down, back OUTSIDE the ternary and back on the console's bar, and it passed.
+   The rule is not "not next to fontSize", it is "nowhere but the in-flow
+   branch": the property appears exactly once in the file and that once is
+   between the branch that opens with `position: 'static'` and the fixed branch
+   that follows it. */
+const wraps = [...SVB.matchAll(/flexWrap/g)].map((m) => m.index);
+const inFlowAt = SVB.indexOf("position: 'static'");
+const fixedAt = SVB.indexOf("position: 'fixed'");
+ok(wraps.length === 1 && inFlowAt >= 0 && fixedAt > inFlowAt
+   && wraps[0] > inFlowAt && wraps[0] < fixedAt,
+'C10f …and not to the console\u2019s, which must render exactly as it did before the extraction'
++ ` (${wraps.length} flexWrap; in-flow branch ${inFlowAt}..${fixedAt})`);
 
 /* ── C11: THE STALE-BUILD BANNER IS SHARED TOO ─────────────────────────────
    Same rule as C9, one file later and one audit later. `StaffLayout` kept the
@@ -421,9 +456,21 @@ ok(!/fontSize: 14, flexWrap/.test(SVB),
   const forked = SHELLS.filter((f) => /PILOT was updated/.test(stripComments(read(f))));
   ok(forked.length === 0,
     `C11a no shell writes the stale-build bar out by hand${forked.length ? ` — found in ${forked.join(', ')}` : ''}`);
-  const noRender = SHELLS.filter((f) => !/<StaleBuildBanner\s+stale=\{/.test(stripComments(read(f))));
-  ok(noRender.length === 0,
-    `C11b …and every shell RENDERS the shared one${noRender.length ? ` — missing in ${noRender.join(', ')}` : ''}`);
+  /* ⛔ RENDERED IS NOT WIRED. A pre-merge audit pointed out that this read only
+     `<StaleBuildBanner stale={` — so `<StaleBuildBanner stale={false} />` passes
+     it while the banner can never appear, on every shell at once, which IS the
+     incident the watchdog exists for (a long-lived tab running yesterday's
+     bundle). So each shell's own watchdog variable is read out of its
+     `= useStaleBuild()` and the render is required to be fed THAT. */
+  const unwired = SHELLS.map((f) => {
+    const code = stripComments(read(f));
+    const m = code.match(/const\s+([A-Za-z_$][\w$]*)\s*=\s*useStaleBuild\(\)/);
+    if (!m) return `${f} (no useStaleBuild)`;
+    const fed = new RegExp(`<StaleBuildBanner\\s+stale=\\{\\s*${m[1]}\\s*[}\\s]`);
+    return fed.test(code) ? null : `${f} (banner not fed ${m[1]})`;
+  }).filter(Boolean);
+  ok(unwired.length === 0,
+    `C11b …and every shell RENDERS the shared one, fed by its own watchdog${unwired.length ? ` — ${unwired.join(', ')}` : ''}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -486,16 +533,22 @@ for (const c of CHECKS) {
      · `if (!isStaff && !loc.pathname.toLowerCase().startsWith('/engine'))` — a
        signed-in BORROWER admitted to the engine. `isStaff` still "asked about".
 
-   So the door's BODY is pinned to exactly what it is, whitespace-insensitive
-   and nothing else: two reads, three refusals in order, one render. This is the
-   same discipline D4 applies to the delegate, and for the same reason — "it
-   restates nothing" and "it checks exactly this" are both statements about a
-   SHAPE, and only a shape can hold them. Reformatting is free; a seventh
-   statement is not, whatever it is called.
+   So the door's BODY is pinned to exactly what it is: two reads, three refusals
+   in order, one render. This is the same discipline D4 applies to the delegate,
+   and for the same reason — "it restates nothing" and "it checks exactly this"
+   are both statements about a SHAPE, and only a shape can hold them.
 
-   IF THIS FAILS ON A DELIBERATE CHANGE TO THE DOOR, read the diff and update
-   the expectation here in the same commit — never loosen it back to a
-   substring check. This is the one function that decides who is inside. */
+   ⛔ AND WHAT IS TOLERATED IS EXACTLY WHITESPACE — an earlier note here said
+   "reformatting is free", which is not true and a pre-merge audit was right to
+   say so. `normJs` collapses runs of whitespace and nothing else, so a formatter
+   that wraps the returns in parentheses, or rewrites the quotes, fails this. That
+   is the intended cost: this is the one function that decides who is inside, so a
+   change to its text — whoever or whatever made it — is read by a person.
+
+   IF THIS FAILS, read the diff and update the expectation here in the same
+   commit. Never loosen it back to a substring check.
+
+   This is the one function that decides who is inside. */
 const normJs = (x) => String(x || '').replace(/\s+/g, ' ').trim();
 const DOOR_BODY = normJs(`{
   const { isAuthed, isStaff, isTpo } = useAuth();
@@ -517,6 +570,25 @@ ok(normJs(staffBody) === DOOR_BODY,
    reach any other part of the console. Green everywhere, because the body it
    renders is byte-identical. The console's shell is the default; the engine is
    the thing that has to ASK. */
+/* ⛔ AND THE THREE WORDS THE DOOR ASKS WITH ARE PINNED WHERE THEY ARE DEFINED.
+   D3b holds the door's SHAPE — two reads, three refusals, one render — and says
+   nothing at all about what `isStaff` MEANS. A pre-merge audit named that: widen
+   it in `auth.jsx` (`actor?.kind === 'staff' || actor?.kind === 'borrower'`) and
+   the door is byte-identical, every gate green, and a borrower is inside the
+   pricing engine. The definitions are one line each and there is no reason for
+   any of them to be anything else; a deliberate change to who counts as staff is
+   read by a person, here, in the same commit. */
+{
+  const AUTH = stripComments(read('app-v2/src/lib/auth.jsx'));
+  for (const [what, re] of [
+    ['isStaff', /const isStaff = actor\?\.kind === 'staff';/],
+    ['isTpo', /const isTpo\s+= actor\?\.kind === 'tpo';/],
+    ['isAuthed', /isAuthed: !!token,/],
+  ]) {
+    ok(re.test(AUTH), `D3b2 \`${what}\` still means exactly what the door assumes it means`);
+  }
+}
+
 const doorSig = normJs((APP_CODE.match(/function\s+StaffPrivate\s*\([^)]*\)/) || [''])[0]);
 ok(doorSig === 'function StaffPrivate({ children, Shell = StaffLayout })',
   `D3c the door's DEFAULT shell is the console's, so only the engine opts out (${doorSig || 'SIGNATURE NOT FOUND'})`);
@@ -722,6 +794,17 @@ ok(/<nav\s/.test(LAYOUT_CODE) && /ENGINE_TABS\.map\(/.test(LAYOUT_CODE) && /<Nav
   'G4 the tab row is actually RENDERED from that array — a declared list nothing draws is not navigation');
 ok(/Full system/.test(LAYOUT_CODE) && /nav\('\/internal\/lt\/pricer'\)/.test(LAYOUT_CODE),
   'G5 …and the way back into the full console is rendered too — a shortcut that traps you is not a shortcut');
+/* ⛔ AND NOT BEHIND A CONSTANT FALSE. G4 and G5 read JSX that is PRESENT, which
+   `{false && <nav …>}` satisfies while drawing nothing — a pre-merge audit
+   demonstrated it on both. This is a TRIPWIRE, not a proof: a mutation is free
+   to write `const SHOW = false` instead, and no source check can chase that.
+   The proof that these are on screen and clickable is
+   `scripts/render-pilot-engine.mjs` (A2h1–A2h3, hit-tested in Chromium); this
+   is the cheap half a box with no browser can still run. A shell never wants a
+   permanently-dead branch, so its mere presence is the failure. */
+const deadBranch = [...LAYOUT_CODE.matchAll(/\{\s*(false|0|null|undefined)\s*&&/g)].map((m) => m[1]);
+ok(deadBranch.length === 0,
+  `G5b …and neither is hidden behind a branch that can never run${deadBranch.length ? ` — found {${deadBranch.join(' && …}, {')} && …}` : ''}`);
 
 // ---------------------------------------------------------------------------
 // H. DARK TEXT ON WHITE. `--ink*` is a LIGHT paper colour in this palette — the

@@ -39,6 +39,7 @@
 
 const round3 = (n) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n) * 1000) / 1000);
 const pricePoints = require('./price-points');
+const priceLanding = require('./price-landing');
 const sources = require('./sources');
 const numOrNull = (n) => (n == null || n === '' || !Number.isFinite(Number(n)) ? null : Number(n));
 const strOrNull = (s) => {
@@ -238,15 +239,20 @@ function totalsOf(lines, price) {
  */
 function landingOf(option, price) {
   const ev = (option && option.evidence) || {};
-  const base = price.basePoints;
-  const adj = price.adjustmentPoints;
-  const landed = price.adjustedPoints;
-  const checked = base != null && adj != null && landed != null;
-  const gap = checked ? round3((base + adj) - landed) : null;
+  /* ⛔ THE ARITHMETIC IS `pricing/price-landing`'S, NOT THIS FILE'S. It was
+     written out here, again in the browser twin, and a third time in
+     `termsheet/snapshot.js` when the same rule started REFUSING an issue —
+     three copies of one rule, and the one that drifts is the one that stops a
+     document. `overstated` rides with `landsOnPrice` because they answer
+     different questions: "do the two agree" (a panel reporting) and "is the
+     board better than its own itemisation supports" (the one direction worth
+     stopping a document over). */
+  const land = priceLanding.landingGap(price.basePoints, price.adjustmentPoints, price.adjustedPoints);
   return {
-    checked,
-    gapPoints: gap,
-    landsOnPrice: checked ? Math.abs(gap) < 0.0005 : null,
+    checked: land.checked,
+    gapPoints: land.gapPoints,
+    landsOnPrice: land.landsOnPrice,
+    overstated: land.overstated,
     /* The vendor's own internal check, passed through verbatim — `true`, `false`, or
        `null` when the sheet stated no price of its own to check against. */
     vendorReconciles: ev.reconciles === true ? true : (ev.reconciles === false ? false : null),

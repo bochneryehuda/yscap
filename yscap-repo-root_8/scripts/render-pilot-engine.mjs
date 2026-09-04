@@ -179,6 +179,55 @@ const visit = async (page, hash) => {
   await page.close();
 }
 
+/**
+ * A CONTEXT WITH BOTH TOP BANNERS ACTUALLY UP.
+ *
+ * ⛔ ONE DEFINITION, because two sections need it and the second one is the whole
+ * point: a stack measured at 1440 says nothing about a phone, where these bars
+ * wrap to two and three lines. Written out twice, the desktop copy and the phone
+ * copy would drift and the one that drifted would be the one measuring the case
+ * the incident happened in.
+ *
+ * A STAFF SESSION, because the shell only renders behind the door — an
+ * unauthenticated visitor bounces to the sign-in and a geometry check would
+ * measure an empty page and pass for the wrong reason. The client reads its actor
+ * straight out of the token's payload (`actorFromToken`), so a token with the
+ * right shape is enough; nothing server-side is exercised here, which is the
+ * point — this is about geometry.
+ *
+ * BOTH banners are stubbed up. `/api/health` used to be answered `{}` along with
+ * everything else, so `useStaleBuild` never fired and exactly ONE bar rendered —
+ * which makes "the banners stack rather than covering each other" a statement
+ * about a list of one, true of any code at all. A hash that is not the running
+ * bundle's is all it takes. Everything else the shell calls is answered emptily
+ * so a pending request cannot hold the paint.
+ */
+async function bothBannersUp(opts) {
+  const ctx = await browser.newContext(opts);
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const FAKE_STAFF = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({
+    sub: '00000000-0000-4000-8000-000000000001', kind: 'staff', role: 'super_admin',
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  })}.rendercheck`;
+  await ctx.addInitScript(([key, tok]) => {
+    try { localStorage.setItem(key, tok); } catch { /* private mode */ }
+  }, ['ys_portal_token', FAKE_STAFF]);
+  await ctx.route('**/api/staff-view/session', (route) => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ active: true, viewing: { name: 'Dana Reed' } }),
+  }));
+  await ctx.route('**/api/health', (route) => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ bundle: 'not-the-running-one' }),
+  }));
+  const STUBBED = ['/staff-view/session', '/api/health'];
+  await ctx.route('**/api/**', (route) => (STUBBED.some((u) => route.request().url().includes(u))
+    ? route.fallback()
+    : route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })));
+  return ctx;
+}
+
 // ---------------------------------------------------------------------------
 // A2. THE BANNERS MUST NOT BURY THE ENGINE'S NAVIGATION.
 //     This is here because a source check could not see it and a re-audit
@@ -192,47 +241,7 @@ const visit = async (page, hash) => {
 //     otherwise this checks the easy case and proves nothing.
 // ---------------------------------------------------------------------------
 {
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-  /* A STAFF SESSION, because the shell only renders behind the door — an
-     unauthenticated visitor bounces to the sign-in and this section would
-     measure an empty page and pass for the wrong reason. The client reads its
-     actor straight out of the token's payload (`actorFromToken`), so a token
-     with the right shape is enough here; nothing server-side is exercised by
-     this section, which is the point — it is about geometry. */
-  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64')
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  const FAKE_STAFF = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({
-    sub: '00000000-0000-4000-8000-000000000001', kind: 'staff', role: 'super_admin',
-    exp: Math.floor(Date.now() / 1000) + 3600,
-  })}.rendercheck`;
-  await ctx.addInitScript(([key, tok]) => {
-    try { localStorage.setItem(key, tok); } catch { /* private mode */ }
-  }, ['ys_portal_token', FAKE_STAFF]);
-
-  /* The staff-view session is stubbed so the banner ACTUALLY RENDERS — without
-     it this measures the easy case and proves nothing. Everything else the shell
-     calls is answered emptily so a pending request cannot hold the paint. */
-  await ctx.route('**/api/staff-view/session', (route) => route.fulfill({
-    status: 200, contentType: 'application/json',
-    body: JSON.stringify({ active: true, viewing: { name: 'Dana Reed' } }),
-  }));
-  /* ⛔ AND SO IS THE OTHER BANNER, which is the whole subject of this section.
-     `/api/health` was answered `{}` along with everything else, so
-     `useStaleBuild` never fired and exactly ONE bar rendered — which makes
-     "the banners stack rather than covering each other" a statement about a
-     list of one, i.e. true of any code at all. The stack this section exists
-     to measure only exists when BOTH are up, and that is the case the
-     incident happened in. A hash that is not the running bundle's is all it
-     takes. */
-  await ctx.route('**/api/health', (route) => route.fulfill({
-    status: 200, contentType: 'application/json',
-    body: JSON.stringify({ bundle: 'not-the-running-one' }),
-  }));
-  const STUBBED = ['/staff-view/session', '/api/health'];
-  await ctx.route('**/api/**', (route) => (STUBBED.some((u) => route.request().url().includes(u))
-    ? route.fallback()
-    : route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })));
-
+  const ctx = await bothBannersUp({ viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
   await visit(page, '/engine');
   await page.waitForTimeout(900);
@@ -417,6 +426,101 @@ const visit = async (page, hash) => {
     return bad;
   });
   ok(small.length === 0, `D4 no form control is under 16px, so iOS does not zoom on focus${small.length ? ` — ${small.join(', ')}` : ''}`);
+  await ctx.close();
+}
+
+// ---------------------------------------------------------------------------
+// E. THE SAME STACK, ON A PHONE — the case the wrap was added for, and the one
+//    nothing measured.
+//
+//    A pre-merge audit named this: section A2 measures the banner stack at
+//    1440, where neither bar wraps, so the whole reason `flexWrap` is on the
+//    engine's in-flow bar — that at 390 its contents would otherwise run off the
+//    side, and that the stack is then two and three lines tall rather than one —
+//    was asserted by nothing at all. Section D visits the phone with no banners
+//    up, which is the easy case. This is both at once: an iPhone 12, both bars
+//    rendered, and the engine's only navigation still on screen underneath them.
+// ---------------------------------------------------------------------------
+{
+  const iPhone = pw.devices['iPhone 12'];
+  const ctx = await bothBannersUp({ ...iPhone });
+  const page = await ctx.newPage();
+  const errors = await visit(page, '/engine');
+  await page.waitForTimeout(900);
+
+  const geo = await page.evaluate(() => {
+    const hitOf = (el) => {
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) return false;
+      const hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+      return !!(hit && (el === hit || el.contains(hit) || hit.contains(el)));
+    };
+    const bars = [...document.querySelectorAll('[data-top-banner="1"]')];
+    const header = document.querySelector('header');
+    const links = [...(header ? header.querySelectorAll('a[href*="#/engine"]') : [])];
+    const exit = [...(header ? header.querySelectorAll('button') : [])]
+      .find((b) => /full system/i.test(b.textContent || ''));
+    /* THE STAFF-VIEW BAR'S OWN BUTTON — the thing `flexWrap` exists for. Without
+       the wrap the sentence and the button share one line on a 390px bar and the
+       button is pushed past the right edge, which is the way out of somebody
+       else's session. */
+    const svBar = bars.find((b) => /back to my own screen/i.test(b.textContent || '')) || null;
+    const backBtn = svBar ? [...svBar.querySelectorAll('button')]
+      .find((x) => /back to my own screen/i.test(x.textContent || '')) : null;
+    const svText = svBar ? svBar.querySelector('span') : null;
+    const stack = bars.length
+      ? { top: Math.min(...bars.map((b) => b.getBoundingClientRect().top)),
+        bottom: Math.max(...bars.map((b) => b.getBoundingClientRect().bottom)) }
+      : null;
+    return {
+      inner: window.innerWidth,
+      scroll: document.documentElement.scrollWidth,
+      client: document.documentElement.clientWidth,
+      bars: bars.length,
+      stackHeight: stack ? Math.round(stack.bottom - stack.top) : 0,
+      headerTop: header ? Math.round(header.getBoundingClientRect().top) : null,
+      tabs: links.map((a) => ({ label: (a.textContent || '').trim(), hit: hitOf(a) })),
+      exitHit: exit ? hitOf(exit) : null,
+      backBtn: backBtn
+        ? {
+          right: Math.round(backBtn.getBoundingClientRect().right),
+          top: Math.round(backBtn.getBoundingClientRect().top),
+          hit: hitOf(backBtn),
+        }
+        : null,
+      svTextBottom: svText ? Math.round(svText.getBoundingClientRect().bottom) : null,
+    };
+  });
+
+  ok(errors.length === 0, 'E1 the engine renders on a phone with both banners up and no page error');
+  ok(geo.inner === 390, `E2 the layout viewport is the device width (innerWidth ${geo.inner}, must be 390)`);
+  ok(geo.scroll - geo.client <= 1,
+    `E3 …with no sideways scroll, banners and all (${geo.scroll} vs ${geo.client})`);
+  ok(geo.bars >= 2, `E4 both bars really rendered (${geo.bars}) — one bar makes "they stack" true of any code at all`);
+  /* THE STACK IS TALLER THAN TWO SINGLE LINES on a phone, which is the fact the
+     shell MEASURES rather than assumes — a constant offset would bury the header
+     by ~100px here. It is not, and must not be read as, proof that `flexWrap` is
+     doing anything: MEASURED with the wrap removed, the stack is 149px instead of
+     168 and this still passes, because the flex items shrink and their text wraps
+     internally. E9 is the assertion that bites on the wrap. */
+  ok(geo.stackHeight > 80,
+    `E5 …and the stack is genuinely two-and-three lines tall here, which is why it is measured (${geo.stackHeight}px; two single lines would be ~74)`);
+  ok(geo.headerTop != null && Math.abs(geo.headerTop - geo.stackHeight) <= 2,
+    `E6 …and the sticky header starts exactly below the MEASURED stack (header top ${geo.headerTop}, stack ${geo.stackHeight})`);
+  ok(geo.tabs.length >= 5 && geo.tabs.every((t) => t.hit),
+    `E7 …and every tab is still the thing painted at its own middle${geo.tabs.filter((t) => !t.hit).map((t) => ` — ${t.label} is covered`).join('')}`);
+  ok(geo.exitHit === true, 'E8 …and the "Full system" way out is on screen and clickable on a phone');
+  /* ⛔ THE WRAP, MEASURED AS THE THING IT ACTUALLY DOES. Not "the button is inside
+     the screen" — MEASURED with `flexWrap` removed from the engine's in-flow bar,
+     it still is (right edge 376 of 390, squeezed against the sentence). What the
+     wrap does is put the way OUT of somebody else's session on its own line
+     instead of shrinking it beside the text, which is a property with no magic
+     number in it: the button's top sits BELOW the sentence's bottom. That is the
+     one assertion here that fails when the wrap goes. */
+  ok(!!geo.backBtn && geo.backBtn.hit && geo.backBtn.right <= geo.inner,
+    `E9 …and the staff-view bar's "Back to my own screen" is on screen and clickable (right ${geo.backBtn ? geo.backBtn.right : 'MISSING'} of ${geo.inner})`);
+  ok(!!geo.backBtn && geo.svTextBottom != null && geo.backBtn.top >= geo.svTextBottom - 1,
+    `E10 …on its OWN line under the sentence, which is what the in-flow bar's wrap is for (button top ${geo.backBtn ? geo.backBtn.top : '?'}, sentence bottom ${geo.svTextBottom})`);
   await ctx.close();
 }
 

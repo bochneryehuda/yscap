@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { rememberPairing } from './LtInvestorLinks.jsx';
 import BoardExplains from './BoardExplains.jsx';
 import LtLayout from './LtLayout.jsx';
@@ -1002,6 +1002,40 @@ function askedLine(a) {
   return parts.length ? `Asked about: ${parts.join(' · ')}` : null;
 }
 
+/**
+ * WHICH PRICE BUILD A SELECTION REPORTS — one definition, both doors.
+ *
+ * ⛔ THE PROBLEM IS THAT THE BUILD LIVES IN TWO PLACES. A row from the sheet that
+ * publishes its itemisation with the search carries it on the option itself; a
+ * row from the sheet that explains ON DEMAND only ever has it after somebody
+ * opened the panel, and that answer lands in `PriceBuild`'s local state. So the
+ * Add button beside the row, which is handed the ORIGINAL option, would send
+ * nothing at all — and `snapshot.buildMember` would abstain on a build the board
+ * had been shown. A pre-merge audit measured exactly that: the incident row,
+ * collected and issued, price never cross-checked.
+ *
+ * So: the option in hand when it carries a build, otherwise the one the board
+ * remembers being explained for this quote. Never the other way round — the
+ * option a caller passes is the one it is talking about.
+ *
+ * ⛔ ALL THREE FIGURES OR NOTHING, and that is not tidiness: the server's rule is
+ * "absent is not a failure", so a partial landing must read as absent rather than
+ * as a row of holes that could be mistaken for a checked one. `landingGap` would
+ * answer `checked:false` either way; sending null says the same thing in one
+ * place instead of three.
+ */
+export function landingOf(option, rememberedBuild) {
+  const pb = (option && option.priceBuild) || rememberedBuild || null;
+  if (!pb) return null;
+  const ok = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
+  if (!ok(pb.basePoints) || !ok(pb.adjustmentPoints) || !ok(pb.adjustedPoints)) return null;
+  return {
+    basePoints: Number(pb.basePoints),
+    adjustmentPoints: Number(pb.adjustmentPoints),
+    adjustedPoints: Number(pb.adjustedPoints),
+  };
+}
+
 export function PriceBuild({ o: oProp, comp, ts, quote }) {
   const engine = useEngine();
   /**
@@ -1059,12 +1093,24 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
         if (dead) return;
         // `alreadyExplained` is not a failure and must not read as one: that sheet published its
         // itemization with the quote, so what is already on the row IS the answer.
-        if (r && r.option) setFetched(r.option);
-        else if (r && r.ok === false) setAskErr(r.message || 'This rate sheet could not be asked to explain this price.');
+        if (r && r.option) {
+          setFetched(r.option);
+          /* ⛔ AND THE BOARD IS TOLD, so the Add button beside this row — which is
+             handed the ORIGINAL option and would otherwise send no build at all —
+             can send what was actually explained. Without this the price-landing
+             refusal is reachable only from inside this panel, and every option
+             collected into a comparison goes to the document unchecked. */
+          if (ts && ts.noteExplained) ts.noteExplained(quote && quote.key, r.option);
+        } else if (r && r.ok === false) setAskErr(r.message || 'This rate sheet could not be asked to explain this price.');
       })
       .catch((e) => { if (!dead) setAskErr((e && e.message) || 'This rate sheet could not be asked to explain this price.'); })
       .finally(() => { if (!dead) setAsking(false); });
     return () => { dead = true; };
+    /* `ts` and `quote` are deliberately NOT dependencies: `ts` is rebuilt on every
+       board render, so listing it would re-ask the rate sheet to explain the same
+       row on every keystroke elsewhere on the page — a paid call per character.
+       What the effect is ABOUT is the quote it was handed (`handleKey`), and both
+       are only ever read inside the callback. */
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [askable, handleKey, invKey]);
   /* The fetched option is the SAME shape the row already carried, so everything below reads one
@@ -1511,15 +1557,29 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
           simply do not exist there rather than being disabled with an excuse.
           The SELECTION is assembled by the board (which holds the scenario) and
           passed WHOLE — nothing about the money is computed here. */}
-      {ts && ts.enabled && quote && (
-        <QuoteTermSheetActions
-          sel={ts.selectionFor(quote, o)}
-          issue={ts.issueFor ? ts.issueFor(quote, o) : null}
-          enabled={ts.enabled}
-          mode={comp && comp.mode}
-          cartCount={ts.count}
-          onAdded={ts.reload} />
-      )}
+      {/* ⛔ AND NOT WHILE THE RATE SHEET IS STILL BEING ASKED. For the second or two
+          the explain call is in flight the option in hand carries no build, so a
+          selection assembled now says the price was never itemised — and the
+          refusal that compares the two abstains, on the one panel that is about
+          to know the answer. Issuing in that window skips a check that exists a
+          moment later. It says so rather than vanishing: a control that
+          disappears reads as broken, and this one comes back on its own. */}
+      {ts && ts.enabled && quote && (asking
+        ? (
+          <div style={{ marginTop: 12, fontSize: 12, color: MUTED }}>
+            Asking the rate sheet to explain this price — the term sheet controls
+            open once it answers, so the price build can be checked against it.
+          </div>
+        )
+        : (
+          <QuoteTermSheetActions
+            sel={ts.selectionFor(quote, o)}
+            issue={ts.issueFor ? ts.issueFor(quote, o) : null}
+            enabled={ts.enabled}
+            mode={comp && comp.mode}
+            cartCount={ts.count}
+            onAdded={ts.reload} />
+        ))}
     </div>
   );
 }
@@ -2192,6 +2252,30 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
      silently leaves somebody wondering whether it saved. */
   const [pickBusy, setPickBusy] = useState(null);
   const [pickNote, setPickNote] = useState(null);
+  /* ⛔ EVERY PRICE BUILD THIS BOARD HAS ACTUALLY BEEN SHOWN, remembered here so
+     the ROW can send it (pre-merge audit, 2026-09-04).
+
+     One of the two rate sheets explains a row on DEMAND, so the itemisation
+     arrives in `PriceBuild`'s own local state and the row above it goes on
+     holding an option whose build is empty. That is fine for drawing — the panel
+     reads what it fetched — and it silently disarmed the refusal on the two
+     doors that matter most: the Add button beside every quote, and therefore
+     every option collected into a comparison. The board had SEEN the build and
+     then sent a selection that said it had none, so `snapshot.buildMember`
+     abstained under its own "absent is not a failure" rule and the exact 0.875
+     incident row could be collected and issued unchecked.
+
+     Keyed on the quote's own key, so re-opening a panel, collecting the row and
+     issuing it an hour later all describe the same build. Nothing here computes
+     a landing: it stores the option the server explained and `selectionFor`
+     reads the three figures off it, exactly as the panel does. */
+  const [explained, setExplained] = useState({});
+  const noteExplained = useCallback((key, option) => {
+    const k = key == null ? null : String(key);
+    const pb = option && option.priceBuild;
+    if (!k || !pb) return;
+    setExplained((prev) => (prev[k] === pb ? prev : { ...prev, [k]: pb }));
+  }, []);
   const [cartDocKind, setCartDocKind] = useState(null);
 
   /* THE CARRYING COSTS THE BOARD'S PITI COLUMN IS BUILT FROM (owner-directed 2026-08-30).
@@ -2461,15 +2545,7 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
          monthly payment. Sent ONLY when the breakdown has actually been fetched — a row nobody
          opened sends nothing and is issued exactly as before, because refusing those would stop
          the desk working over a check nobody asked for. */
-      priceLanding: (o && o.priceBuild
-        && o.priceBuild.basePoints != null && o.priceBuild.adjustmentPoints != null
-        && o.priceBuild.adjustedPoints != null)
-        ? {
-          basePoints: o.priceBuild.basePoints,
-          adjustmentPoints: o.priceBuild.adjustmentPoints,
-          adjustedPoints: o.priceBuild.adjustedPoints,
-        }
-        : null,
+      priceLanding: landingOf(o, explained[String(q && q.key)]),
       pricedAt: (o && o.rateSheet && o.rateSheet.effectiveAt) || (res && res.pricedAt) || null,
       /* ⛔ THE RATIO THIS OPTION WAS PRICED AT — the bracket board's own stamp on the
          option (`o.dscr`), never the form's figure. On a banded board the form's DSCR
@@ -2545,6 +2621,12 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
        option the cart does not have — which is the failure that would make this
        worse than the drawer it replaces. */
     busyKey: pickBusy,
+    /* Filled by `PriceBuild` the moment a rate sheet explains a row. It is on
+       `ts` rather than threaded as its own prop because `ts` is already the one
+       thing every quote row and every price panel is handed, and a second
+       channel for the same fact is how the row and the panel come to disagree
+       about what was priced. */
+    noteExplained,
     pick: async (q, o) => {
       setPickBusy(q && q.key);
       try {

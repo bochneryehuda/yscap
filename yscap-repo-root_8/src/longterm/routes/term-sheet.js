@@ -32,6 +32,7 @@ const code = require('../termsheet/code');
 const comparison = require('../termsheet/comparison');
 const deliver = require('../termsheet/deliver');
 const priceAdjust = require('../termsheet/price-adjust');
+const priceLanding = require('../pricing/price-landing');
 const settingsStore = require('../settings/store');
 const db = require('../db');
 const { resolveCompPlan } = require('../comp-plan');
@@ -430,6 +431,18 @@ router.post('/cart', async (req, res) => {
           consumerLabel: r.member.consumerLabel, product: r.member.product,
           ratePct: r.member.ratePct, monthlyPI: r.member.monthlyPI,
           prepayLabel: r.member.prepayLabel, rawPrice: (req.body.selection || {}).rawPrice,
+          /* ⛔ THE PRICE BUILD SURVIVES THE PARKING (pre-merge audit, 2026-09-04).
+             `buildMember` refuses a build that claims a better price than its own
+             itemisation supports — and it was reachable on ONE of the four doors,
+             because a collected option is re-derived from the CART ROW at issue
+             time and the row kept no landing. So the exact incident row could be
+             collected, parked, and issued on a multi-option comparison — the
+             document a borrower actually reads — with the price never once
+             cross-checked. It rides `program` for the same reason `rawPrice`
+             does: it is a fact about the priced option, and `readCart` hands the
+             whole block back, so the round trip needs no second mechanism.
+             Projected through the ONE landing definition, never stored raw. */
+          priceLanding: priceLanding.projectLanding((req.body.selection || {}).priceLanding),
         },
         // db/651 — the STAFF-ONLY record of who funds this option, kept on the
         // cart member so it survives to the sheet. `addToCart` projects it

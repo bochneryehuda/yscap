@@ -501,29 +501,105 @@ ok(/const bannerRef = useRef\(null\)/.test(hostNow) && /document\.body\.style\.p
     }
   })('app-v2/src');
 
+  /* ⛔ THE WHOLE STYLE OBJECT IS READ, NOT THE 300 CHARACTERS AFTER `position`.
+     A pre-merge audit pointed out that a window starting at the match misses a
+     `top:` written ABOVE it in the same object — and a missed top is not an
+     offender, it is `continue`, so the sweep reported a clean board about a bar
+     it never looked at. The object's own braces are matched instead, backwards
+     to its `{` and forwards to the matching `}`, so declaration order cannot
+     hide anything. */
+  const objectAround = (src, at) => {
+    let depth = 0;
+    let open = -1;
+    for (let i = at; i >= 0; i -= 1) {
+      if (src[i] === '}') depth += 1;
+      else if (src[i] === '{') { if (depth === 0) { open = i; break; } depth -= 1; }
+    }
+    if (open < 0) return '';
+    depth = 0;
+    for (let j = open; j < src.length; j += 1) {
+      if (src[j] === '{') depth += 1;
+      else if (src[j] === '}') { depth -= 1; if (depth === 0) return src.slice(open, j + 1); }
+    }
+    return src.slice(open, at + 300);
+  };
+
   const offenders = [];
-  let anchored = 0;
+  const anchored = [];
   let pinned = 0;
   for (const f of files) {
     const src = read(f);
     const re = /position:\s*'fixed'/g;
     let m;
     while ((m = re.exec(src))) {
-      const win = src.slice(m.index, m.index + 300);
+      const win = objectAround(src, m.index);
       const t = (win.match(/top:\s*(`[^`]*`|'[^']*'|"[^"]*"|[^,\n}]+)/) || [])[1];
       if (t == null) continue;                       // pinned to the bottom, or carrying no top at all
       const lit = t.trim();
       const isLiteral = /^['"`]/.test(lit) || /^-?[\d.]+$/.test(lit);
-      if (!isLiteral) { anchored++; continue; }      // `pos.top` — anchored to an element
+      if (!isLiteral) { anchored.push(`${f} (top: ${lit})`); continue; }
       pinned++;
       if (f === SELF) continue;                      // the co-browse bar itself
       if (!/--cobrowse-bar/.test(lit)) offenders.push(`${f} (top: ${lit})`);
     }
   }
-  ok(pinned >= 4, `every top-pinned fixed element in the front end was found (${pinned}; ${anchored} more anchored to an element)`);
+  ok(pinned >= 4, `every top-pinned fixed element in the front end was found (${pinned}; ${anchored.length} more anchored to an element)`);
   ok(offenders.length === 0,
     `and every one of them stacks UNDER the co-browse bar rather than behind it — the Stop button stays clickable${offenders.length ? ` — ${offenders.join(', ')}` : ''}`);
+
+  /* ⛔ A COMPUTED TOP IS EXEMPT, SO THE EXEMPTIONS ARE COUNTED. A pre-merge audit
+     pointed out that `top: pos.top` is waved through with no record — which is
+     right (a dropdown anchored to an input is not a top bar and cannot be judged
+     from source) and was silent, so a NEW fixed element could join that pile
+     without anybody deciding it belonged there. The number is pinned: adding one
+     fails here, and the fix is to say in this file why it is anchored rather than
+     pinned — never to raise the number without reading it. */
+  /* NAMED, not counted against itself. `anchored.length === anchored.length` is
+     the tautology this repo keeps catching in its own guards — it can never fail,
+     so it would report a clean board about a pile nobody had read. These are the
+     three, each a dropdown positioned under the input it belongs to. */
+  const ANCHORED_EXPECTED = [
+    'app-v2/src/components/AddressAutocomplete.jsx',
+    'app-v2/src/components/PilotWriter.jsx',
+    'app-v2/src/components/VendorAutocomplete.jsx',
+  ];
+  const anchoredFiles = anchored.map((a) => a.split(' (')[0]).sort();
+  const newlyAnchored = anchoredFiles.filter((f) => !ANCHORED_EXPECTED.includes(f));
+  ok(newlyAnchored.length === 0,
+    `and the fixed elements whose top is COMPUTED are still the same three dropdowns, each anchored to an element rather than the viewport${newlyAnchored.length ? ` — new: ${newlyAnchored.join(', ')}` : ` (${anchored.join(', ')})`}`);
+
+  /* ⛔ AND A BAR DRAWN FROM A STYLESHEET WOULD BE INVISIBLE TO ALL OF THE ABOVE,
+     which the same audit named. Sweeping every `position: fixed` in `styles.css`
+     is the wrong answer and was tried: 23 rules match and nearly all are drawers,
+     scrims, toasts and full-screen overlays (`inset: 0`) — things the co-browse
+     bar is SUPPOSED to sit on top of — so the rule would need a hand-kept list of
+     six exemptions, which is exactly what this sweep was written to stop being.
+     What the rule is actually about is a TOP BANNER, and a top banner drawn in CSS
+     would be named like one. So the narrow, false-positive-free half: no rule
+     whose selector says banner/topbar may pin itself to the top edge without
+     clearing the co-browse bar. It matches nothing today and bites the day one
+     is added. */
+  const CSS = read('app-v2/src/styles.css');
+  const cssBanners = [];
+  for (const m of CSS.matchAll(/([^{}\n]*(?:banner|topbar|top-bar)[^{}]*)\{([^}]*)\}/gi)) {
+    const body = m[2];
+    if (!/position:\s*fixed/.test(body)) continue;
+    const top = (body.match(/top:\s*([^;]+)/) || [])[1];
+    if (top == null) continue;
+    if (!/--cobrowse-bar/.test(top)) cssBanners.push(`${m[1].trim()} (top: ${top.trim()})`);
+  }
+  ok(cssBanners.length === 0,
+    `and a top banner drawn from the stylesheet would clear it too${cssBanners.length ? ` — ${cssBanners.join(', ')}` : ' (none exist — this bites the day one is added)'}`);
 }
+/* ⛔ V1 IS DELIBERATELY NOT SWEPT, and that is a scope statement rather than an
+   omission (the same audit asked). `app/` is frozen at `/v1` and parked by owner
+   direction 2026-08-04; co-browsing is a V2 build and never mounts there, so a
+   fixed banner in V1 cannot sit over a co-browse bar that does not exist. Proven
+   rather than asserted — if the host ever appears in V1 this fails and the sweep
+   has to grow. */
+ok(!fs.existsSync(path.join(root, 'app/src/components/CobrowseHost.jsx')),
+  'V1 hosts no co-browse session, which is why its own fixed banners are out of this sweep');
+
 ok(!/autoFocus/.test(hostNow) && /askRef/.test(hostNow) && /e\.key === 'Enter' \|\| e\.key === ' '/.test(hostNow),
   'a prompt focuses the DIALOG, never an answer — a stray Enter can never share somebody\'s screen, and their sentence keeps its letters');
 ok(/const routePoll = setInterval/.test(libNow) && /popstate', onRoute/.test(libNow),
