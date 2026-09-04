@@ -32,8 +32,18 @@
  * through untouched except for its `programs` list, so the brackets, the board, the
  * details panel and every count downstream read exactly what they read before.
  *
- * PURE OF ROUTES: no Express, no database. The vendors arrive as injected clients
- * so this can be run in a test with both stubbed.
+ * PURE OF ROUTES: no Express. The vendors arrive as injected clients so this can
+ * be run in a test with both stubbed.
+ *
+ * ⛔ AND PURE OF THE DATABASE WHERE IT MATTERS, which is a sharper claim than the
+ * one that used to be here ("no database") and is the one that is actually true.
+ * `boardForScenario` — the function a test drives, and the function a bracket run
+ * calls once per DSCR band — reads nothing: every setting, every link, every
+ * hand-added investor and now every house rule arrives on `opts`. `loadConfig` is
+ * the half that reads, ONCE per search, and it always has (`investorConfig`
+ * reaches the settings store). Saying "no database" of the whole module was wrong
+ * the day `loadConfig` was written, and a note whose reason is wrong is worse than
+ * no note, because the next person budgets against it.
  */
 
 const merge = require('./merge');
@@ -45,6 +55,8 @@ const loannexHalf = require('./loannex-half');
 const investorConfig = require('./investor-config');
 const investorLinks = require('./investor-links');
 const nearTier = require('./near-tier');
+const houseRules = require('./rules/overlay');
+const rulesStore = require('./rules/store');
 /* ⛔ THE SEARCH MODEL IS REQUIRED, NEVER READ OFF THE INJECTED CLIENT. `wantFrom` mirrors the
    Lender Price request through `mapAmortization` and `resolveSearchTerms`, which live on the
    search MODEL. Reading them off `deps.lp` would silently answer `{}` for every caller that
@@ -161,6 +173,12 @@ async function loadConfig(opts = {}) {
       problems: customCtx.problems || [],
       problem: customCtx.problem || null,
     },
+    /* THE HOUSE RULES IN FORCE, read ONCE per search rather than once per DSCR
+       band — a bracket run calls `boardForScenario` eleven times and eleven reads
+       of one small table is eleven chances for two bands of one board to be priced
+       under different rules. `liveRules` never throws: an unreadable centre answers
+       "no rules" and the problem, and the board prices exactly as it does today. */
+    houseRules: opts.houseRules !== undefined ? opts.houseRules : await rulesStore.liveRules(),
   };
 }
 
@@ -283,7 +301,7 @@ async function boardForScenario(sc, deps, opts = {}) {
      FICO, LTV or purpose — those are the question, not the answer — so the board
      builder restates them from here, exactly as the combined engine does. */
   const nxSearch = { loanAmount: sc.loan, fico: sc.fico, ltv: sc.ltv, loanPurpose: sc.purpose };
-  const programs = quoteShape.programsForBoard(routed, {
+  let programs = quoteShape.programsForBoard(routed, {
     reveal: false,
     /* THIS BOARD NAMES ITS ENGINE. It is staff-only and the owner asked for the stamp
        (2026-09-04). The COMBINED board passes nothing here and is withheld — see
@@ -369,6 +387,30 @@ async function boardForScenario(sc, deps, opts = {}) {
     loannex: { answered: !!nxOk, keys: nxOk ? sightedOn('loannex') : [] },
   };
 
+  /* ── OUR OWN RULES, LAID OVER THE SHEETS' ANSWER ───────────────────────────
+     Owner-directed 2026-09-04: *"this is going to be basically overlays on top of
+     all the engines that we have … even if the engine is giving it to you it should
+     be our own ineligible."*
+
+     ⛔ AFTER `missing` AND `sightings`, AND THAT ORDER IS LOAD-BEARING. Those two
+     describe what the RATE SHEETS did — who LoanNEX carried and who it did not —
+     and an investor OUR rules refuse is not an investor LoanNEX failed to price.
+     Applying the overlay first would file every house block as a missing investor
+     and email a super admin about a sheet that answered perfectly well.
+
+     ⛔ BEFORE the lens roster and the counts below, which describe the board the
+     officer is actually looking at.
+
+     With no rules this is identity: `apply` returns the same array it was given,
+     so a board on a deployment where nobody has written a rule is byte-for-byte
+     what it is today. */
+  const house = houseRules.apply(programs, {
+    rules: (opts.houseRules && opts.houseRules.rules) || [],
+    scenario: sc,
+    engine: 'general',
+  });
+  programs = house.programs;
+
   /* THE LENS ROSTER AND THE UNNAMED WARNING, for the board actually shown — the
      initial-board door reads these; the bracket door ignores them and reads the
      bands. Derived from the routed programmes so it can never describe a different
@@ -423,6 +465,26 @@ async function boardForScenario(sc, deps, opts = {}) {
      * `settings` says how many routes were applied and what could not be read.
      */
     hidden: routed.hidden || [],
+    /**
+     * WHAT OUR OWN RULE CENTRE DID TO THIS BOARD — the quotes it refused, the
+     * investors it blocked, the adjustments it made, and every rule it could not
+     * read. Reported beside `hidden` rather than folded into it: `hidden` is why a
+     * RATE SHEET has no row here, and this is why WE do not. A screen that showed
+     * one as the other would tell an officer LoanNEX did not carry an investor we
+     * refused ourselves.
+     *
+     * `problem` is the rule centre refusing to answer at all — a board is still a
+     * board without its rules, so it prices and says so rather than failing.
+     */
+    houseRules: {
+      ran: house.ran,
+      ineligible: house.ineligible,
+      blocked: house.blocked,
+      applied: house.applied,
+      problems: house.problems,
+      problem: (opts.houseRules && opts.houseRules.problem) || null,
+      count: ((opts.houseRules && opts.houseRules.rules) || []).length,
+    },
     completeness: routed.completeness || null,
     settings: routed.settings || null,
     customInvestors: opts.customInvestors || null,

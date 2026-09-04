@@ -211,7 +211,7 @@ function columnProblem(key, n, kind, label) {
    on a column that is missing or carries the wrong kind, so this cannot drift.
    ===================================================================== */
 const IR_MONTHS = Object.freeze({ min: 0, max: 24, what: 'months' });
-/* db/695's CHECK (0..25000) is far narrower than numeric(12,2)'s ceiling, so the
+/* db/696's CHECK (0..25000) is far narrower than numeric(12,2)'s ceiling, so the
    CONSTRAINT is the real limit and numeric(12,2)'s number would be the wrong one
    to quote at a human. The 25000 is `min-origination.MAX_MIN_ORIGINATION_FEE` —
    an OWNER-SET guard against a decimal slip — and it is DERIVED here rather than
@@ -250,7 +250,7 @@ const COLUMN_KIND = Object.freeze({
     /* int4 with a CHECK narrower than the type (db/030), so the CONSTRAINT is
        the ceiling and int4's number would be the wrong one to quote. */
     requested_ir_months: IR_MONTHS,
-    /* numeric(12,2) with a CHECK narrower than the type (db/695). The company-wide
+    /* numeric(12,2) with a CHECK narrower than the type (db/696). The company-wide
        twin lives on `company_pricing_settings`, which this table does not cover —
        the admin route refuses an out-of-range value there against the same
        constant. */

@@ -59,7 +59,7 @@ router.put('/', async (req, res) => {
     appraisal_fee: numOrNull(b.appraisalFee), title_fee: numOrNull(b.titleFee),
     note: b.note ? String(b.note).slice(0, 300) : null,
   };
-  /* THE COMPANY-WIDE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695: "also in the admin
+  /* THE COMPANY-WIDE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696: "also in the admin
      section where we pre-set everything for the entire program where we can increase and decrease
      the minimum accordingly").
 
@@ -69,7 +69,7 @@ router.put('/', async (req, res) => {
      the RAW COLUMN, not from `pricingSettings.load()`, because that reader resolves a NULL to the
      system $2,500 — preserving the resolved value would STAMP a copy of the default into the
      column, and "never configured" would stop being distinguishable from "set to the default",
-     which is the whole design of db/695. */
+     which is the whole design of db/696. */
   if (b.minOrigFee !== undefined) {
     cols.min_orig_fee = numOrNull(b.minOrigFee);
   } else {
@@ -81,7 +81,7 @@ router.put('/', async (req, res) => {
     cols.min_orig_fee = prev == null ? null : Number(prev);
   }
   /* The ceiling is the ONE rule module's, restated as a plain refusal so an admin reads why. The
-     generic /fee/ guardrail below would pass 900,000 straight into db/695's CHECK and turn a typo
+     generic /fee/ guardrail below would pass 900,000 straight into db/696's CHECK and turn a typo
      into an unexplained 500 — and a minimum of a few thousand dollars mis-keyed by a factor of ten
      would make every small loan unquotable, silently. */
   if (cols.min_orig_fee != null) {

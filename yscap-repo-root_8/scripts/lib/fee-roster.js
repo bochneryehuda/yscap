@@ -126,7 +126,7 @@ const CLOSING_FEES = {
     surfaces: {
       /* RE-POINTED 2026-09-04, never loosened. The five studio surfaces below used to build this
          row's label inline; they now call ONE `origRowLabel(<their own data var>)`, because the
-         program minimum (db/695) means the STATED rate is sometimes not the rate charged and five
+         program minimum (db/696) means the STATED rate is sometimes not the rate charged and five
          hand-built labels are five chances to print a row that contradicts itself. Each token still
          names the surface's OWN data variable, which is the rule that stops one column covering
          for another. */

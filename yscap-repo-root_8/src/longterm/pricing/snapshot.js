@@ -139,7 +139,7 @@ async function takeSnapshot(opts = {}) {
     const shaped = rowsFromPrograms(deco.programs);
     out.unusable = shaped.unusable;
     if (!shaped.rows.length) {
-      out.reason = 'the answer carried no priced programme we could read';
+      out.reason = 'the answer carried no priced program we could read';
       return out;
     }
     for (const row of shaped.rows) {

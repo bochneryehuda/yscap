@@ -110,14 +110,14 @@ footer p{max-width:74ch;margin:0 0 9px}
   <p class="lede">Every table in the system, what it holds, and what it is connected to.
   This is a picture of a copy — nothing here can change anything.</p>
   <div class="figs">
-    <div class="fig"><b>412</b><span>tables</span></div>
-    <div class="fig"><b>6,620</b><span>fields</span></div>
+    <div class="fig"><b>414</b><span>tables</span></div>
+    <div class="fig"><b>6,644</b><span>fields</span></div>
     <div class="fig"><b>833</b><span>connections</span></div>
     <div class="fig"><b>39</b><span>automatic rules</span></div>
-    <div class="fig"><b>356</b><span>value guards</span></div>
-    <div class="fig"><b>1,431</b><span>lookups</span></div>
+    <div class="fig"><b>359</b><span>value guards</span></div>
+    <div class="fig"><b>1,437</b><span>lookups</span></div>
   </div>
-  <p class="stamp">Generated from the committed schema map — built from 692 migration files, up to db/695. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
+  <p class="stamp">Generated from the committed schema map — built from 693 migration files, up to db/696. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
 </div></header>
 
 <section><div class="wrap">
@@ -177,7 +177,7 @@ footer p{max-width:74ch;margin:0 0 9px}
 
 <section><div class="wrap">
   <h2>Everything, by what it is for</h2>
-  <p class="sub">All 412 tables, grouped. Open a group, then open a table to see its
+  <p class="sub">All 414 tables, grouped. Open a group, then open a table to see its
   fields and what it connects to. <strong>“Deleted with it”</strong> marks a connection where removing the
   parent record removes these too — the single most consequential thing a connection can say.</p>
   <div class="search">
@@ -185,7 +185,7 @@ footer p{max-width:74ch;margin:0 0 9px}
     <div class="hits" id="hits"></div>
   </div>
   <div id="groups"><details class="grp">
-    <summary><span class="gn">Long-Term loans</span><span class="gc">68 tables</span></summary>
+    <summary><span class="gn">Long-Term loans</span><span class="gc">70 tables</span></summary>
     <div class="body"><p class="blurb">The second product, built separately from the ground up. By the separation law every one of its tables is named lt_*, and none of them may reference a short-term table.</p><details class="tbl" data-name="lt_loans" data-note="One long-term loan file. The long-term product is a separate system that shares only the login and the person, so this is its own spine — nothing here touches a short-term loan.">
 <summary><span class="tn">lt_loans</span>
 <span class="tm">83 fields · 21 links</span>
@@ -822,6 +822,26 @@ footer p{max-width:74ch;margin:0 0 9px}
 </summary>
 <div class="detail">
   <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">id <span class="req">required</span></td><td class="t">uuid</td><td class="t">gen_random_uuid()</td></tr><tr><td class="c">investor_key</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">ladder <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'[]'::jsonb</td></tr><tr><td class="c">lender</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">par_rate_milli</td><td class="t">integer</td><td class="t"></td></tr><tr><td class="c">program <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">rate_sheet</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">rung_count <span class="req">required</span></td><td class="t">integer</td><td class="t">0</td></tr><tr><td class="c">scenario <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'{}'::jsonb</td></tr><tr><td class="c">scenario_hash <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">taken_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">taken_for_day <span class="req">required</span></td><td class="t">date</td><td class="t"></td></tr></tbody></table></div>
+  <div class="links">
+    <div><h4>Depends on</h4><ul><li style="color:var(--ink-3)">Nothing — this table stands on its own.</li></ul></div>
+    <div><h4>Depended on by</h4><ul><li style="color:var(--ink-3)">Nothing points at this table.</li></ul></div>
+  </div>
+</div></details><details class="tbl" data-name="lt_pricing_rule" data-note="">
+<summary><span class="tn">lt_pricing_rule</span>
+<span class="tm">15 fields · 0 links</span>
+</summary>
+<div class="detail">
+  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">archived_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">archived_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">created_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">enabled <span class="req">required</span></td><td class="t">boolean</td><td class="t">true</td></tr><tr><td class="c">engine <span class="req">required</span></td><td class="t">text</td><td class="t">'all'::text</td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">uuid</td><td class="t">gen_random_uuid()</td></tr><tr><td class="c">name <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">note</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">priority <span class="req">required</span></td><td class="t">integer</td><td class="t">100</td></tr><tr><td class="c">reason</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">then <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'[]'::jsonb</td></tr><tr><td class="c">updated_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">updated_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">when <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'{}'::jsonb</td></tr></tbody></table></div>
+  <div class="links">
+    <div><h4>Depends on</h4><ul><li style="color:var(--ink-3)">Nothing — this table stands on its own.</li></ul></div>
+    <div><h4>Depended on by</h4><ul><li style="color:var(--ink-3)">Nothing points at this table.</li></ul></div>
+  </div>
+</div></details><details class="tbl" data-name="lt_pricing_rule_event" data-note="">
+<summary><span class="tn">lt_pricing_rule_event</span>
+<span class="tm">9 fields · 0 links</span>
+</summary>
+<div class="detail">
+  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">action <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">after</td><td class="t">jsonb</td><td class="t"></td></tr><tr><td class="c">at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">before</td><td class="t">jsonb</td><td class="t"></td></tr><tr><td class="c">by_staff</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">bigint</td><td class="t">nextval('lt_pricing_rule_event_id_seq'::regclass)</td></tr><tr><td class="c">note</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">rule_id</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">rule_name</td><td class="t">text</td><td class="t"></td></tr></tbody></table></div>
   <div class="links">
     <div><h4>Depends on</h4><ul><li style="color:var(--ink-3)">Nothing — this table stands on its own.</li></ul></div>
     <div><h4>Depended on by</h4><ul><li style="color:var(--ink-3)">Nothing points at this table.</li></ul></div>

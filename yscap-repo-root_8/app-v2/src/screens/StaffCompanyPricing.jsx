@@ -3,7 +3,7 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { PROGRAM_SHORT } from '../lib/programLabel.js';
 
-/* THE MINIMUM ORIGINATION FEE's system default and ceiling (owner-directed 2026-09-04, db/695).
+/* THE MINIMUM ORIGINATION FEE's system default and ceiling (owner-directed 2026-09-04, db/696).
    Restated here rather than imported: this is a browser screen and `src/lib/min-origination.js` is
    server code it cannot require (the `lib/payoff.js` arrangement). COPY ONLY — the server refuses
    an out-of-range value itself, so a drift here can never price a loan or store a bad number; the
@@ -28,7 +28,7 @@ const MAX_MIN_ORIG = 25000;
 
 // camelCase keys shared by GET .current / .systemDefaults and the PUT body.
 const KEYS = ['markupStdPct', 'markupGoldPct', 'markupSilverPct', 'markupSpeedPct', 'origStdPct', 'origGoldPct', 'origSilverPct', 'origSpeedPct', 'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
-  // The company-wide MINIMUM origination fee (owner-directed 2026-09-04, db/695).
+  // The company-wide MINIMUM origination fee (owner-directed 2026-09-04, db/696).
   'minOrigFee'];
 
 // THE MARKETED PROGRAMS, and which of them carry pricing knobs. ONE list drives

@@ -1,9 +1,9 @@
 'use strict';
 /**
  * THE MINIMUM ORIGINATION FEE, END TO END over real HTTP against a real Postgres
- * (owner-directed 2026-09-04, db/695). What a pure test cannot see:
+ * (owner-directed 2026-09-04, db/696). What a pure test cannot see:
  *
- *   A. db/695 itself — two NULLABLE columns with NO DEFAULT, two CHECKs that bite, and a clean
+ *   A. db/696 itself — two NULLABLE columns with NO DEFAULT, two CHECKs that bite, and a clean
  *      idempotent replay. The no-DEFAULT half is the whole design: a stamped copy of the default
  *      is an explicit per-file choice that outlives every later change to the company number.
  *   B. The Pricing Admin Center — the owner's *"where we can increase and decrease the minimum
@@ -61,8 +61,8 @@ const SMALL = {
 
 (async () => {
   // Idempotent by construction, so applying it directly makes this suite self-sufficient on a
-  // database that predates db/695.
-  await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', '695_min_origination_fee.sql'), 'utf8'));
+  // database that predates db/696.
+  await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', '696_min_origination_fee.sql'), 'utf8'));
   const server = app.listen(0);
   await new Promise((r) => server.once('listening', r));
   const sfx = `${process.pid}-${Math.floor(Math.random() * 1e6)}`;
@@ -101,7 +101,7 @@ const SMALL = {
       return q && q.closingCosts ? (q.closingCosts.originationMinimum || null) : null;
     };
 
-    // ═══ A. db/695 ═══════════════════════════════════════════════════════════════════════════
+    // ═══ A. db/696 ═══════════════════════════════════════════════════════════════════════════
     const colInfo = await db.query(
       `SELECT table_name, is_nullable, column_default, numeric_precision, numeric_scale
          FROM information_schema.columns
@@ -126,7 +126,7 @@ const SMALL = {
     await db.query(`DELETE FROM company_pricing_settings WHERE is_current=false AND min_orig_fee IN (0,25000)`);
     // Replaying is a clean no-op — every migration re-runs on every boot.
     let replayed = true;
-    try { await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', '695_min_origination_fee.sql'), 'utf8')); }
+    try { await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', '696_min_origination_fee.sql'), 'utf8')); }
     catch (_) { replayed = false; }
     assert(replayed, 'A7 the migration replays cleanly on a second boot');
 
@@ -267,7 +267,7 @@ const SMALL = {
     assert(gAbad.amt && gAbad.amt.status === 'mismatch', `G5 …and a real disagreement on the dollars still bites (got ${gAbad.amt && gAbad.amt.status})`);
 
     /* AND NO EXISTING FILE MOVES. On a loan the floor never reached — which is every file that
-       exists today, and every quote stored before db/695 — the percentage is compared exactly as
+       exists today, and every quote stored before db/696 — the percentage is compared exactly as
        it is now and the amount row is the one that does not apply. */
     const appH = await mkApp();
     await call(server, 'POST', reg(appH), adminTok, { program: 'standard', overrides: { ...SMALL, minOrigFee: 0 } });

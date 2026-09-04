@@ -48,6 +48,11 @@ const ORIGIN_NOTE = {
   sheet: 'from the white-label sheet',
   custom: 'the name you gave it when you added it',
   unset: 'not named yet',
+  // THE TWO REASONS A ROW IS OFF THAT NOBODY CHOSE. They are different work —
+  // one needs a name, the other needs this switch — so they never share a
+  // sentence (owner-directed 2026-09-04: naming an investor must not switch it on).
+  unnamed: 'off until you name it',
+  awaiting_switch: 'named — switch it on when you are ready',
 };
 
 /** Is this row pinned — does it carry a setting of its own rather than the pre-fill? */

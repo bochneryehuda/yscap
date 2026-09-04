@@ -24,6 +24,10 @@ import {
 } from './investorFilter.js';
 import { perMonth, dscrFrom, housingPayment, ratioVerdict } from './dscrCalc.js';
 import { bracketFigures, bracketMissing, bandsWillFollow } from './bandRules.js';
+// WHERE THE BAND SEARCH HAS GOT TO — the reducer and the bar's own numbers, in a plain
+// `.js` module for the reason `bandRules.js` above gives: a rule CI cannot run is a rule
+// nobody is holding. See `bandProgress.js`.
+import { emptyProgress, progressReduce, progressView } from './bandProgress.js';
 // The form's own rules — which options exist, when a field appears, and the amount triangle. Also a
 // plain `.js` module, and for the same reason: CI can run it, and a rule CI cannot run is a rule
 // nobody is holding. See scenarioFields.js.
@@ -51,7 +55,7 @@ import { labelFor as engineLabelFor } from './engineLabel.js';
 // ⛔ THE BOARD STAYS WHERE IT IS WHEN SOMETHING OPENS — see `keepScroll.js`.
 // Every control that changes the height of the board is wrapped in this, so a
 // height change added later cannot re-introduce the jump.
-import { keepPlaceOnClick } from './keepScroll.js';
+import { keepPlaceOnClick, backToTop } from './keepScroll.js';
 import { NO_BREAKDOWN } from './sourceLabel.js';
 
 /**
@@ -648,7 +652,105 @@ export function InvestorStripRow({ roster, fullRoster, sel, onSel, groups, onApp
    convention (their results page stamps its time and offers modify-and-update in place). Nothing
    ever re-prices on its own; both doors still cost a vendor call and still fire only from a press.
    ────────────────────────────────────────────────────────────────────────── */
-export function SearchStrip({ chips, counts, collected, pricedAt, stale, busy, onEdit, onReprice, view, onView, dqLabel, compProps, invRow }) {
+/* ─────────────────────────────────────────────────────────────────────────────
+   THE BAND SEARCH, WHILE IT IS STILL RUNNING.
+
+   Owner-directed 2026-09-04: *"on top there should be a progress bar somewhere,
+   nicely designed on top, where the progress is bracketing all the brackets and all
+   the scenarios according to the brackets. You shouldn't feel like the system forgot
+   about you. It's just taking long, and meanwhile you see the original rates."*
+
+   ⛔ IT CHANGES NOTHING ABOUT THE BOARD, which is the other half of the instruction
+   (*"It should stay everything like it is now"*). The immediate answer is already on
+   screen and stays exactly as it is; this sits in the pinned strip above it and
+   reports. Every figure it draws comes from `bandProgress.progressView` — this
+   component holds no rule about what a band is, how many there are, or when the run
+   is finished.
+
+   ⛔ IN THE PINNED STRIP AND NOT ABOVE IT, deliberately. A bar that scrolls away is a
+   bar an officer reading the board cannot see, which is the whole complaint it
+   answers. The strip is already what stays with them.
+
+   ⛔ ELEVEN TICKS, NOT A SMOOTH BAR. The work really is eleven discrete searches, so
+   the bar is drawn as the eleven bands it is made of — a band lights as it is asked,
+   fills as it answers, and greys when the search stops widening before reaching it.
+   A person can see WHICH part of the ladder is still out, which a percentage cannot
+   say. The fill behind them is the same number, for reading at a glance.
+
+   ⛔ AND IT NEVER GOES BACKWARDS. That is `bandProgress`'s guarantee (a settled band
+   never re-opens, and the denominator is the fixed ladder), stated here because it is
+   the reason this design was chosen over the obvious one.
+   ────────────────────────────────────────────────────────────────────────── */
+const BAND_TONE = {
+  waiting:      { fill: 'rgba(20,27,34,.10)', title: 'not asked yet' },
+  searching:    { fill: GOLD,                 title: 'searching now' },
+  answered:     { fill: '#2F7F86',            title: 'searched — the rate sheet came back with rates' },
+  empty:        { fill: 'rgba(20,27,34,.28)', title: 'asked — this loan reaches no rate in this band' },
+  failed:       { fill: '#B0603A',            title: 'the rate sheet did not answer for this band' },
+  out_of_reach: { fill: 'rgba(20,27,34,.10)', title: 'out of this loan\u2019s reach' },
+};
+
+export function BandProgress({ progress }) {
+  const v = progressView(progress);
+  // Nothing has been reported at all — an older server, or the very first tick. The
+  // strip says nothing rather than drawing an empty bar that never moves.
+  if (!v || (v.settled === 0 && v.searching === 0)) return null;
+  return (
+    <div style={{
+      marginTop: 8, paddingTop: 8, borderTop: `1px solid ${GOLD}33`,
+      display: 'flex', gap: '6px 12px', alignItems: 'center', flexWrap: 'wrap',
+    }}>
+      <span style={{ fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
+        DSCR bands
+      </span>
+      {/* THE TICKS. `aria-hidden`, because the sentence beside them says the same
+          thing in words and a screen reader does not want eleven unlabelled boxes. */}
+      <span aria-hidden="true" style={{ display: 'inline-flex', gap: 3, alignItems: 'center' }}>
+        {v.chips.map((c) => {
+          const tone = BAND_TONE[c.state] || BAND_TONE.waiting;
+          return (
+            <span key={c.tier}
+              title={`${c.label} — ${tone.title}${c.seed ? ' (this deal\u2019s own band)' : ''}`}
+              style={{
+                width: 16, height: 8, borderRadius: 2, background: tone.fill,
+                outline: c.seed ? `1px solid ${GOLD_TEXT}` : 'none', outlineOffset: 1,
+                transition: 'background .25s ease',
+              }} />
+          );
+        })}
+      </span>
+      {/* ⛔ LIVE, SO IT IS HEARD AND NOT ONLY SEEN. `polite`, never `assertive`: this
+          updates a dozen times in a few seconds and must not interrupt anybody. */}
+      <span role="status" aria-live="polite"
+        style={{ fontSize: 11.5, color: SLATE, fontWeight: 600, ...NUM }}>
+        {v.line}
+      </span>
+      {v.failed > 0 && (
+        /* A band the VENDOR refused is not a band this loan cannot reach, and the two
+           must never share a sentence — the same rule the finished board applies. */
+        <span style={{ fontSize: 11.5, color: CAUTION }}>
+          {`${v.failed} ${v.failed === 1 ? 'band' : 'bands'} the rate sheet did not answer`}
+        </span>
+      )}
+      <span style={{ flex: 1, minWidth: 60 }} />
+      {/* The same number again, as one continuous fill — a glance, for somebody not
+          counting ticks. `progressbar` carries it for assistive technology. */}
+      <span role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={v.pct}
+        aria-label="DSCR band search"
+        style={{
+          width: 96, height: 4, borderRadius: 999, background: 'rgba(20,27,34,.10)',
+          overflow: 'hidden', display: 'inline-block',
+        }}>
+        <span style={{
+          display: 'block', height: '100%', width: `${v.pct}%`,
+          background: GOLD, transition: 'width .3s ease',
+        }} />
+      </span>
+    </div>
+  );
+}
+
+export function SearchStrip({ chips, counts, collected, pricedAt, stale, busy, onEdit, onReprice, view, onView, dqLabel, compProps, invRow, bandRow }) {
   return (
     <div className="lt-strip" style={{ padding: '10px 14px' }}>
       <div style={{ display: 'flex', gap: '6px 14px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -714,6 +816,11 @@ export function SearchStrip({ chips, counts, collected, pricedAt, stale, busy, o
           </button>
         </div>
       </div>
+
+      {/* WHERE THE BAND SEARCH HAS GOT TO — handed in rather than built here, so a board
+          whose engine has no bands (the combined one) simply passes nothing and the strip
+          is exactly what it was. */}
+      {bandRow}
 
     </div>
   );
@@ -1115,6 +1222,17 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
             <Row k="…the itemized lines add to" v={pts(summedR)} tone="bad"
               title="The lines shown do not add to the vendor's own total. Nothing is adjusted to hide it — both numbers are shown." />
           )}
+          {/* OUR OWN RULES, NAMED IN THE LADDER THEY MOVED. The overlay deliberately
+              leaves the sheet's own numbers alone and rides beside them — which is
+              what keeps this panel reconcilable — but nothing here READ the key it
+              stamps, so "Adjustments total" and "Adjusted points" simply disagreed
+              by the amount a house rule had moved, with no line accounting for it.
+              `houseAdjustPoints` is the PRICE move; points move the opposite way by
+              the same amount, so it is negated to read correctly in this column. */}
+          {Number.isFinite(Number(b.houseAdjustPoints)) && Number(b.houseAdjustPoints) !== 0 && (
+            <Row k="Our own rules" v={pts(-Number(b.houseAdjustPoints))} indent
+              title="Set in the Pricing Rule Center. The rate sheet's own figures above are untouched — this rides beside them." />
+          )}
           <Row k="Adjusted points" v={pts(b.adjustedPoints)} />
           <Row k="Final price" v={price(b.price)} strong
             title={b.priceDerivedFromPoints
@@ -1445,7 +1563,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
       {open && (
         <div style={{ padding: '0 14px 12px' }}>
           <div className="ltq-head" style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: `1px solid ${GOLD}44`, fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
-            <span style={{ flex: '2 1 200px' }}>Investor / programme</span>
+            <span style={{ flex: '2 1 200px' }}>Investor / program</span>
             {/* THE COLUMN NAMES ITS LENS (design research 2026-08-23: the comp switch silently
                 changes every figure on screen, so the price column says which position it is
                 showing — the sticky strip alone can be scrolled past a reader's attention). */}
@@ -1511,8 +1629,8 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                           textDecoration: 'underline', textUnderlineOffset: 3,
                         }}>{
                         /* ONE template string: react-dom puts `<!-- -->` between adjacent JSX
-                           expressions, so `{n} programmes` never exists as one readable run. */
-                        `${gOpen ? 'hide' : 'show'} all ${g.programCount} programmes ${gOpen ? '\u25BE' : '\u25B8'}`
+                           expressions, so `{n} programs` never exists as one readable run. */
+                        `${gOpen ? 'hide' : 'show'} all ${g.programCount} programs ${gOpen ? '\u25BE' : '\u25B8'}`
                       }</button>
                     )}
                     <div style={{ fontSize: 12, color: SLATE }}>
@@ -1700,7 +1818,7 @@ function IneligibleBoard({ d, loanAmount, initialOpen, comp }) {
             {open && (
               <div style={{ padding: '0 14px 12px' }}>
                 <div className="ltq-head" style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: `1px solid ${GOLD}44`, fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
-                  <span style={{ flex: '2 1 200px' }}>Lender / programme</span>
+                  <span style={{ flex: '2 1 200px' }}>Lender / program</span>
                   <span style={{ flex: '0 0 82px', textAlign: 'right' }}>Price</span>
                   <span style={{ flex: '0 0 82px', textAlign: 'right' }}>Points</span>
                   <span style={{ flex: '0 0 108px', textAlign: 'right' }}>Cost / credit</span>
@@ -1738,7 +1856,7 @@ function IneligibleBoard({ d, loanAmount, initialOpen, comp }) {
                                       font: 'inherit', fontSize: 12, fontWeight: 700, color: GOLD_TEXT,
                                       textDecoration: 'underline', textUnderlineOffset: 3,
                                     }}>
-                                    {gOpen ? 'hide' : `${g.programCount} programmes`}
+                                    {gOpen ? 'hide' : `${g.programCount} programs`}
                                   </button>
                                 )}
                                 <span style={{ display: 'block', fontSize: 12.5, color: SLATE, marginTop: 2 }}>
@@ -1760,7 +1878,7 @@ function IneligibleBoard({ d, loanAmount, initialOpen, comp }) {
                                   note="Lender Price's own rule, word for word. These are the lines that are NOT on the eligible side.">
                                   {q.reasons.length === 0 ? (
                                     <div style={{ fontSize: 12.5, color: MUTED }}>
-                                      Lender Price declined this programme without saying which test it failed.
+                                      Lender Price declined this program without saying which test it failed.
                                     </div>
                                   ) : q.reasons.map((r, ri) => (
                                     <div key={ri} style={{
@@ -1913,6 +2031,12 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
      (see `runBrackets` below) and lands a few seconds later, so the ordinary board
      is on screen at its usual speed and the banding fills in underneath. */
   const [brk, setBrk] = useState({ busy: false, res: null, err: null });
+  /* HOW FAR THROUGH THE BANDS IT IS — folded from what the server reports as each one
+     lands (owner-directed 2026-09-04: *"You shouldn't feel like the system forgot about
+     you"*). It is a REPORT and never a source of truth about the board: the bands
+     themselves come from `brk.res`, and this only says how much of the ladder has been
+     answered. So a stream that drops costs a progress bar and never a price. */
+  const [brkProg, setBrkProg] = useState(() => emptyProgress());
   const [view, setView] = useState('priced');
   /* WHICH RATE ROWS ARE OPEN — a SET, not a single key (owner-directed 2026-08-27:
      "Expand All, and every section should expand to its max"). One row was all the
@@ -2465,8 +2589,19 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
   async function runBrackets(scenario, figures) {
     if (bracketMissing(figures).length) { setBrk({ busy: false, res: null, err: null }); return; }
     setBrk({ busy: true, res: null, err: null });
+    setBrkProg(emptyProgress());
     try {
-      const r = await ltApi.dscrPriceBrackets(scenario, { figures });
+      /* ⛔ THE STREAMING DOOR, WHICH IS THE SAME WORK AND THE SAME ANSWER. The server runs
+         one function behind both; what this buys is that band 3 of 11 is on screen while
+         bands 4 and 5 are still out. `dscrPriceBracketsStream` falls back to the plain door
+         on a 404 — the deploy window — so a bundle ahead of its server keeps its board and
+         loses only the bar.
+
+         The reducer is applied through the FUNCTIONAL setter: reports arrive while this
+         `await` is suspended, so a value captured from this render would be stale by the
+         second one and bands would overwrite each other. */
+      const r = await ltApi.dscrPriceBracketsStream(scenario, { figures },
+        (ev) => setBrkProg((p) => progressReduce(p, ev)));
       if (!r || r.ok !== true) {
         setBrk({ busy: false, res: null, err: (r && r.message) || 'The band board did not come back.' });
         return;
@@ -2491,6 +2626,9 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
     // A new scenario means new bands. Leaving the last deal's banding on screen
     // beside a fresh board is one search's answer under another's question.
     setBrk({ busy: false, res: null, err: null });
+    // …and the same for how far through the LAST search's bands it got, or the new
+    // board would open under a bar describing a deal nobody is looking at any more.
+    setBrkProg(emptyProgress());
     setOpenRates(new Set()); setOpenQuote(null); setOpenLenders(new Set()); setView('priced');
     // A new scenario means a new searchKey, so the last scenario's refusals go with it. Leaving
     // them beside a fresh price would attribute one search's declines to another.
@@ -2533,6 +2671,23 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
       // the form open with the problem in front of the person who has to fix it.
       setPricedForm(f);
       setFormOpen(false);
+      /* ⛔ …AND THE ANSWER STARTS AT ITS TOP (owner-reported 2026-09-04: *"the search
+         finishes. You right away get to the bottom, to the highest rate, the 11.5 rate.
+         You need to stay at the top"*).
+
+         The line above is the cause: the Search button is at the FOOT of a long form, so
+         the press happens with the page scrolled down, and folding the form away takes
+         that height out from ABOVE the board while the browser keeps the scroll offset —
+         which now points into the end of a much shorter page. See `keepScroll.backToTop`.
+
+         ⛔ ON THE NEXT FRAME, because the fold has not happened yet: React has only been
+         TOLD to collapse the form when this handler returns. Scrolling before the layout
+         changes is a scroll the re-layout then undoes, which is the shape of the original
+         bug. Only on a success, and only here — the band board and the ineligible list
+         arrive later and must never move a page somebody is already reading. */
+      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(() => backToTop());
+      } else backToTop();
       /* ASK FOR THE INELIGIBLE SIDE STRAIGHT AWAY — the owner's "we need to add the ineligible into
          the workflow". A price is ALSO the kickoff for it upstream, so this is a POLL of a search
          that is already running, not a second search. */
@@ -2799,7 +2954,7 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
                  general rule keys on `p.lender`, which a LoanNEX programme does not carry, so
                  it would collapse that whole vendor into one bucket and UNDERCOUNT). What to
                  call such a figure, and whether the board should carry one, is the owner's. */
-              counts={`${stack.rateCount} ${stack.rateCount === 1 ? 'rate' : 'rates'} · ${stack.quoteCount} ${stack.quoteCount === 1 ? 'quote' : 'quotes'} · ${res.programCount != null ? res.programCount : '—'} programmes${engine.lenderCount ? ` · ${res.lenderCount != null ? res.lenderCount : '—'} lenders` : ''}`}
+              counts={`${stack.rateCount} ${stack.rateCount === 1 ? 'rate' : 'rates'} · ${stack.quoteCount} ${stack.quoteCount === 1 ? 'quote' : 'quotes'} · ${res.programCount != null ? res.programCount : '—'} programs${engine.lenderCount ? ` · ${res.lenderCount != null ? res.lenderCount : '—'} lenders` : ''}`}
               invRow={(
                 <InvestorStripRow
                   roster={res.investorRoster || []}
@@ -2809,6 +2964,10 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
                   hidden={filteredRes ? filteredRes.hidden : 0}
                 />
               )}
+              /* ⛔ ONLY WHILE IT IS RUNNING. Once the bands have landed the board itself
+                 carries the dividers and the summary line, and a finished bar beside them
+                 would be a second, staler account of the same thing. */
+              bandRow={brk.busy ? <BandProgress progress={brkProg} /> : null}
             />
             {/* ⛔ WHAT THE SERVER SAYS ABOUT THIS ANSWER — on BOTH boards, in one arrangement.
                 Until 2026-09-03 the general route computed every one of these inside
@@ -2971,7 +3130,7 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
                     {filteredRes && filteredRes.hidden > 0
                       ? `Your investor filter is hiding ${filteredRes.hidden === filteredRes.total
                         ? `every one of the ${filteredRes.total}`
-                        : `${filteredRes.hidden} of the ${filteredRes.total}`} programmes ${engine.sheetReturned} — none of the ticked investors priced this scenario. Press Show all investors above to see the whole board.`
+                        : `${filteredRes.hidden} of the ${filteredRes.total}`} programs ${engine.sheetReturned} — none of the ticked investors priced this scenario. Press Show all investors above to see the whole board.`
                       /* ⛔ AN EMPTY BOARD NAMES WHAT NARROWED IT. The rate-type / interest-only /
                          term answers are real search criteria at one program and a narrowing of the
                          other's own board, so a board they emptied must say so — otherwise the one

@@ -83,6 +83,8 @@ const investorLinks = require('../pricing/investor-links');
 // second list this route keeps for itself.
 const { whiteLabelOf } = require('../lenderprice/investor-programs');
 const quoteShape = require('../pricing/quote-shape');
+const houseOverlay = require('../pricing/rules/overlay');
+const rulesStore = require('../pricing/rules/store');
 const loannexHalf = require('../pricing/loannex-half');
 const breakdown = require('../pricing/breakdown');
 const nearTier = require('../pricing/near-tier');
@@ -501,6 +503,43 @@ async function priceBoth(scenario, opts = {}) {
     ...nxSearch,
   });
 
+  /* ── OUR OWN RULES, LAID OVER THIS BOARD TOO ───────────────────────────────
+     Owner-directed 2026-09-04: *"overlays on top of ALL the engines that we
+     have."* The rule centre is one centre and a rule may name which engine it
+     governs (`all` by default), so a licensing block written once refuses a loan
+     on both screens rather than on whichever one somebody remembered.
+
+     ONE READ PER SEARCH, and it never throws: an unreadable centre answers "no
+     rules" plus the reason, and this board prices exactly as it does today. With
+     no rules `apply` returns the array it was given, so a deployment where nobody
+     has written one is byte-for-byte unchanged. */
+  const houseLive = opts.houseRules !== undefined ? opts.houseRules : await rulesStore.liveRules();
+  const house = houseOverlay.apply(programs, {
+    rules: houseLive.rules || [],
+    scenario,
+    engine: 'combined',
+  });
+
+  /* ⛔ AND THE `?shape=options` ANSWER, WHICH IS THE SAME ENGINE'S OUTPUT IN A
+     DIFFERENT SHAPE. No screen asks for it today — it is an API shape — but a rule
+     centre described as *"overlays on top of ALL the engines that we have"* that
+     governed one shape of one engine's answer and not another would be a hole
+     nobody could see, and the day something reads it, a quote we refuse would come
+     back through it. `optionsOf` already reads a flat row's own `priceBuild`, so
+     the same overlay reads these unchanged.
+
+     It is a SEPARATE array off the same merged board, so it can never double-run
+     the pass above; the officer-facing REPORT stays that pass's, because it is the
+     board a person is looking at. */
+  if (options && Array.isArray(options.rows) && options.rows.length) {
+    const optHouse = houseOverlay.apply(options.rows, {
+      rules: houseLive.rules || [],
+      scenario,
+      engine: 'combined',
+    });
+    if (optHouse.ran) options = { ...options, rows: optHouse.programs, count: optHouse.programs.length };
+  }
+
   return {
     merged,
     /**
@@ -546,8 +585,16 @@ async function priceBoth(scenario, opts = {}) {
     // The general engine's own top-level keys, so the copied screen needs no
     // reshaping of its own. `investorRoster` / `investorsUnmapped` keep the
     // names those two carry there.
-    programs,
-    programCount: programs.length,
+    /* THE BOARD AS OUR OWN RULES ALLOW IT — never the raw one. Returning
+       `programs` here would have shown the officer every quote the rule centre
+       refused, on the one screen the overlay exists to govern. */
+    programs: house.programs,
+    /* COUNTED OFF THE BOARD BEING RETURNED, never the raw one. `programs` is a
+       const here and is the PRE-overlay array, so counting it printed a header
+       reading "2 programs" over a board carrying one — the number contradicting
+       the rows directly beneath it. The general board avoids this only because
+       its `programs` is a `let` the overlay reassigns. */
+    programCount: house.programs.length,
     investorRoster: merged.investors.map((e) => ({ key: e.key, investor: e.investor, whiteLabel: e.whiteLabel || null, programCount: e.programCount })),
     investorsUnmapped: merged.unmapped || [],
     // The side-by-side the owner asked for, computed from what the two boards
@@ -574,6 +621,19 @@ async function priceBoth(scenario, opts = {}) {
     // What is NOT on the board, and why — so a short board can always be
     // accounted for without asking anybody.
     hidden: merged.hidden || [],
+    /**
+     * WHAT OUR OWN RULE CENTRE DID — reported beside `hidden`, never folded into
+     * it: `hidden` is why a RATE SHEET has no row here, and this is why WE do not.
+     */
+    houseRules: {
+      ran: house.ran,
+      ineligible: house.ineligible,
+      blocked: house.blocked,
+      applied: house.applied,
+      problems: house.problems,
+      problem: houseLive.problem || null,
+      count: (houseLive.rules || []).length,
+    },
     /**
      * ⛔ IS THIS THE WHOLE BOARD? Lifted to the top level beside `hidden` and `settings` because
      * that is where the screen reads it, and because a fact this important must not be one level

@@ -230,7 +230,7 @@ const FS = require('fs'), PATH = require('path');
 const read = (rel) => FS.readFileSync(PATH.join(__dirname, '..', rel), 'utf8');
 const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1 ');
 
-t('F1 the per-file minimum has exactly ONE writer — which is what lets db/695 leave the economics-reopen trigger alone', () => {
+t('F1 the per-file minimum has exactly ONE writer — which is what lets db/696 leave the economics-reopen trigger alone', () => {
   let writers = 0;
   for (const f of ['src/routes/staff.js', 'src/routes/borrower.js', 'src/routes/tpo.js',
                    'src/lib/product-registration.js', 'src/lib/term-sheet-offer.js',
@@ -239,7 +239,7 @@ t('F1 the per-file minimum has exactly ONE writer — which is what lets db/695 
     writers += (src.match(/file_min_orig_fee\s*=/g) || []).length;
   }
   assert.strictEqual(writers, 1,
-    'db/695 declines to widen the economics-reopen trigger because this column can only be written '
+    'db/696 declines to widen the economics-reopen trigger because this column can only be written '
     + 'as part of a REGISTRATION. A second writer means a change to it can go stale against the '
     + 'registration that priced the file — widen the trigger, or route the new door through register.');
 });
@@ -251,7 +251,7 @@ t('F2 a BLANK box clears the sticky, which is what makes the owner\'s re-registr
     + 'must write NULL over any stale value, or a re-registered file stays locked in at yesterday\'s number');
   /* RE-POINTED 2026-09-04, not loosened. This pinned the literal `stickyMk(...)`, and the
      writer now goes through `stickyMinOrig`, which DELEGATES to it and additionally refuses a
-     value the column's CHECK would reject (db/695: 0..25000). The subject is unchanged — a
+     value the column's CHECK would reject (db/696: 0..25000). The subject is unchanged — a
      blank still writes NULL and a typed 0 still survives, because both come from `stickyMk`
      — so the guard asserts the DELEGATION rather than the helper's name, and gains the bound
      it did not know about. */
@@ -262,7 +262,7 @@ t('F2 a BLANK box clears the sticky, which is what makes the owner\'s re-registr
   assert.ok(/stickyMk\(/.test(helper[0]),
     'it delegates to stickyMk, which is what maps "" to NULL and keeps a typed 0 (the waiver)');
   assert.ok(/applicationColumnProblem\(\s*'file_min_orig_fee'/.test(helper[0]),
-    'and it asks the COLUMN before storing: db/695\'s CHECK is far narrower than numeric(12,2), '
+    'and it asks the COLUMN before storing: db/696\'s CHECK is far narrower than numeric(12,2), '
     + 'so an unbounded value is refused by Postgres inside the registration transaction and '
     + 'surfaces as a 500 that names nothing');
 });

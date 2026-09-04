@@ -225,7 +225,7 @@ function buildOurValues(app, quote, llcName) {
     note_rate: nz(a.rate_pct),
     origination_pct: (q.origPct === null || q.origPct === undefined) ? undefined : Number(q.origPct) * 100,
     /* The same fee as DOLLARS (field 454) — compared instead of the percentage on a file where the
-       program minimum bound (owner-directed 2026-09-04, db/695). `closingCosts.origination` has
+       program minimum bound (owner-directed 2026-09-04, db/696). `closingCosts.origination` has
        always been the dollars CHARGED, so this is the figure the borrower actually pays either way;
        which of the two rows is compared is decided in markNotApplicable. */
     origination_amount: (cc.origination === null || cc.origination === undefined) ? undefined : Number(cc.origination),
@@ -356,7 +356,7 @@ function markNotApplicable(fields, facts) {
     // never reach one. The row carries the flag compareField put on it.
     if (f.naOnDealShape) reason = map.notApplicableReason(f, facts);
     /* THE ORIGINATION FEE IS COMPARED AS A RATE OR AS AN AMOUNT, NEVER BOTH (owner-directed
-       2026-09-04, db/695: *"any time that you are hitting your minimum, instead of mapping to field
+       2026-09-04, db/696: *"any time that you are hitting your minimum, instead of mapping to field
        ID 388 Map it to 454"*). On a minimum-bound loan the STATED rate is not the rate charged, so
        comparing the percentage would false-mismatch every small file and hold its term sheet with
        no fix anybody could perform; on every other loan the amount row is the one with nothing
@@ -1270,7 +1270,7 @@ async function computeFindings(appId, dbc, opts) {
     /* Did the program minimum origination fee bind on THIS file? Read from the registered quote's
        own explain block — the same block every printed surface reads — so the sync panel can never
        disagree with the term sheet about which fee this loan carries. Absent on every quote the
-       floor never reached, and on every quote stored before db/695, which is what makes the switch
+       floor never reached, and on every quote stored before db/696, which is what makes the switch
        inert on the whole back book. */
     minOrigApplied: !!(quote && quote.quote && quote.quote.closingCosts
       && quote.quote.closingCosts.originationMinimum),

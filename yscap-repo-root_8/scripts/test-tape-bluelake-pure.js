@@ -150,7 +150,7 @@ ok(cellOf(loan, 'BA').value === '' && cellOf(loan, 'BB').value === '', 'Purchase
 ok(cellOf(loan, 'BD').value === '', 'Borrower Liquidity left blank (owner-directed)');
 ok(cellOf(loan, 'BC').value === 0.025 && cellOf(loan, 'BC').type === 'n', 'BC Total Points = origination fee % (from quote.origPct)');
 
-/* THE PROGRAM MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695). Column BC is a
+/* THE PROGRAM MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696). Column BC is a
    PERCENTAGE, so on a loan the floor binds on the stated rate is not what the borrower paid — the
    owner, asked directly: *"Send them a higher percentage, according to how much this is the real
    percentage for $2,500."* The effective figure comes from the quote's own explain block, never

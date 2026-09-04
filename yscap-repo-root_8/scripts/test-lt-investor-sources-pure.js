@@ -1075,9 +1075,25 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
     const key = unnamed[0].key;
     ok(st.roster({ [key]: { enabled: true } }).find((r) => r.key === key).enabled === true,
       'N5 somebody who deliberately turned an unnamed investor on keeps it on');
-    // The second half of the owner's sentence: naming it turns it back on by itself.
-    ok(st.roster({ [key]: { whiteLabel: 'Topazite' } }).find((r) => r.key === key).enabled === true,
-      'N6 naming an investor turns it back on with no second setting');
+    /* ⛔ NAMING IT DOES NOT SWITCH IT ON — owner-directed 2026-09-04, correcting the
+       first reading of the sentence above: *"once I put in a white label name into a new
+       program that populates on one of the pricers, it's going to turn on automatically.
+       That shouldn't happen. I can put in a white label name, and then I can turn it on
+       manually, not automatically."*
+
+       Asserted on the SAME investor N2 proved is off, so this pins the transition rather
+       than a property of some row: name it, and it is still off. */
+    const justNamed = st.roster({ [key]: { whiteLabel: 'Topazite' } }).find((r) => r.key === key);
+    ok(justNamed.whiteLabel === 'Topazite', 'N6 the name somebody typed is what the row is called');
+    ok(justNamed.enabled === false,
+      'N6a …and naming an investor never switches it on — that is a second, deliberate press');
+    ok(justNamed.enabledOrigin === 'awaiting_switch',
+      'N6b …with its OWN reason, so "go and name it" is not shown to somebody who just did');
+    ok(justNamed.prefill.enabled === false,
+      'N6c …and "use the pre-fill" cannot switch it on either');
+    // …and the deliberate press still works, on the very same row.
+    ok(st.roster({ [key]: { whiteLabel: 'Topazite', enabled: true } }).find((r) => r.key === key).enabled === true,
+      'N6d …while the press itself switches it on, which is the whole of what the officer does');
     // THE SETTINGS SCREEN IS THE OWNER'S LIST — with nothing sighted, exactly the named ones.
     const shown = rows.filter((r) => st.belongsOnSettingsList(r, {}));
     ok(shown.length === named.length && shown.every((r) => !!r.whiteLabel),

@@ -202,7 +202,7 @@ console.log('\nF. source guards');
 {
   const rec = stripComments(SRC('src/encompass/reconcile.js'));
   /* RE-POINTED 2026-09-04, never loosened. The facts moved into a named `naFacts` object when the
-     minimum-origination switch joined them (db/695) — this guard's SUBJECT is unchanged: that the
+     minimum-origination switch joined them (db/696) — this guard's SUBJECT is unchanged: that the
      refinance verdict comes from `deal-basis` asking about the FILE's own loan type, which is the
      ONE definition the frozen engine sizes on. */
   yes(/refinance:\s*dealBasis\.sizesOnAsIsValue\(row\.loan_type\)/.test(rec),

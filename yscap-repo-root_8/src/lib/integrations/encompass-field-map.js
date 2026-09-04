@@ -203,7 +203,7 @@ const REGISTRY = Object.freeze([
   // to compare" rather than a confidently-wrong 2%. The two candidates kept below are
   // harmless (absent on this tenant) and never carry the wrong GFE number.
   pull({ key: 'origination_pct', encompassFieldId: '388', loanPath: ['originationFeePercent', 'closingCost.originationFeePercentage'], type: 'percent', category: 'cost', compare: 'percent', our: 'quote:origination % (e.g. 1.25)', note: 'Origination fee % — field 388. Read authoritatively BY FIELD NUMBER (fieldReader → 1.000 = 1%), the same scale as our origPct*100. The GFE loanOriginationPercentage path is deliberately NOT a fallback — it is a different fee (points/adjusted origination) and reads 2 where field 388 is 1' }),
-  /* THE ORIGINATION FEE AS A FLAT DOLLAR AMOUNT — field 454 (owner-directed 2026-09-04, db/695:
+  /* THE ORIGINATION FEE AS A FLAT DOLLAR AMOUNT — field 454 (owner-directed 2026-09-04, db/696:
      *"Encompass has a different field, 454, which is the flat amount of the origination, so any
      time that you are hitting your minimum, instead of mapping to field ID 388 Map it to 454."*).
 

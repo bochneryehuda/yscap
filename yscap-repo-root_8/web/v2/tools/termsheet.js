@@ -45,7 +45,7 @@
   // and its cash-to-close / liquidity contribution are INERT and every retail
   // number is byte-identical.
   var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, markupSpeed: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, origSpeed: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [], markupTiers: null, brokerFeePct: 0, feasibilityFees: { groundUp: 1250, heavyRehab: 750 },
-    // The company-wide MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695) — the floor
+    // The company-wide MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696) — the floor
     // under our own origination on every program. Overlaid from /api/pricing-defaults below.
     minOrigFee: 2500,
     // Our own fee's two parts, the New York legal ladder and the optional New York settlement
@@ -718,7 +718,7 @@
     var initialAdvance = _sl.initialAdvance;
     var financedIRr = _sl.financedIR;
     var origPct = liveOrigPct();                          // manual basis on => the Manual knob (see liveOrigPct)
-    /* THE PROGRAM MINIMUM ORIGINATION FEE (db/695) floors this — see originationFee(). `origFee`
+    /* THE PROGRAM MINIMUM ORIGINATION FEE (db/696) floors this — see originationFee(). `origFee`
        keeps its exact meaning (the dollars charged), so `closing` below, cash to close and the
        liquidity to show inherit the floor by arithmetic and every reader of `d.origFee` is
        unchanged. Above the crossover the floor cannot bind and the sheet is byte-identical. */
@@ -823,7 +823,7 @@
     var initialAdvance = _g.initialAdvance;
     var financedIRr = _g.financedIR;
     var origPct = adminOrigPct("gold");
-    var origInfo = originationFee(totalLoan, origPct);    // the program minimum floors it (db/695)
+    var origInfo = originationFee(totalLoan, origPct);    // the program minimum floors it (db/696)
     var origFee = origInfo.amount;
     var rFrac = (R.noteRate || 0) / 12;
     var title = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(inp.state, totalLoan, inp.loanType) : { total: 0 };
@@ -913,7 +913,7 @@
     var initialAdvance = _sv.initialAdvance;
     var financedIRr = _sv.financedIR;
     var origPct = adminOrigPct("silver");
-    var origInfo = originationFee(totalLoan, origPct);    // the program minimum floors it (db/695)
+    var origInfo = originationFee(totalLoan, origPct);    // the program minimum floors it (db/696)
     var origFee = origInfo.amount;
     var rFrac = (R.noteRate || 0) / 12;
     var title = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(inp.state, totalLoan, inp.loanType) : { total: 0 };
@@ -1014,7 +1014,7 @@
     var initialAdvance = _sp.initialAdvance;
     var financedIRr = _sp.financedIR;
     var origPct = adminOrigPct("speed");
-    var origInfo = originationFee(totalLoan, origPct);    // the program minimum floors it (db/695)
+    var origInfo = originationFee(totalLoan, origPct);    // the program minimum floors it (db/696)
     var origFee = origInfo.amount;
     var rFrac = (R.noteRate || 0) / 12;
     var title = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(inp.state, totalLoan, inp.loanType) : { total: 0 };
@@ -1660,7 +1660,7 @@
   }
   function feasFeeAmount() { return Number(feasFee().amount) || 0; }
   /* ─────────────────────────────────────────────────────────────────────────────────────────
-     THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695) — the floor under our own
+     THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696) — the floor under our own
      origination on every program: *"a minimum origination fee of 2,500 dollars … if the loan
      amount is 100,000 it's going to be more than the origination set by percentage because no
      matter the percentage it's not going to get to 2500 and 2500 is the minimum."*
@@ -1864,7 +1864,7 @@
   function adminFeeAppr() { return adminNum("tsFeeAppr", CO.appraisal); }
   function adminTitle() { var e = el("tsFeeTitle"); var v = e ? parseFloat(String(e.value).replace(/,/g, "")) : NaN; if (isFinite(v) && v >= 0) return v; return CO.title != null ? CO.title : null; }  // per-file field, else company flat, else estimate
   function origPctStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + "%"; }
-  /* THE ORIGINATION ROW'S LABEL, ON EVERY SURFACE THAT PRINTS ONE (db/695). When the program
+  /* THE ORIGINATION ROW'S LABEL, ON EVERY SURFACE THAT PRINTS ONE (db/696). When the program
      minimum bound, the percentage shown is the EFFECTIVE one and the label says why — printing the
      STATED rate beside the minimum dollars makes the row contradict itself ("Origination (1.25%)"
      next to $2,500.00 on a $60,000 loan, where 1.25% is $750). One definition, so the panel, the
@@ -2010,7 +2010,7 @@
     // PRESERVE-IF-ABSENT, like programAvailability below: a payload that does not carry the key
     // must never silently drop the fee to nothing.
     if (d.feasibilityFees && typeof d.feasibilityFees === "object") CO.feasibilityFees = d.feasibilityFees;
-    /* The company-wide minimum origination fee (db/695). PRESERVE-IF-ABSENT for the same reason
+    /* The company-wide minimum origination fee (db/696). PRESERVE-IF-ABSENT for the same reason
        as the two above: a payload that does not carry the key must never silently drop the floor
        to nothing and start quoting small loans without it. */
     if (d.minOrigFee != null && isFinite(Number(d.minOrigFee))) CO.minOrigFee = Number(d.minOrigFee);
@@ -2357,7 +2357,7 @@
       setVal("tsYspGoldT1", "");   // blank = Gold top tier keeps its normal (0 / company-default) markup
       setVal("tsFeeUW", ""); setVal("tsFeeCredit", ""); setVal("tsFeeAppr", ""); setVal("tsFeeTitle", "");
       setVal("tsFeasFee", "");   // blank = the deal's own construction feasibility fee governs
-      setVal("tsMinOrigFee", "");   // blank = the company minimum origination fee governs (db/695)
+      setVal("tsMinOrigFee", "");   // blank = the company minimum origination fee governs (db/696)
       // blank = the government charges calculate themselves from the state, county,
       // units and loan. Clearing the zone must clear these too, or a "cleared" file
       // silently keeps a typed tax nobody can see any more.

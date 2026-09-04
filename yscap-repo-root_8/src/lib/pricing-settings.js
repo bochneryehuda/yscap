@@ -64,7 +64,7 @@ const SYSTEM_DEFAULTS = Object.freeze({
   // The owner's own numbers; `src/lib/feasibility-fee.js` is the ONE definition of what the fee
   // is, which deals attract it and what it is called — this file only stores and cleans it.
   feasibilityFees: { groundUp: 1250, heavyRehab: 750 },
-  /* THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695) — the floor under our own
+  /* THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696) — the floor under our own
      origination on EVERY RTL program. `src/lib/min-origination.js` is the ONE definition of the
      number, the resolution chain and the wording; this file only stores and reads it, exactly as
      it does the feasibility fees above.
@@ -116,8 +116,8 @@ function shape(row) {
     // Cleaned through feasibility-fee's own normalizer, so an unreadable stored value falls back
     // to the owner's number rather than silently making a real fee vanish from a term sheet.
     feasibilityFees: require('./feasibility-fee').cleanFeasibilityFees(row.feasibility_fees),
-    /* The company-wide minimum origination fee (db/695). A NULL column means "use the system
-       default" and NEVER a stored copy of it — that distinction is the whole design of db/695
+    /* The company-wide minimum origination fee (db/696). A NULL column means "use the system
+       default" and NEVER a stored copy of it — that distinction is the whole design of db/696
        (a stamped copy is an explicit choice that outlives every later change to the number).
        An unreadable or out-of-range value falls through to the system default rather than
        pricing a loan on it; `resolveMinFee` is the one place that judges a candidate, so the

@@ -299,7 +299,7 @@ export function readSnapshot(win) {
       tsCemaOn: chk('tsCemaOn'), tsFeeCema: moneyVal('tsFeeCema'),
       tsFeeAppr: moneyVal('tsFeeAppr'), tsFeeTitle: moneyVal('tsFeeTitle'),
       tsFeasFee: moneyVal('tsFeasFee'),
-      // The per-file minimum origination fee (owner-directed 2026-09-04, db/695) — blank means
+      // The per-file minimum origination fee (owner-directed 2026-09-04, db/696) — blank means
       // "use the company minimum", a typed 0 waives it.
       tsMinOrigFee: moneyVal('tsMinOrigFee'),
       /* GOVERNMENT CHARGES — the manual section (owner-directed 2026-08-23). Each
@@ -378,7 +378,7 @@ export function adminStateFromEngineInputs(inp) {
   { const e = document.getElementById('tsCemaOn'); if (e) e.checked = inp.nyCema === true; }
   put('tsFeeAppr', inp.appraisalFee); put('tsFeeTitle', inp.titleFee);
   put('tsFeasFee', inp.feasibilityFee);
-  put('tsMinOrigFee', inp.minOrigFee);   // restore an approved per-file minimum (db/695)
+  put('tsMinOrigFee', inp.minOrigFee);   // restore an approved per-file minimum (db/696)
   put('tsMLtv', inp.ovrAcqLTVPct); put('tsMArv', inp.ovrARLTVPct);
   put('tsMLtc', inp.ovrLTCPct); put('tsMRate', inp.ovrRatePct); put('tsMIr', inp.ovrIrMonths);
   put('tsOopRehab', inp.oopRehab);   // out-of-pocket rehab exception (owner-authorized 2026-07-31)

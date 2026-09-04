@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**971 objects**, and a database rebuilt from the Prisma
+**975 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 692 numbered migrations in `db/` (highest `db/695`) remain the only thing that builds this database.
+rebuild a database from them.** The 693 numbered migrations in `db/` (highest `db/696`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 412 |
-| Columns | 6620 |
+| Tables | 414 |
+| Columns | 6644 |
 | Triggers | 39 |
 | Functions | 144 |
-| CHECK constraints | 356 |
+| CHECK constraints | 359 |
 | Generated columns | 12 |
-| Partial indexes | 420 |
-| Primary keys | 412 |
+| Partial indexes | 421 |
+| Primary keys | 414 |
 | Foreign keys | 833 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1431 |
+| Indexes (all kinds) | 1437 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -237,7 +237,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (420)
+## Partial indexes (421)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -565,6 +565,7 @@ the live database.
 - **lt_ppe_rule_lookup_idx** on `lt_ppe_rule`
 - **lt_ppe_rule_suggestion_open_idx** on `lt_ppe_rule_suggestion`
 - **lt_pricer_scenarios_mine_idx** on `lt_pricer_scenarios`
+- **lt_pricing_rule_live_idx** on `lt_pricing_rule`
 - **lt_pricing_source_misses_open_idx** on `lt_pricing_source_misses`
 - **lt_reo_properties_enc_uk** on `lt_reo_properties`
 - **lt_report_definitions_shared_idx** on `lt_report_definitions`
@@ -660,7 +661,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (356)
+## CHECK constraints (359)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -929,6 +930,9 @@ the live database.
 - **lt_ppe_rule_origin_chk** on `lt_ppe_rule`
 - **lt_ppe_rule_source_chk** on `lt_ppe_rule`
 - **lt_ppe_rule_suggestion_status_chk** on `lt_ppe_rule_suggestion`
+- **lt_pricing_rule_engine_chk** on `lt_pricing_rule`
+- **lt_pricing_rule_event_action_chk** on `lt_pricing_rule_event`
+- **lt_pricing_rule_name_chk** on `lt_pricing_rule`
 - **lt_properties_flood_zone_source_chk** on `lt_properties`
 - **lt_report_definitions_visibility_check** on `lt_report_definitions`
 - **lt_term_sheet_created_by_chk** on `lt_term_sheet`
@@ -1929,7 +1933,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 412 primary keys and 1431 indexes is
+Every one of the 414 primary keys and 1437 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

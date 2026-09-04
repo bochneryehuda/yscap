@@ -711,7 +711,7 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
      out against a total rounded on its own, in the one table on the page whose
      whole job is to reconcile. Never move a row here back to money() on its own. */
   const feeRow = (label, amount) => { if (num(amount) > 0) feeRows.push([label, money2(amount)]); };
-  /* THE PROGRAM MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695). When the floor bound,
+  /* THE PROGRAM MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696). When the floor bound,
      the STATED rate is not the rate charged — printing it beside the minimum dollars makes the row
      contradict itself ("1.25% of the loan" next to $2,500.00 on a $60,000 loan). The wording comes
      from the ONE definition in `src/lib/min-origination.js`, so this email, the term sheet, the

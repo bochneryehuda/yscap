@@ -260,7 +260,7 @@ export function overridesFromSnapshot(snap, mode) {
     // Manual GOLD top-tier markup (item 15): a blank clears the sticky per-file
     // value (company/historic default governs); a value overrides Gold Tier 1.
     ...(f.tsYspGoldT1 === '' ? { markupGoldT1Pct: '' } : f.tsYspGoldT1 != null ? { markupGoldT1Pct: f.tsYspGoldT1 } : {}),
-    /* THE PER-FILE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695) sits OUT HERE with
+    /* THE PER-FILE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696) sits OUT HERE with
        the markups rather than inside `compact()` above, and that placement is the owner's own rule
        rather than a style choice: *"any file, even if it's already in the system, by the next
        registration, it should follow the rules of the new registration if it gets re-registered
@@ -563,7 +563,7 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
               appraisal sits BELOW it because it is paid outside closing, and folding
               it in would overstate what the borrower brings to the table. */}
           <Sec title="Closing costs" note="Everything charged at the closing table, then the appraisal, which is paid separately.">
-            {/* THE PROGRAM MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695). When the
+            {/* THE PROGRAM MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696). When the
                 floor bound, the percentage shown is the EFFECTIVE one and the row says why —
                 printing the stated rate beside the minimum dollars makes the row contradict itself
                 ("Origination (1.25%)" next to $2,500.00 on a $60,000 loan). Read from the quote's

@@ -485,6 +485,10 @@ function filterInterestOnly(options, want) {
  */
 const { EXPLAIN_LENDER_ID } = require('./investor-routing');
 const sealedPrice = require('./sealed-price');
+// The ONE definition of how a house rule moves a price build, so the explain
+// rebuild below re-applies exactly what the board applied. No cycle: nothing under
+// pricing/rules requires this module.
+const houseRules = require('./rules/overlay');
 
 function explainHandle(r, p, price, opts = {}) {
   if (!r || !r.priceHashKey) return null;
@@ -795,6 +799,50 @@ function optionFromRow(raw) {
 }
 
 /**
+ * PUT OUR OWN RULES BACK ON TOP OF THE HANDLE'S FIGURES.
+ *
+ * `handlePatch` re-establishes `price` and `adjustedPoints` from the rung handle,
+ * which is minted BEFORE `pricing/rules/overlay` runs — and that order is a real
+ * guard, not an accident: `evidenceCoversRate` judges the vendor's answer against
+ * this option's rate and lock, so the handle has to win them. But the row it is
+ * laid on may have been MOVED by a house rule, and `houseAdjustPoints` survives
+ * the lay-on while the two figures it moved do not.
+ *
+ * ⛔ SO THE PANEL DREW A LADDER THAT DID NOT ADD UP, on every LoanNEX row a rule
+ * had touched (Lender Price rows carry no `explain`, so they never took this
+ * path). Measured on a 0.5-point holdback: the board row read price 99.000 /
+ * adjusted points 1.000, and the rebuilt option read 99.500 / 0.500 while still
+ * carrying `houseAdjustPoints: -0.5` — so the breakdown showed "Our own rules
+ * +0.500" over a total of 0.500, and a Final price contradicting the row above
+ * it. Half of that predates the "Our own rules" line; the line is what made the
+ * arithmetic visible.
+ *
+ * The handle still wins the BASE — its own price and points become the anchors —
+ * and the house delta rides on top of them, so a re-quote is honoured rather than
+ * overwritten by the board's older figure. `movePriceBuild` is anchored, so this
+ * is IDEMPOTENT: `borrowerPaidPoints` came over already moved and shifts from its
+ * own `houseBorrowerPaidPoints` anchor rather than being moved a second time.
+ */
+function reapplyHouseMove(option) {
+  const pb = option && option.priceBuild;
+  if (!pb || typeof pb !== 'object') return option;
+  const net = Number(pb.houseAdjustPoints);
+  if (!Number.isFinite(net) || net === 0) return option;
+  const next = { ...pb };
+  /* ⛔ `numOrNull`, NEVER `Number.isFinite(Number(x))` — `handlePatch` writes these
+     as a number OR NULL, and `Number(null)` is 0, which is finite. Testing it that
+     way stamped `housePrice: 0` on a priceless handle, `movePriceBuild` anchored on
+     zero, and the panel's Final price came out as literally the house delta
+     (-0.500) instead of an em dash. That is the SAME `Number(null) === 0` class
+     this file's own commit fixed in `overlay.ordered()` — reintroduced two files
+     over, in the fix for it. Fixing a class in one place is not fixing the class:
+     grep for the shape before you call it closed. */
+  if (numOrNull(pb.price) !== null) next.housePrice = Number(pb.price);
+  if (numOrNull(pb.adjustedPoints) !== null) next.houseAdjustedPoints = Number(pb.adjustedPoints);
+  return { ...option, priceBuild: houseRules.movePriceBuild(next, net) };
+}
+
+/**
  * The option an explain is laid onto: the caller's own row where it sent one, under the values the
  * HANDLE establishes.
  *
@@ -809,7 +857,7 @@ function optionForExplain(quote = {}, row) {
   // The empty shape FIRST, so every key the layout reads exists whatever the row was missing; then
   // the row's own facts; then the handle's four values, which is the only patch — never the whole
   // empty option, whose nulls would wipe the row it was just laid on.
-  return deepMerge(deepMerge(emptyOption(), base), handlePatch(quote));
+  return reapplyHouseMove(deepMerge(deepMerge(emptyOption(), base), handlePatch(quote)));
 }
 
 module.exports = {

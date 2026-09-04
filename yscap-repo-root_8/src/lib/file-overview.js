@@ -153,7 +153,7 @@ async function buildFileOverview(appId, { audience = 'internal' } = {}, client =
   const origPct = quote && quote.origPct != null ? Number(quote.origPct) : null;
   const origDollars = quote && quote.origination != null ? Number(quote.origination) : null;
   /* WHEN THE PROGRAM MINIMUM BOUND, THE STATED RATE IS NOT THE RATE CHARGED (owner-directed
-     2026-09-04, db/695) — and this row prints the two side by side, so without the qualifier it
+     2026-09-04, db/696) — and this row prints the two side by side, so without the qualifier it
      reads as a contradiction: "1.25% · $2,500.00" on a $60,000 loan, where 1.25% is $750. The
      percentage shown becomes the EFFECTIVE one and the row says why, from the quote's own explain
      block rather than from a second decision here. A loan the floor never reaches is byte-identical

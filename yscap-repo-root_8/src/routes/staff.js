@@ -3380,7 +3380,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // sides — fix the application details (or the studio pick) and register
     // again. Unclassifiable values stay silent (never a guessed refusal).
     /* A TYPED MINIMUM ORIGINATION FEE MUST FIT ITS COLUMN, AND THE COLUMN DECIDES.
-       db/695's CHECK is 0..25000 — an OWNER-SET guard against a decimal slip — and it is far
+       db/696's CHECK is 0..25000 — an OWNER-SET guard against a decimal slip — and it is far
        narrower than numeric(12,2), so a plausible-looking 250000 would sail through every JS
        check and be REFUSED BY POSTGRES deep inside the registration transaction, surfacing as
        a 500 "server error" that names nothing. Refused HERE, before any work is done, in the
@@ -3768,18 +3768,18 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       if (Object.prototype.hasOwnProperty.call(overrides, 'feasibilityFee'))
         await client.query(`UPDATE applications SET file_feasibility_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.feasibilityFee)]);
       /* THE PER-FILE MINIMUM ORIGINATION FEE sticks the same way (owner-directed 2026-09-04,
-         db/695) — an APPROVED EXCEPTION on one file, never a copy of the company number. A blank
+         db/696) — an APPROVED EXCEPTION on one file, never a copy of the company number. A blank
          box writes NULL, which is what makes the owner's own rule true: *"any file, even if it's
          already in the system, by the next registration, it should follow the rules of the new
          registration if it gets re-registered again. Shouldn't be locked in where the fee was
          already locked in."* A typed 0 is a deliberate WAIVER of the minimum and is stored as 0.
 
          THIS IS THE ONLY WRITER OF THIS COLUMN, and that is load-bearing for the same reason as
-         the feasibility fee above: db/695 does not widen the economics-reopen trigger for it
+         the feasibility fee above: db/696 does not widen the economics-reopen trigger for it
          precisely because it can only be written as part of a REGISTRATION, so there is never a
          stale registration for the trigger to catch. Adding another door means widening that
          trigger — section F of `test-min-origination-pure.js` is what will notice. */
-      /* THE MINIMUM ORIGINATION FEE HAS A CHECK NARROWER THAN ITS TYPE (db/695: 0..25000),
+      /* THE MINIMUM ORIGINATION FEE HAS A CHECK NARROWER THAN ITS TYPE (db/696: 0..25000),
          so a number that fits numeric(12,2) can still be REFUSED BY POSTGRES — and this
          write sits inside the registration transaction, where a raised constraint becomes a
          500 "server error" on a registration that otherwise succeeded. That is the exact

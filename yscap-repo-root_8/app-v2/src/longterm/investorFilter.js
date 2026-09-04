@@ -92,7 +92,7 @@ export function overlaySummary(sel, hidden) {
   const n = sel.size;
   const h = Number.isFinite(hidden) ? hidden : 0;
   return `Showing ${n} ${n === 1 ? 'investor' : 'investors'} — display only`
-    + (h > 0 ? ` (${h} ${h === 1 ? 'programme' : 'programmes'} hidden; Lender Price was asked for everything)` : '');
+    + (h > 0 ? ` (${h} ${h === 1 ? 'program' : 'programs'} hidden; Lender Price was asked for everything)` : '');
 }
 
 /**

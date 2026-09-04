@@ -260,24 +260,65 @@ function settingFor(key, settings = {}, custom) {
      list, or even if it's populating on LoanPass, it should be automatically
      turned off till I go and I put in the white label name and I turn it on."*).
 
-     ⛔ IT IS A DEAD END OTHERWISE, WHICH IS THE INDEPENDENT REASON. A programme
+     ⛔ IT IS A DEAD END OTHERWISE, WHICH IS THE INDEPENDENT REASON. A program
      with no white label cannot go on a term sheet AT ALL — `termsheet/snapshot`
      refuses it by name (`program_not_named`) — so quoting one on the board offers
      an officer a price they can never issue, and the only way to find out is to
      collect it and be refused at the document.
 
+     ⛔ AND NAMING ONE DOES NOT TURN IT ON. Owner-directed 2026-09-04, correcting
+     the first reading of the sentence above: *"once I put in a white label name
+     into a new program that populates on one of the pricers, it's going to turn on
+     automatically. That shouldn't happen. I can put in a white label name, and then
+     I can turn it on manually, not automatically."*
+
+     The first cut read "till I put in the white label name and I turn it on" as one
+     act, so typing a name flipped the switch by itself — and an investor nobody had
+     decided to price with went live on the board the moment somebody gave it a
+     client-safe name. Naming and switching on are TWO acts now, in that order, and
+     only the second one prices anything.
+
+     ⛔ THE TEST IS THE RECORDED NAME, NOT THE EFFECTIVE ONE, AND THAT IS THE WHOLE
+     FIX. `wl` is the sheet's name with the row's own typed setting laid over it, so
+     keying the default on it is what made typing a name mean "switch this on".
+     `wlSheet` is what we already KNEW this investor was called — the owner's own
+     white-label sheet, or the name a hand-added investor was created with — so a
+     row that has always been named stays on exactly as before, and a row somebody
+     names TODAY waits for the switch. `prefill.enabled` has keyed on `wlSheet`
+     since it was written, for this same reason; the row and its own pre-fill simply
+     disagreed, which is what an officer was seeing.
+
      ⛔ A SAVED ANSWER STILL WINS, EITHER WAY. Somebody who deliberately turned an
      unnamed investor on keeps it on: this is the DEFAULT for a row nobody has
-     answered, never an override of a decision. Naming the investor turns the
-     default back on by itself, which is the second half of the owner's sentence.
+     answered, never an override of a decision.
 
-     ⛔ AND IT IS SAID OUT LOUD. `enabledOrigin: 'unnamed'` is its own reason, so the
-     settings row can tell "off because the owner said so" from "off because nobody
-     has named it yet" — two different pieces of work for the same reader. */
+     ⛔ AND EACH REASON IS SAID OUT LOUD, because they are three different pieces of
+     work for the same reader: `owner_directed` (off because the owner said so),
+     `unnamed` (off because it has no client-safe name at all — go and name it), and
+     `awaiting_switch` (off because it is named and nobody has switched it on — the
+     one press away from pricing). A single "off" covering all three sends two of
+     those readers to the wrong control. */
   const unnamed = !wl;
-  const enabled = saved.enabled !== undefined ? saved.enabled : !(disabledNote || unnamed);
+  /* THE ONE THING THAT PUTS A ROW ON WITH NOBODY PRESSING ANYTHING: the owner's own
+     white-label sheet. Everything else waits for the switch.
+
+     ⛔ A HAND-ADDED INVESTOR IS NOT ON THE SHEET, and that is why `isCustom` is here
+     rather than `wlSheet` alone. `whiteLabelOf` answers a hand-added investor with the
+     name it was CREATED with, so keying on it would put a brand-new investor straight
+     onto the board the moment somebody added one — while the screen that adds them
+     promises the opposite in as many words: *"It joins the list switched off; name it,
+     link its spellings below, and switch it on when you are ready."* The screen was
+     right and the resolver was not. */
+  const onTheSheet = !isCustom && !!wlSheet;
+  // Named, and not by the sheet — typed into the settings box today, or given when the
+  // investor was added by hand. It is a name, so `unnamed` is false and the row is no
+  // longer a dead end; it is not a decision to price with this investor, so it is off.
+  const awaitingSwitch = !unnamed && !onTheSheet;
+  const enabled = saved.enabled !== undefined ? saved.enabled
+    : !(disabledNote || unnamed || awaitingSwitch);
   const enabledOrigin = saved.enabled !== undefined ? 'setting'
-    : (disabledNote ? 'owner_directed' : (unnamed ? 'unnamed' : 'default'));
+    : (disabledNote ? 'owner_directed'
+      : (unnamed ? 'unnamed' : (awaitingSwitch ? 'awaiting_switch' : 'default')));
 
   return {
     key, label,
@@ -307,11 +348,14 @@ function settingFor(key, settings = {}, custom) {
     // what the row is about to become.
     prefill: {
       source: OWNER_SOURCE[key] || DEFAULT_SOURCE,
-      /* THE SAME RULE the row itself starts from, or "use the pre-fill" would turn
-         an unnamed investor back on — a control that undoes the standing rule while
-         claiming to restore it. `wlSheet` and not `wl`: the pre-fill describes the
-         row with NO setting of its own, so it must not read the setting's name. */
-      enabled: !(OWNER_DISABLED[key] || !wlSheet),
+      /* THE SAME RULE the row itself starts from, or "use the pre-fill" would turn an
+         investor back on that nobody has switched on — a control that undoes the
+         standing rule while claiming to restore it. `onTheSheet` and not `wl`: the
+         pre-fill describes the row with NO setting of its own, so it must not read the
+         setting's name; and it is the SAME expression the row uses, so the two can
+         never disagree about what "no setting of my own" answers. They did, and that
+         disagreement is what an officer saw as a name switching an investor on. */
+      enabled: !(OWNER_DISABLED[key] || !onTheSheet),
       whiteLabel: wlSheet || null,
       // No investor carries an extra unless somebody puts one there — the
       // owner's rule is one standing holdback for the feed, and an extra is a

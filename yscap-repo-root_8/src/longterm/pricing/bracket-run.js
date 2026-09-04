@@ -86,6 +86,22 @@ async function mapLimited(items, limit, fn) {
  * must not throw away the ones that worked, and it must not be reported as a
  * bracket with no rates — "the vendor did not answer" and "this loan reaches no
  * rate here" are different facts and only one of them is about the loan.
+ *
+ * ⛔ AND IT SAYS WHERE IT IS WHILE IT RUNS (`opts.onProgress`, owner-directed
+ * 2026-09-04: *"on top there should be a progress bar somewhere, nicely designed
+ * … You shouldn't feel like the system forgot about you"*).
+ *
+ * The board this fills in lands SECONDS after the immediate one — a dozen vendor
+ * searches, run three at a time — and until now the screen had one sentence and no
+ * way to tell "still working" from "quietly gave up". So each committed bracket and
+ * each answer is REPORTED as it happens.
+ *
+ * ⛔ IT IS A REPORT, NEVER A RETURN PATH. `onProgress` is optional, is called inside
+ * a try/catch, and nothing in this loop reads what it returns — a caller whose
+ * listener throws (a closed HTTP response, above all) must not lose the board that
+ * is already half-priced. The answer is exactly the same object with or without it,
+ * which is what lets the plain JSON door and the streaming door share this function
+ * rather than growing a second loop.
  */
 async function priceByBracket(figures, runSearch, opts = {}) {
   const f = board.readFigures(figures);
@@ -98,6 +114,13 @@ async function priceByBracket(figures, runSearch, opts = {}) {
   }
   const maxRounds = Number.isInteger(opts.rounds) && opts.rounds > 0 ? opts.rounds : board.MAX_ROUNDS;
   const concurrency = Number.isInteger(opts.concurrency) && opts.concurrency > 0 ? opts.concurrency : CONCURRENCY;
+  /* WHERE THE RUN HAS GOT TO — reported, never returned through. A listener that
+     throws is the caller's problem and must never cost a bracket that has already
+     been paid for with a vendor call. */
+  const say = (event) => {
+    if (typeof opts.onProgress !== 'function') return;
+    try { opts.onProgress(event); } catch (_) { /* a broken listener never costs a board */ }
+  };
 
   const runs = [];
   const failures = [];
@@ -139,6 +162,18 @@ async function priceByBracket(figures, runSearch, opts = {}) {
     };
   }
 
+  /* THE WHOLE LADDER IS THE DENOMINATOR, AND IT IS FIXED AT ELEVEN.
+
+     ⛔ THE HONEST BAR HAS A DENOMINATOR THAT CANNOT MOVE. The obvious one — bands
+     committed so far — GROWS as the frontier widens, so a bar built on it would slide
+     backwards every time the loop discovered another band, which reads as work being
+     undone. There are exactly eleven DSCR bands and each is priced at most once, so
+     "how many of the eleven have been settled" is a number that only ever goes up and
+     is true at every moment. A band that the loop never reaches is settled too — as
+     out of this loan's reach — which is what lets the bar finish rather than stopping
+     part-filled on a deal that only spans three bands. */
+  say({ phase: 'start', totalBands: board.MAX_BRACKETS, seedTier });
+
   for (let round = 0; round < maxRounds; round += 1) {
     const frontier = board.bracketFrontier(f, seenQuotes, [...priced], { reach: 1, seedTier });
     if (!frontier.length) break;
@@ -148,10 +183,28 @@ async function priceByBracket(figures, runSearch, opts = {}) {
     // A bracket whose search ratio could not be placed is still marked priced, or
     // the frontier would offer it again every round and the loop would not drain.
     for (const tier of frontier) priced.add(tier);
+    // The bands this round has COMMITTED to asking about, said before the vendor is
+    // called — so the screen can show them as in flight rather than as nothing.
+    say({ phase: 'round', round, tiers: plans.map((p) => p.tier), settled: priced.size,
+      totalBands: board.MAX_BRACKETS });
     if (!plans.length) break;
 
     const results = await mapLimited(plans, concurrency, async (p) => {
       const r = await runSearch(p.sentRatio);
+      /* SAID THE MOMENT THIS ONE ANSWERS, not when the round does. The round runs
+         three searches at a time and a round can be four wide, so reporting at the
+         round boundary would hold two finished bands back behind a third. */
+      say({
+        phase: 'bracket',
+        tier: p.tier,
+        sentRatio: p.sentRatio,
+        ok: !!(r && r.ok === true),
+        // How many rungs this band's own search produced, so a band that answered
+        // with nothing is visibly different from one that failed.
+        rates: (r && r.ok === true) ? quotesFrom(r.parsed).length : 0,
+        settled: priced.size,
+        totalBands: board.MAX_BRACKETS,
+      });
       return { plan: p, r };
     });
     let gained = 0;
@@ -174,9 +227,25 @@ async function priceByBracket(figures, runSearch, opts = {}) {
   }
 
   const built = board.buildBoard(f, runs);
+  /* THE RUN IS OVER, so every band the loop never reached is settled as out of this
+     loan's reach — which is what completes the bar. Sent BEFORE the answer so a
+     screen that only reads progress events still sees the run finish. */
+  say({
+    phase: 'finished',
+    searched: [...priced],
+    priced: (built.brackets || []).map((b) => b.tier).filter((t) => t != null),
+    failed: failures.map((x) => x.tier),
+    settled: board.MAX_BRACKETS,
+    totalBands: board.MAX_BRACKETS,
+  });
   return {
     ok: true,
     figures: f,
+    /* WHICH BANDS THIS RUN ACTUALLY ASKED ABOUT — the same set the progress events
+       walked, on the answer, so a caller that missed the events (the plain JSON door,
+       or a stream that dropped) can still say how much of the ladder was covered. */
+    searchedBrackets: [...priced],
+    totalBands: board.MAX_BRACKETS,
     ...built,
     // Named so a reader can tell "we asked and this loan reaches nothing here"
     // from "we could not ask" — never one silence covering both.

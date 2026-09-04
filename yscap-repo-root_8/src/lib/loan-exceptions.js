@@ -103,7 +103,7 @@ const PRICING_EXCEPTION_REASONS = Object.freeze({
   experience_tier:  'Price off a higher experience tier than verified',
   fico_liquidity:   'FICO / liquidity outside the program guideline',
   program_fit:      'Deal shape the program doesn’t cover (city, exit, budget, term…)',
-  /* THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695: "You need to add to the general
+  /* THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696: "You need to add to the general
      exception pad an exception for the minimum and all the exception routes should have an added
      option to make exceptions for the minimum fee").
 

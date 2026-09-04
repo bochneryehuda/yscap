@@ -81,7 +81,7 @@ const DEFAULTED_OVERRIDE_KEYS = Object.freeze({
      compare against; see `legalFee` in ENGAGED_OVERRIDE_KEYS. */
   underwritingFee: { label: 'Underwriting & processing fee',           unit: 'money', revenueUp: true },
   creditFee:     { label: 'Credit-report fee',                         unit: 'money', revenueUp: true },
-  /* THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695) — the floor under our own
+  /* THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696) — the floor under our own
      origination, typed on ONE file as an approved exception ("You need to add to the general
      exception pad an exception for the minimum and all the exception routes should have an added
      option to make exceptions for the minimum fee").

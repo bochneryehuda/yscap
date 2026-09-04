@@ -123,7 +123,7 @@ rule.
 ```
 per-file override  minOrigFee            (typed in the studio's admin zone, approval-routed)
       ↓ blank
-company default    min_orig_fee          (db/695 on company_pricing_settings, Pricing Admin Center)
+company default    min_orig_fee          (db/696 on company_pricing_settings, Pricing Admin Center)
       ↓ unset
 system default     MIN_ORIGINATION_FEE = 2500
 ```
@@ -295,7 +295,7 @@ Plus, outside the roster's nine:
 - **`src/lib/pricing-overrides.js`** — the `minOrigFee` key (D5), its label, and the
   `sanitizeStaffOverrides` allowlist. **Never** the borrower's `borrowerPricingOverrides` allowlist,
   and never a TPO broker's.
-- **`db/695`** — `company_pricing_settings.min_orig_fee` + `applications.file_min_orig_fee`
+- **`db/696`** — `company_pricing_settings.min_orig_fee` + `applications.file_min_orig_fee`
   (the sticky per-file value, written only by a registration, so — per db/609 and db/632 — the
   economics-reopen trigger is deliberately **not** widened; a source guard enforces the
   single-writer claim).
@@ -411,7 +411,7 @@ and the staff panel, where the reader is an underwriter.
 
 1. `src/lib/min-origination.js` + `scripts/test-min-origination-pure.js` (the rule, every boundary,
    the wording, and the "no minimum on an unsized loan" case).
-2. `db/695` + `pricing-settings` + `pricing-overrides` + the `pricing.js` line, with an
+2. `db/696` + `pricing-settings` + `pricing-overrides` + the `pricing.js` line, with an
    **equivalence proof**: with the minimum neutralised, a priced battery is byte-identical; with it
    on, only the fee, the closing total, the cash to close and the liquidity move, each by exactly
    the shortfall.
@@ -484,7 +484,7 @@ The owner's distinction is the whole design, and it is enforced in **four** plac
 
 | Layer | What makes it a pre-fill |
 | --- | --- |
-| `db/695` | Both columns are **nullable with NO DEFAULT**. A `DEFAULT 2500` would stamp the number onto every row at insert, and a stamped value is an explicit per-file override that outlives every later change to the company number — the 2026-08-20 defect reproduced in the database. |
+| `db/696` | Both columns are **nullable with NO DEFAULT**. A `DEFAULT 2500` would stamp the number onto every row at insert, and a stamped value is an explicit per-file override that outlives every later change to the company number — the 2026-08-20 defect reproduced in the database. |
 | The studio | The company number is a **placeholder**, never a painted `value` (`seedAdminDefaults` sets the attribute, not `.value`). |
 | `pricing-overrides` | `minOrigFee` is a **DEFAULTED** key, so `normalizeCompanyDefaultKnobs` maps an exact restatement of the company number back to `''`. |
 | `buildInputs` | An explicit `''` **deletes** the key rather than skipping it (§9.5). |

@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/695 — the minimum origination fee ($2,500), per company and per file
+-- db/696 — the minimum origination fee ($2,500), per company and per file
 --
 -- WHAT THIS CHANGES, AND WHY. Owner-directed 2026-09-04: every RTL program —
 -- Standard, Gold, Silver, Speed and Manual — now charges a MINIMUM origination

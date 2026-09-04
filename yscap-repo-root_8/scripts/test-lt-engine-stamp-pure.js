@@ -232,15 +232,59 @@ ok(engineLabel.ENGINE_KEYS.length === 2, 'A9 the registry carries exactly the tw
   ok(/behavior: 'auto'/.test(keep), 'G1 the correction is instant — a smooth one is itself a slide');
   ok(/requestAnimationFrame/.test(keep), 'G2 it restores after the browser has laid the change out');
   const src = strip('app-v2/src/longterm/LtPricer.jsx');
+  /* ── A FINISHED SEARCH STARTS AT THE TOP OF ITS OWN ANSWER ───────────────────
+     Owner-reported 2026-09-04: *"You search this scenario, and the search finishes. You
+     right away get to the bottom, to the highest rate, the 11.5 rate. You need to stay at
+     the top."*
+
+     ⛔ THE CAUSE IS THE FOLD, so the guard is tied to the fold. `setFormOpen(false)` takes
+     a long form out from ABOVE the board while the browser keeps the scroll offset, and
+     that offset then points into the end of a much shorter page. A guard that only checked
+     "backToTop is imported" would pass on a version that never calls it, and one that only
+     checked "it is called somewhere" would pass on a call in the wrong handler. */
+  {
+    const kb = fs.readFileSync(path.join(ROOT, 'app-v2/src/longterm/keepScroll.js'), 'utf8');
+    ok(/export function backToTop/.test(kb),
+      'G9 the go-to-the-top move is a named, importable function — not two lines inside a handler CI cannot run');
+    ok(/w\.scrollTo\(0, 0\)/.test(kb),
+      'G9a …with the two-argument fallback, so an older browser is moved rather than silently left');
+    ok(/backToTop/.test(src) && /import \{ keepPlaceOnClick, backToTop \}/.test(src),
+      'G10 the board imports it from the one module that owns this screen\'s scrolling');
+    /* THE CALL IS IN THE SUCCESS PATH, RIGHT AFTER THE FOLD — measured on the source, by
+       distance, because "somewhere in the file" is exactly what would let it drift onto a
+       refusal path or onto the band board that lands later. */
+    const fold = src.indexOf('setFormOpen(false);');
+    const call = src.indexOf('backToTop()', fold);
+    ok(fold > 0 && call > fold && (call - fold) < 400,
+      'G10a …and it runs in the success path immediately after the form is folded away, which is what moved the page');
+    ok(/requestAnimationFrame\(\(\) => backToTop\(\)\)/.test(src),
+      'G10b …on the NEXT frame, because the fold has not been laid out when the handler returns');
+    // The band board and the ineligible list arrive seconds later; either one scrolling the
+    // page would yank a board somebody is already reading.
+    const calls = [...src.matchAll(/backToTop\(\)/g)].map((m) => m.index);
+    ok(calls.length === 2 && calls.every((i) => i > fold && (i - fold) < 400),
+      `G10c …and BOTH calls are that one pair (the frame and its fallback) — nothing else on this screen moves the page (${calls.length} found)`);
+  }
   const wired = (src.match(/keepPlaceOnClick\(e,/g) || []).length;
   ok(wired === 4, 'G3 every open/close control on the board is anchored (found ' + wired + ' of 4)');
   ok(!/onClick=\{\(\) => onOpenQuote\(/.test(src), 'G4 no Details button toggles without the anchor');
   const ts = strip('app-v2/src/longterm/TermSheetPanel.jsx');
   ok(/keepPlaceOnClick\(e,/.test(ts), 'G5 the comparison button is anchored too');
-  ok(/Added to the comparison/.test(ts) && /Taken out of the comparison/.test(ts),
+  ok(/Added to comparison/.test(ts) && /Removed from comparison/.test(ts),
     'G6 the comparison press says what it did, beside the control that did it');
   ok(/wasBusy\.current && !busy/.test(ts),
     'G7 it says so only once the cart has answered — never on the click');
+  /* ⛔ AND IT DESCRIBES THE PRESS, NOT THE LIST (owner-reported 2026-09-04: every Add
+     announced itself as "Taken out of the comparison"). The direction is captured at the
+     CLICK, from the state the click acted on; reading the membership at the moment the
+     press finishes asks a different question and gets the pre-add answer. So the witness
+     may never key on `on`, and the effect may never depend on it. */
+  ok(/sending\.current = on \? 'remove' : 'add'/.test(ts),
+    'G8 the direction is recorded at the click, off the state the click acted on');
+  ok(/sending\.current === 'remove' \? 'Removed from comparison'/.test(ts),
+    'G8a …and the sentence is chosen from THAT, never from the membership list');
+  ok(/\}, \[busy\]\);/.test(ts),
+    'G8b …so the witness no longer re-runs on a cart reload, which is what mis-fired it');
 }
 
 /* ── the tally ───────────────────────────────────────────────────────────── */

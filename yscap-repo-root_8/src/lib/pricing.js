@@ -82,7 +82,7 @@ const { parseAddress } = require('./address');   // city recovery from composed/
 // can never make normalize() treat as a purchase a deal the engine sized as a refi.
 const { sizesOnAsIsValue } = require('./deal-basis');
 /* The ONE definition of the minimum origination fee — the number, the resolution chain, the
-   rounding order and the wording (owner-directed 2026-09-04, db/695). PURE, so requiring it at
+   rounding order and the wording (owner-directed 2026-09-04, db/696). PURE, so requiring it at
    the top costs nothing and every surface reads the same rule. */
 const minOrig = require('./min-origination');
 
@@ -317,7 +317,7 @@ function buildInputs(app, experience, overrides) {
        as 0, which `feasibilityFeeFor` reads as "no fee on this file" — dropping it here instead
        would silently put the fee back on the next quote. */
     ...(app.file_feasibility_fee != null ? { feasibilityFee: num(app.file_feasibility_fee) } : {}),
-    /* Sticky per-file MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695) — an APPROVED
+    /* Sticky per-file MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696) — an APPROVED
        EXCEPTION and nothing else. NULL/absent is the normal state of every file and means "follow
        the company minimum", which is what makes a re-registered file pick up today's number
        instead of the one in force the day it first registered (the owner's own rule). A stored 0
@@ -411,7 +411,7 @@ function buildInputs(app, experience, overrides) {
     'markupGoldT1Pct',
     'origStdPct', 'origGoldPct', 'origSilverPct', 'origSpeedPct', 'origManualPct',
     'lenderFee', 'creditFee', 'appraisalFee', 'titleFee', 'feasibilityFee',
-    /* The per-file MINIMUM ORIGINATION FEE (db/695). A BLANK box is dropped by the loop below —
+    /* The per-file MINIMUM ORIGINATION FEE (db/696). A BLANK box is dropped by the loop below —
        the studio's explicit-blank contract, meaning "use the company minimum" — and a typed 0
        survives and WAIVES the minimum on this file. */
     'minOrigFee',
@@ -483,7 +483,7 @@ function buildInputs(app, experience, overrides) {
     if (overrides.settlementFee === '') delete out.settlementFee;
     if (overrides.cemaFee === '') delete out.cemaFee;
     /* THE MINIMUM ORIGINATION FEE needs the same explicit delete, and it is the owner's own rule
-       that makes it load-bearing (db/695): *"any file, even if it's already in the system, by the
+       that makes it load-bearing (db/696): *"any file, even if it's already in the system, by the
        next registration, it should follow the rules of the new registration if it gets
        re-registered again. Shouldn't be locked in where the fee was already locked in."* MEASURED
        before this line existed: a file registered with an approved WAIVER (a typed 0) and then
@@ -890,7 +890,7 @@ function normalize(program, input, ev, ladder, opts) {
   const cemaFee = cema ? num(cema.amount) : 0;
   const creditFee = numberOverride(input, 'creditFee', cd.creditFee != null ? cd.creditFee : FEES.credit);
   const appraisalFee = numberOverride(input, 'appraisalFee', cd.appraisalFee != null ? cd.appraisalFee : FEES.appraisal);
-  /* THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695) — the ONE line this change
+  /* THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/696) — the ONE line this change
      touches, on EVERY RTL program: *"we're going to enforce right now a minimum origination fee of
      2,500 dollars … if the loan amount is 100,000 it's going to be more than the origination set by
      percentage because no matter the percentage it's not going to get to 2500 and 2500 is the
@@ -1515,7 +1515,7 @@ function econVersionFor(app) {
     app.rehab_type, app.sqft_pre, app.sqft_post,
     (app.property_address && app.property_address.state) || '',
     app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct, app.file_markup_speed_pct, app.file_feasibility_fee,
-    app.file_min_orig_fee,   // the per-file minimum origination fee (db/695) — a fingerprinted sibling of the feasibility fee
+    app.file_min_orig_fee,   // the per-file minimum origination fee (db/696) — a fingerprinted sibling of the feasibility fee
     // Our fee's two parts + the optional New York settlement fee — fingerprinted siblings of
     // the feasibility fee, so a change to one re-quotes rather than serving a stale answer.
     app.file_underwriting_fee, app.file_legal_fee, app.file_settlement_fee, app.file_cema_fee, app.ny_cema,

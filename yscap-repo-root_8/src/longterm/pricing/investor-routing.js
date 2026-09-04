@@ -94,15 +94,22 @@ function applyRouting(merged, opts = {}) {
         // which is the stated plan. Two shapes for one question is how that day arrives unnoticed.
         whiteLabel: row.whiteLabel, whiteLabelMissing: row.whiteLabelMissing,
         /* ⛔ THE REASON MUST NAME AN ACTION THE READER CAN TAKE. 'Switched off in the
-           investor settings' is TRUE of every off row and USELESS on the one kind nobody
+           investor settings' is TRUE of every off row and USELESS on the two kinds nobody
            switched off: since the owner's 2026-09-04 standing rule an investor with no
-           client-safe name starts off by itself, so that sentence sends an officer to a
-           toggle nobody moved instead of to the name that is missing. `enabledOrigin`
-           already tells the two apart — it exists for exactly this — so the sentence reads
-           it. A hand-written note still outranks both. */
+           client-safe name starts off by itself, and one somebody has just NAMED stays off
+           until it is switched on by hand — so that sentence sends an officer to a toggle
+           nobody moved instead of to the work that is actually outstanding. `enabledOrigin`
+           already tells the three apart — it exists for exactly this — so the sentence reads
+           it. A hand-written note still outranks all of them.
+
+           ⛔ AND THE THREE SENTENCES NAME THREE DIFFERENT ACTIONS: give it a name, press the
+           switch, or nothing (somebody meant this). One wording covering them would be the
+           same defect this comment was written about, one state later. */
         reason: row.note || (row.enabledOrigin === 'unnamed'
-          ? 'No client-safe name yet, so it starts off — name it in the investor settings and it prices. A programme with no name cannot go on a term sheet, so a price here could not be issued.'
-          : 'This investor is switched off in the investor settings.'),
+          ? 'No client-safe name yet, so it starts off — name it in the investor settings, then switch it on. A program with no name cannot go on a term sheet, so a price here could not be issued.'
+          : (row.enabledOrigin === 'awaiting_switch'
+            ? 'Named, but not switched on yet — naming an investor never switches it on by itself. Turn it on in the investor settings and it prices.'
+            : 'This investor is switched off in the investor settings.')),
       });
       continue;
     }
