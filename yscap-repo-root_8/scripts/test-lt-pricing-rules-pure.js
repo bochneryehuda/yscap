@@ -518,6 +518,101 @@ console.log('\nG. THE WIRING — a back end nobody reaches is not a feature');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+console.log('\nH. WHAT THE POST-MERGE AUDIT FOUND (each proven to fail before its fix)');
+// ═══════════════════════════════════════════════════════════════════════════
+
+/* THE INHERITED-NAME HOLE. `ACTIONS` is an object literal, so a bracket lookup
+   walks the prototype chain: `ACTIONS['constructor']` is `Object` and truthy, so
+   `validate` — which only asked whether the spec existed — ACCEPTED it, the rule
+   SAVED, and the summariser then read `.label` off `Object` and threw. Both
+   engines call `overlay.apply` without a catch, so one such rule took down every
+   board on every band. Measured end to end against a real database. */
+const INHERITED = ['constructor', 'toString', 'valueOf', '__proto__', 'hasOwnProperty',
+  'isPrototypeOf', 'propertyIsEnumerable', 'toLocaleString'];
+{
+  let refused = 0;
+  let threw = 0;
+  for (const type of INHERITED) {
+    const list = [{ type }];
+    if (actions.validate(list).length) refused += 1;
+    try { actions.summarize(list); } catch (_) { threw += 1; }
+  }
+  eq('H1  every inherited property name is refused at the door', refused, INHERITED.length);
+  eq('H2  …and none of them can throw in the summariser', threw, 0);
+  ok('H3  a real verb is still accepted', actions.validate([{ type: 'note', reason: 'hi' }]).length === 0);
+  ok('H4  …and plain nonsense is still refused', actions.validate([{ type: 'zzz' }]).length > 0);
+}
+
+{
+  /* …AND IF ONE EVER REACHES THE TABLE, THE BOARD STILL PRICES. */
+  const poison = { id: 'p', name: 'Poison', enabled: true, engine: 'all', priority: 1,
+    when: { combinator: 'and', rules: [{ field: 'loan_amount', operator: 'lt', value: 200000 }] },
+    then: [{ type: 'constructor' }] };
+  let out = null;
+  let boom = null;
+  try {
+    out = overlay.apply(boardOf(), { rules: [poison, holdbackRule], scenario: { loan: 150000 }, engine: 'general' });
+  } catch (e) { boom = e; }
+  ok('H5  a rule the overlay cannot read never takes the board down', !boom, boom && boom.message);
+  ok('H6  …it is reported against its own rule', !!(out && out.problems || []).find((x) => x.ruleId === 'p'));
+  eq('H7  …and the readable rule beside it still priced', out ? out.programs.length : -1, 2);
+  eq('H8  …at the price it would have reached alone',
+    ((((out || {}).programs || [])[0] || {}).options || [])[0].priceBuild.price, 99.25);
+}
+
+{
+  /* THE BOARD DECIDED "IS THIS AN ADJUSTMENT?" BY TESTING THE SENTENCE for the
+     word "point", so a rule that both REFUSES a loan and holds back margin —
+     legal, since only two STOPS are forbidden — was printed as having priced a
+     row it had just taken off the board. */
+  const both = { id: 'b', name: 'Refuse and hold back', enabled: true, engine: 'all', priority: 5,
+    when: { combinator: 'and', rules: [{ field: 'loan_amount', operator: 'lt', value: 200000 }] },
+    then: [{ type: 'ineligible', reason: 'Not licensed.' }, { type: 'add_holdback', points: 0.5 }] };
+  const out = overlay.apply(boardOf(), { rules: [both], scenario: { loan: 150000 }, engine: 'general' });
+  const entry = (out.applied || [])[0] || {};
+  ok('H9  applied carries the facts, not a sentence to be read', typeof entry.points === 'number');
+  eq('H10 …and says plainly that it stops a quote', entry.stops, 'row');
+  const adjusted = (out.applied || []).filter((a) => a && a.points && !a.stops);
+  eq('H11 …so a stopping rule is never listed as a price adjustment', adjusted.length, 0);
+}
+
+{
+  /* PASS ONE WAS NULL-SAFE AND PASS TWO WAS NOT. Not reachable from the board
+     builder today, which only pushes objects — a guard, not a live defect. */
+  let boom = null;
+  let out = null;
+  try {
+    out = overlay.apply([null, ...boardOf()], { rules: [holdbackRule], scenario: { loan: 150000 }, engine: 'general' });
+  } catch (e) { boom = e; }
+  ok('H12 a row that is not an object cannot take the board down', !boom, boom && boom.message);
+  ok('H13 …and is passed through rather than quietly dropped', !!out && out.programs.length === 3);
+}
+
+{
+  const cp = stripComments(src('src/longterm/routes/combined-pricer.js'));
+  ok('H14 the combined board counts the board it is RETURNING',
+    /programCount:\s*house\.programs\.length/.test(cp));
+  ok('H15 …never the raw pre-overlay array', !/programCount:\s*programs\.length/.test(cp));
+}
+
+{
+  const panel = stripComments(src('app-v2/src/longterm/LtPricer.jsx'));
+  /* PINNED ON THE ROW, NOT ON THE FILE. The first cut tested the whole panel for
+     the string `houseAdjustPoints` — which also appears in the CONDITION guarding
+     the row — so a mutation that rendered `pts(0)` in the VALUE slot left the
+     string present and this guard green while the line showed nothing. Extract
+     the element and assert what it actually displays. */
+  const houseRow = (panel.match(/k="Our own rules"[\s\S]{0,240}?\/>/) || [''])[0];
+  ok('H16 the price-build panel names our own rules in the ladder they moved', !!houseRow);
+  ok('H16b …and shows the amount a house rule actually moved', /houseAdjustPoints/.test(houseRow));
+  ok('H16c …negated, because points move opposite to the price',
+    /-\s*Number\(b\.houseAdjustPoints\)/.test(houseRow));
+  const explains = stripComments(src('app-v2/src/longterm/BoardExplains.jsx'));
+  ok('H17 the board asks the FACTS which rules moved a price', /a\.points\s*&&\s*!a\.stops/.test(explains));
+  ok('H18 …never the wording of the summary', !/\/point\/i\.test\(a\.did/.test(explains));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 const total = pass + failures.length;
 console.log(`\n${failures.length ? 'FAILED' : 'ALL PASSED'} (${pass} passed, ${failures.length} failed of ${total})`);
 if (failures.length) { failures.forEach((f) => console.log(`  · ${f}`)); process.exit(1); }

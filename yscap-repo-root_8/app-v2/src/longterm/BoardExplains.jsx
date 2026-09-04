@@ -170,7 +170,12 @@ export function OurOwnRules({ houseRules }) {
   const h = houseRules || {};
   const refused = Array.isArray(h.ineligible) ? h.ineligible : [];
   const blocked = Array.isArray(h.blocked) ? h.blocked : [];
-  const adjusted = Array.isArray(h.applied) ? h.applied.filter((a) => a && /point/i.test(a.did || '')) : [];
+  /* WHICH RULES MOVED A PRICE, ASKED OF THE FACTS RATHER THAN OF THE SENTENCE.
+     This tested `did` for the word "point", so a rule that refuses a loan AND
+     holds back margin — legal, since only two STOPS are forbidden — was listed
+     as having priced a row it had just taken off the board. A stopping rule is
+     never an adjustment, however its summary happens to read. */
+  const adjusted = Array.isArray(h.applied) ? h.applied.filter((a) => a && a.points && !a.stops) : [];
   const problems = Array.isArray(h.problems) ? h.problems : [];
   if (!refused.length && !blocked.length && !adjusted.length && !problems.length && !h.problem) return null;
 
