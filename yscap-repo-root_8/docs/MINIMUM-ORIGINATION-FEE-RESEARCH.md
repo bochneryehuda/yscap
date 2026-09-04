@@ -136,6 +136,10 @@ the new box joins it (`s("tsMinOrigFee", …)` — placeholder only, never `valu
 
 ## 3. Decisions that are the owner's, not mine
 
+**Status 2026-09-04:** put to the owner as recommendations. The reply that settled Q1 and Q2 did not
+correct any of them, so they proceed as **stated defaults**, clearly labelled as such — silence is
+never recorded here as approval. Any one of them is a one-commit reversal.
+
 **D1 — Does the minimum apply per PROGRAM or once company-wide?**
 Recommend **one company-wide minimum with a per-program override available but unset**. The owner
 said *"all of our RTL programs … everything"* and named one number. Per-program columns can be added
@@ -176,28 +180,81 @@ A file whose term sheet is already **signed** is protected by the existing freez
 
 ---
 
-## 4. Open questions I cannot answer and will not guess
+## 4. The two questions that were blocking — ANSWERED by the owner 2026-09-04
 
-**Q1 — Blue Lake's data tape carries POINTS, not dollars.** `src/lib/tapes/bluelake.js` column BC
-is `origPct` (the registered quote's percentage). On a $100,000 loan the minimum makes the borrower
-pay an effective **2.5%** while that column would still say **1.25%** — the tape would understate
-what was charged. Fidelis and EMCAP were checked and carry no origination column at all. Options:
-send the **effective** percentage (`amount / totalLoan`), send the stated percentage unchanged, or
-ask Blue Lake. **This changes what an investor receives and needs the owner's own words.**
+Both are settled, and both answers were verified against primary sources before being written down
+here rather than taken on trust.
 
-**Q2 — Encompass field 388 is the origination PERCENT, and it is a BLOCKING comparison row.**
-`encompass-field-map.js` compares our `origPct × 100` against Encompass field 388 on the reconcile
-panel, and that row is `GATE.BLOCK` — a mismatch holds the DocuSign term sheet and the data-tape
-export. If our stated percentage stays 1.25 while the loan is actually booked in Encompass at the
-effective 2.5%, **every small loan would fail that check and be unable to issue.** The recorded way
-through is the existing super-admin field exception, but that is a dead end if it happens on every
-small file. Needs a decision on which number goes into Encompass **before this ships.**
+### Q1 — Blue Lake's data tape: send the REAL percentage. ✔ ANSWERED
 
-**Q3 — Does the minimum apply to a loan with no loan amount yet?** Today `origination` is `0` when
-`totalLoan` is 0. Recommend it stays `0` (a fee on a deal that does not exist is nonsense), i.e.
-the minimum only ever applies to a **sized** loan. Stated for the record rather than assumed.
+> *"Send them a higher percentage, according to how much this is the real percentage for $2,500."*
 
----
+`src/lib/tapes/bluelake.js` column **BC** ("Total Points") is `e.origPct`, fed from `q.origPct`.
+Measured: `quote.origPct` is the **fraction** (`0.0125`), rendered by `FMT.RATE` (`'0.00#%'`), so
+Excel shows `1.25%`; the percent-scaled copy (`1.25`) lives on `quote.adminPricing.origPct`, which
+is the staff-only block and is not what the tape reads. So the change is one expression:
+
+```js
+origPct: n(q.origPct)                       // today
+origPct: effectiveOrigPct(q)                // = origination / totalLoan when the minimum bound
+```
+
+On the owner's $100,000 example that sends **0.025 → "2.5%"**, which is what the borrower actually
+paid. **When the minimum does not bind it is byte-identical** — `origination / totalLoan` IS
+`origPct` by construction — so no tape already sent changes meaning, and the effective figure is
+DERIVED from the two numbers on the row rather than stored, so it can never disagree with the
+dollars beside it.
+
+**Fidelis and EMCAP are unaffected — checked, not assumed:** neither tape carries an origination
+column at all (`emcap.js` column K is the *rehab* amount; the word "origination" appears in those
+files only in comments about seasoning). Blue Lake is the only one.
+
+### Q2 — Encompass: when the minimum binds, compare field **454**, not 388. ✔ ANSWERED
+
+> *"Encompass has a different field, 454, which is the flat amount of the origination, so any time
+> that you are hitting your minimum, instead of mapping to field ID 388 Map it to 454."*
+
+**VERIFIED AGAINST THE TENANT'S OWN FIELD EXPORT, and the owner is exactly right — better than
+right, because the two fields turn out to be two attributes of the SAME fee object:**
+
+| field | label | contract path | format | fill (fix & flip) |
+|-------|-------|---------------|--------|-------------------|
+| **388** | Fees Loan Origination Fee % | `loan.fees[feeType=='LoanOriginationFee'].percentage` | `DECIMAL_3` | 91.6% |
+| **454** | Fees Loan Origination Fee Borr | `loan.fees[feeType=='LoanOriginationFee'].borPaidAmount` | `DECIMAL_2` | 80.9% |
+
+They are the **percentage** and the **borrower-paid dollars** of one and the same
+`LoanOriginationFee`. That is what makes this the right answer rather than merely a workable one:
+we are not comparing a different fee, we are comparing the same fee by the attribute that is
+unambiguous. Observed values on 454 are real dollars (min $1,725, median $6,000, max $15,400) and
+its fill by stage is **100% from Loan Setup onwards**, so on any file far enough along to be issuing
+a term sheet the number is there.
+
+**The rule, therefore:**
+
+- minimum **did not** bind → compare `origPct × 100` against **388**, exactly as today, byte-identical.
+- minimum **did** bind → compare the origination **dollars** against **454**.
+
+Two things this deliberately does NOT do. It does not stop pulling 388 (it stays on the panel as a
+reference row, because a reader still wants to see what percentage was typed). And it does not
+write anything: **Encompass stays READ-ONLY** — 454 joins the registry as one more `pull()`, which
+is exactly what `check-encompass-readonly.js` permits and what the write pad does not need to
+record.
+
+**Where the field number is verified, and the one thing that must NOT be done with it.** The table
+above was read from the tenant's own Encompass field export. That export happens to be stored at
+`src/longterm/encompass/dictionary/field-dictionary.json` — **LONG-TERM product code**. Citing a
+fact about the vendor's own field numbering in an RTL research note is fine; **an RTL module may
+never `require` that file.** RTL spells the id and the path out in its own
+`encompass-field-map.js` registry entry and verifies it live against `encompass_field_catalog`
+(db/245), which is the RTL-native copy of the same catalogue. This is written down because the
+tempting shortcut — importing the dictionary — is precisely the crossing the product-separation
+rule forbids.
+
+### Q3 — a loan with no amount yet carries no minimum
+
+Today `origination` is `0` when `totalLoan` is 0. It stays `0`: a fee on a deal that does not exist
+is nonsense, and the minimum only ever applies to a **sized** loan. Stated for the record rather
+than assumed.
 
 ## 5. The wiring map — every place it has to reach
 
@@ -238,6 +295,11 @@ Plus, outside the roster's nine:
   single-writer claim).
 - **`src/lib/tpo-pricing.js`** — the resolved `cd` must carry the minimum so a broker's quote and a
   retail quote agree about our fee. Recommend the minimum is **retail's, not per-firm**.
+- **`src/lib/tapes/bluelake.js`** — column BC sends the EFFECTIVE fraction when the minimum bound
+  (Q1). Derived from the row's own two numbers, never stored, and byte-identical when it did not.
+- **`src/lib/integrations/encompass-field-map.js`** — field **454** joins the registry as a `pull()`
+  (a READ; Encompass stays read-only), and the origination comparison switches to it when the
+  minimum bound (Q2). 388 stays, as a reference row.
 - **`src/routes/admin-pricing.js` + `app-v2/src/screens/StaffCompanyPricing.jsx`** — the admin box
   the owner asked for (*"the admin section where we pre-set everything for the entire program where
   we can increase and decrease the minimum accordingly"*).
@@ -325,8 +387,13 @@ and the staff panel, where the reader is an underwriter.
    minimum" must be built by **neutralising the module**, never by reading `git show HEAD:` — a git
    baseline proves inertness only until the change is committed, after which it degenerates into
    "the engine equals itself" and passes forever while proving nothing.
-6. **Encompass field 388 (Q2 above) is a blocking row.** This is the one item that could stop small
-   files issuing, and it must be settled before the first live file.
+6. **Encompass field 388 is a blocking row, and comparing it on a minimum-bound file is what would
+   stop small files issuing.** Settled by Q2: on those files the comparison moves to field 454 (the
+   same fee's borrower-paid dollars). The trap that remains is *forgetting the switch* — comparing
+   388 against a stated 1.25% while the loan is booked at an effective 2.5% holds the term sheet AND
+   the tape export, on every small file, with the only way through being a per-file super-admin
+   exception. The test for this must assert the comparison PASSES on a minimum-bound file, not
+   merely that 454 is read.
 7. **`round2` before comparing.** `Math.max(round2(loan * pct), minFee)` and
    `round2(Math.max(loan * pct, minFee))` differ by a cent at the boundary; the fee must be computed
    once and reconciled to the printed total to the cent, or the fees a borrower can read will not
@@ -349,6 +416,14 @@ and the staff panel, where the reader is an underwriter.
 5. The Pricing Admin Center box + the TPO layer.
 6. The one exception reason code (which reaches every exception route for free) + a test that it
    really does appear on each of them.
+7. **Blue Lake's tape** (the effective fraction on column BC) + **Encompass field 454** (the
+   comparison switch), each with a test that bites: for the tape, that a minimum-bound loan sends
+   0.025 and an ordinary one is byte-identical; for Encompass, that the reconcile row **PASSES** on a
+   minimum-bound file rather than merely that the field is pulled.
 
-**Nothing starts until D1–D6 and Q1–Q2 are answered.** Q2 in particular can make small loans
-unissuable, and that is not a thing to discover on a live file.
+**Q1 and Q2 are answered, so the build is unblocked.** D1–D6 were put to the owner as
+recommendations to be corrected and none was corrected in the reply that settled Q1/Q2 — they are
+therefore proceeding **as stated defaults, not as approvals**, and each is small enough to reverse
+in one commit. The two that would cost most to get wrong, and so are worth a second look before
+they ship, are **D2** (the minimum applies to our fee only, never the TPO broker's own) and **D6**
+(going forward only — no sweep of the open book).
