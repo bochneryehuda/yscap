@@ -90,12 +90,20 @@
  * a better one. Nothing is over-stated about the loan; the request is simply more
  * conservative in that band.
  *
- * WHAT IS ACTUALLY ONE-WAY, and what the safety of this rests on — FOUR properties,
- * and the paragraph used to list three and call them four: the RATIO A RATE ACHIEVES
- * (0 of 161,448 moves went up), no band moving to a BETTER one, 0 bands lost, and
- * every searched ratio landing inside the band it is for (0 of 69,696 outside). All
- * four are asserted HARD in N17a/N17b; the totals are pinned in N17c/N17d so they
- * cannot drift quietly.
+ * WHAT IS ACTUALLY ONE-WAY, and what the safety of this rests on — THREE measured
+ * properties: the RATIO A RATE ACHIEVES never moves up (0 of 161,448), no band moves
+ * to a BETTER one, and no band is lost or newly reached. All three are falsifiable and
+ * asserted hard in N17a/N17b; the totals are pinned in N17c/N17d so they cannot drift
+ * quietly.
+ *
+ * ⛔ AND A FOURTH FIGURE THAT IS NOT EVIDENCE, said plainly because two drafts of this
+ * paragraph counted it as one. "0 of 69,696 searched ratios outside their own band" is
+ * TRUE BY CONSTRUCTION: `sendRatioFor` ends `return dscrTier(rounded) === tier ? rounded
+ * : null`, so a non-null answer is in-band by definition and the measurement skips the
+ * nulls. It cannot be nonzero, whatever the rounding does — the audit of 2026-09-04
+ * pushed every searched ratio a whole band out and it still read 0 (N17b caught that
+ * mutation on `lost`/`gained`, which ARE falsifiable). It is kept as a CONTRACT
+ * tripwire for the day that return line changes, and it is not one of the three.
  *
  * ⛔ HONEST NOTE ON THE FIGURES, AND THE REASON THE BATTERY IS NOW IN THE TREE.
  * The script that produced the ORIGINAL numbers was never committed, and the

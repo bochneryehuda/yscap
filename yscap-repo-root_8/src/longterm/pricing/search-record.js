@@ -106,8 +106,8 @@ const sightingsRegister = require('./investor-sightings');
  * ⛔ IT IS A FUNCTION SO IT CAN BE RUN, and that is the whole reason it exists. It was
  * one inline expression at the route (`partOfLargerSearch: body.bandsFollow === true`)
  * guarded by an UNANCHORED regex, and the re-audit of 2026-09-03 walked past it by
- * appending a disjunct: `|| body.full === true`. The regex still matched, all 204 LT
- * suites stayed green — and since `GENERAL_ENGINE.price` sends `full: true` on every
+ * appending a disjunct: `|| body.full === true`. The regex still matched, every LT
+ * suite in the chain stayed green — and since `GENERAL_ENGINE.price` sends `full: true` on every
  * press, the immediate door on the General Pricing Engine would then have filed NO miss
  * and counted NO search, ever, whatever the screen said. A rule that decides whether a
  * super admin is told about a rate sheet is not a thing to pin by spelling.

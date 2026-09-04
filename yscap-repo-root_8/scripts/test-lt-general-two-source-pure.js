@@ -789,16 +789,36 @@ const byInvestor = (programs) => {
     });
     col3.observe(freshBoard);
     await col3.flush({ scenario: SC, searchKey: 'k-fresh', door: 'immediate' });
-    /* ⛔ THE COUNT, NOT MERELY "SOME". `> 0` would pass a gate that TRUNCATED the list
-       to one — and a shorter sightings list locks investors out of the settings screen
-       just as surely as an empty one. The comparison is against what the SAME Lender
-       Price answer carried on the ordinary board a few lines above, so it needs no
-       hand-typed number and cannot go stale. */
-    const lpFull = (sighted && sighted.lenderprice && sighted.lenderprice.keys.length) || 0;
-    const lpFresh = (sightedFresh && sightedFresh.lenderprice && sightedFresh.lenderprice.keys.length) || 0;
+    /* ⛔ THE COUNT, AND IT IS ANCHORED OUTSIDE THE THING UNDER TEST.
+       `> 0` would pass a gate that TRUNCATED the list to one, and a shorter sightings
+       list locks investors out of the settings screen just as surely as an empty one.
+       The first fix compared the fresh board against the ORDINARY one — which catches a
+       gate that shortens only when the routing changes, and is blind to one that
+       shortens on the SHARED path: the audit of 2026-09-04 sliced `sightedOn` to one key
+       unconditionally and this read "1 of 1", green, with all 298 LT steps green behind
+       it.
+
+       So the expectation is DERIVED FROM THE FIXTURE down a different road: parse the
+       same Lender Price answer with the vendor's own parser and resolve its investors
+       through the registry — the path the merge builds `presentIn` from, reached
+       without going through `sightedOn` at all. Two roads to one number; a truncation
+       on either is a disagreement. */
+    const lpParsedForCount = lpModel.parseFull(LP_RAW);
+    /* `decorate` answers `{programs, roster, unmapped}` — the ROSTER is its own count of
+       distinct investors, which is the figure wanted here. Read through a total accessor:
+       a shape change must state a false fact and let the run reach the end, never throw
+       (this very line threw on its first cut, and grepping the output for the assertion
+       names hid it — the crash printed no assertion at all, which is exactly the "a
+       crashing test looks like proof" trap this file keeps running into). */
+    const lpDecorated = investorPrograms.decorate((lpParsedForCount && lpParsedForCount.programs) || []) || {};
+    const lpExpect = Array.isArray(lpDecorated.roster) ? lpDecorated.roster.length : -1;
+    const lpFull = (sighted && sighted.lenderprice && Array.isArray(sighted.lenderprice.keys) ? sighted.lenderprice.keys.length : 0);
+    const lpFresh = (sightedFresh && sightedFresh.lenderprice && Array.isArray(sightedFresh.lenderprice.keys) ? sightedFresh.lenderprice.keys.length : 0);
+    ok(lpExpect > 0,
+      `SEAM-5 CONTROL C: the Lender Price fixture really carries investors, counted through the vendor parser and the registry rather than through the register (${lpExpect})`);
     ok(sightedFresh && sightedFresh.lenderprice && sightedFresh.lenderprice.answered === true
-      && lpFull > 0 && lpFresh === lpFull,
-      `⛔ SEAM-5 …and with nobody routed to LoanNEX the register is STILL fed everything Lender Price carried (${lpFresh} of ${lpFull}) — a gate on the routing silences the register on a fresh install, and a truncating one shortens it`);
+      && lpFresh === lpExpect && lpFull === lpExpect,
+      `⛔ SEAM-5 …and with nobody routed to LoanNEX the register is STILL fed EVERY investor Lender Price carried (${lpFresh} fresh / ${lpFull} ordinary, against ${lpExpect} in the answer itself) — a gate on the routing silences the register, and a truncating one shortens it`);
     ok(REG.SOURCES.every((sname) => freshBoard.sightings && freshBoard.sightings[sname]
       && typeof freshBoard.sightings[sname].answered === 'boolean'),
       'SEAM-5a …and the board still describes every sheet the register knows, so nothing became unrecordable');

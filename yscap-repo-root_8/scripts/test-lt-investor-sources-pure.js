@@ -60,6 +60,23 @@ const eq = (a, b, n) => {
   ok(same, same ? n : `${n} — got ${JSON.stringify(a)}, want ${JSON.stringify(b)}`);
 };
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+
+/* ⛔ EVERY READ OF THE THING UNDER TEST GOES THROUGH THESE, and that is what makes the
+   counted-failure helpers above worth anything. Counting a failure does not make the NEXT
+   line safe: a mutation that changes the SHAPE the register answers with still crashes a
+   bare `answer.lenderprice.state`, and a crash stops the battery where it stands — every
+   assertion below it silently never runs, so a mutation proof against any of them is
+   worthless. MEASURED TWICE. The first round fixed section B2 alone and the commit claimed
+   the whole file; the audit of 2026-09-04 then dropped the `unknown` branch from
+   `availabilityFrom` and the run printed ELEVEN of 160 lines, no tally, no exit code of
+   its own. These state a false fact and let the run reach the end — the `list()` shape
+   from the brackets suite, applied to the whole file rather than to one section. */
+const NO_SOURCE = '(the answer carried no such source)';
+const availOf = (key, reg, inUse) => sightings.availabilityFor(key, reg, inUse) || {};
+const stateOf = (a, src) => (a && a[src] ? a[src].state : NO_SOURCE);
+const fieldOf = (a, src, f) => (a && a[src] ? a[src][f] : NO_SOURCE);
+const lockedFor = (...args) => { const v = sightings.lockedOutFor(...args); return Array.isArray(v) ? v : []; };
+const keysOf = (o) => (o && typeof o === 'object' ? Object.keys(o) : [NO_SOURCE]);
 /* Every "must not appear" check reads the COMMENT-STRIPPED source: the code that explains why a
    rule exists necessarily names the thing it forbids, and a guard that read comments would fail on
    its own explanation and then get "fixed" by deleting the explanation. */
@@ -95,10 +112,10 @@ console.log('\nA · the register records what a board actually returned');
 console.log('\nB · the three answers, and why "never" is not "unknown"');
 {
   const nx = sightings.record(null, { source: 'loannex', keys: ['nqm'], at: T1 });
-  const seen = sightings.availabilityFor('nqm', nx);
-  eq(seen.loannex.state, 'seen', 'B1 a sheet that produced this investor reads SEEN');
-  eq(seen.loannex.at, T1, 'B1b …and says when');
-  eq(seen.lenderprice.state, 'unknown',
+  const seen = availOf('nqm', nx);
+  eq(stateOf(seen, 'loannex'), 'seen', 'B1 a sheet that produced this investor reads SEEN');
+  eq(fieldOf(seen, 'loannex', 'at'), T1, 'B1b …and says when');
+  eq(stateOf(seen, 'lenderprice'), 'unknown',
     'B2 A SHEET THAT HAS PRODUCED NO BOARD READS UNKNOWN — never "never", or a cold register would lock every button on the screen');
 
   /* ⛔ B3 IS RE-POINTED, NOT LOOSENED (pre-merge audit, 2026-09-03). It used to assert that
@@ -108,30 +125,30 @@ console.log('\nB · the three answers, and why "never" is not "unknown"');
      locked button and 15 had BOTH locked. The property this guard is really about is that a
      sheet which has genuinely never carried an investor reads NEVER and locks; what changed is
      how much evidence "genuinely" takes. See `NEVER_AFTER_SEARCHES`. */
-  const other = sightings.availabilityFor('verus', nx);
-  eq(other.loannex.state, 'not_yet',
+  const other = availOf('verus', nx);
+  eq(stateOf(other, 'loannex'), 'not_yet',
     'B3 ONE answered board is NOT evidence a sheet has never carried an investor — it locks nothing');
-  eq(sightings.lockedOutFor('verus', nx).length, 0,
+  eq(lockedFor('verus', nx).length, 0,
     'B3a …proved on the lock itself, which is the thing that costs a person the screen');
   let many = nx;
   for (let i = 0; i < sightings.NEVER_AFTER_SEARCHES; i += 1) {
     many = sightings.record(many, { source: 'loannex', keys: ['nqm'], at: T1 });
   }
-  const proven = sightings.availabilityFor('verus', many);
-  eq(proven.loannex.state, 'never',
+  const proven = availOf('verus', many);
+  eq(stateOf(proven, 'loannex'), 'never',
     'B3b a sheet that has answered enough searches and never once carried this investor reads NEVER');
-  eq(sightings.lockedOutFor('verus', many)[0], 'loannex', 'B3c …and THAT is what locks a button');
-  eq(proven.loannex.sourceLastAnswered, T1, 'B3d …and says on the strength of which board');
+  eq(lockedFor('verus', many)[0], 'loannex', 'B3c …and THAT is what locks a button');
+  eq(fieldOf(proven, 'loannex', 'sourceLastAnswered'), T1, 'B3d …and says on the strength of which board');
   /* ⛔ AND NEVER THE SOURCE IN USE. A row routed to LoanNEX whose LoanNEX button is dead
      cannot be re-routed, and cannot be turned off and back on — it reads as broken. This is
      what made ClearEdge, one of the five investors the owner had just switched to LoanNEX,
      answer with "Off" as its only pressable control. */
-  eq(sightings.lockedOutFor('verus', many, 'loannex').length, 0,
+  eq(lockedFor('verus', many, 'loannex').length, 0,
     'B3e the sheet an investor is actually SET to is never locked out, however strong the evidence');
 
-  eq(sightings.availabilityFor('nqm', null).loannex.state, 'unknown',
+  eq(stateOf(availOf('nqm', null), 'loannex'), 'unknown',
     'B4 an empty register knows nothing about anybody');
-  eq(sightings.availabilityFor('', many).loannex.state, 'never', 'B5 a blank key is nobody, and nobody was never carried');
+  eq(stateOf(availOf('', many), 'loannex'), 'never', 'B5 a blank key is nobody, and nobody was never carried');
 }
 
 console.log('\nB2 · which buttons are locked out — the rule itself, not a copy of it');
@@ -157,15 +174,15 @@ console.log('\nB2 · which buttons are locked out — the rule itself, not a cop
   const oneSearch = sightings.record(null, { source: 'loannex', keys: ['nqm'], at: T1 });
   eq(sightings.lockedOutFor('verus', oneSearch), [],
     'B8a ONE search locks nothing — a single scenario is no evidence about a whole rate sheet');
-  ok(!sightings.lockedOutFor('verus', nx).includes('off'),
+  ok(!lockedFor('verus', nx).includes('off'),
     'B9 OFF IS NEVER IN THE LIST — the owner’s rule is a property of this function, not of the screen that draws it');
   let both = nx;
   for (let i = 0; i < sightings.NEVER_AFTER_SEARCHES; i += 1) {
     both = sightings.record(both, { source: 'lenderprice', keys: [], at: T2 });
   }
-  eq(sightings.lockedOutFor('verus', both).sort(), ['lenderprice', 'loannex'],
+  eq(lockedFor('verus', both).sort(), ['lenderprice', 'loannex'],
     'B10 an investor neither sheet has ever carried is locked out of both — and can still be turned off');
-  eq(sightings.lockedOutFor('verus', both, 'lenderprice'), ['loannex'],
+  eq(lockedFor('verus', both, 'lenderprice'), ['loannex'],
     'B10a …and even then, the sheet it is SET to stays pressable, so the row is never a dead end');
 
   /* ── B11 · EVERY ROW AT ONCE, AND IT MUST ANSWER THE SAME THING ────────────
@@ -201,7 +218,7 @@ console.log('\nB2 · which buttons are locked out — the rule itself, not a cop
      reason the conversion was made. `rowOf` states a false fact and lets the run
      continue, exactly as `list()` does in the brackets suite. */
   const rowOf = (k) => (all && typeof all.get === 'function' ? all.get(k) : null) || {};
-  const lockedOf = (k) => { const v = rowOf(k).lockedOut; return Array.isArray(v) ? v : []; };
+  const lockedOf = (k) => (Array.isArray(rowOf(k).lockedOut) ? rowOf(k).lockedOut : []);
   let differ = 0; let states = new Set();
   for (const k of wideKeys) {
     const a = sightings.availabilityFor(k, wide);
@@ -209,9 +226,9 @@ console.log('\nB2 · which buttons are locked out — the rule itself, not a cop
     const got = rowOf(k);
     if (JSON.stringify(got.availability) !== JSON.stringify(a)) differ += 1;
     if (JSON.stringify(got.lockedOut) !== JSON.stringify(l)) differ += 1;
-    for (const src of sightings.SOURCES) states.add(a && a[src] ? a[src].state : 'unreadable');
+    for (const src of sightings.SOURCES) states.add(stateOf(a, src));
   }
-  ok(states.size >= 3 && !states.has('unreadable'),
+  ok(states.size >= 3 && !states.has(NO_SOURCE),
     `B11 CONTROL: the battery really carries several states at once (${[...states].sort().join(', ')})`);
   eq(differ, 0,
     '⛔ B11a THE FAST PATH ANSWERS EXACTLY WHAT THE PER-ROW DOORS ANSWER — it is the same two rules underneath, which is what stops a fast path drifting from the rule it is fast at');
@@ -231,15 +248,17 @@ console.log('\nB2 · which buttons are locked out — the rule itself, not a cop
      invariant to it; a return to asking per row collapses the ratio to about 1 and
      fails whatever the machine is doing.
 
-     ⛔ THE FLOOR IS SET FROM A RANGE, NOT FROM ONE DRAW. An earlier version of this
-     note quoted "~600×", which is one sample of a wide distribution and was not
-     reproduced on the next box that tried. MEASURED over 33 runs by the pre-merge
-     audit of 2026-09-04 — unloaded, under `--jitless`, under `--no-opt`, under a
-     squeezed semi-space, and under 3× CPU oversubscription — the ratio ranged
-     47×–985×, worst margin 2.35× over the floor, with no spurious failure. 20 is
-     therefore far under anything observed: this must only ever catch a structural
-     regression, never a slow afternoon. The absolute figures are REPORTED in the
-     message, as measurements rather than as assertions. */
+     ⛔ THE FLOOR IS SET FROM A RANGE, AND THE RANGE IS MACHINE-DEPENDENT. An earlier
+     version of this note quoted "~600×" — one sample of a wide distribution, not
+     reproduced on the next box that tried. Two audits then measured it properly and got
+     DIFFERENT ranges on different hardware: 47×–985× over 33 runs, and 90×–1107× over
+     27, each sweeping unloaded, `--jitless`, `--no-opt`, a squeezed semi-space and 3×
+     CPU oversubscription. So no single range is the truth; what is stable across both
+     is that the WORST margin over the floor was 2.35× and 4.5× respectively, with no
+     spurious failure anywhere. 20 is therefore far under anything either box observed.
+     This must only ever catch a structural regression, never a slow afternoon — and the
+     absolute figures are REPORTED in the message, as measurements rather than as
+     assertions, precisely because they travel badly. */
   const SPEEDUP_MIN = 20;
   const big = { boards: { lenderprice: T1, loannex: T1 }, searches: { lenderprice: 50, loannex: 50 }, investors: {} };
   const bigKeys = [];
@@ -271,8 +290,8 @@ console.log('\nB2 · which buttons are locked out — the rule itself, not a cop
 console.log('\nC · the register reads what it wrote, and refuses what it cannot');
 {
   const r = sightings.read({ boards: { loannex: T1, bogus: T1 }, investors: { nqm: { loannex: T1, junk: 'x' } } });
-  eq(Object.keys(r.boards), ['loannex'], 'C1 a board stamp for a source we do not have is dropped');
-  eq(Object.keys(r.investors.nqm), ['loannex'], 'C2 …and so is a sighting on one');
+  eq(keysOf(r.boards), ['loannex'], 'C1 a board stamp for a source we do not have is dropped');
+  eq(keysOf(r.investors && r.investors.nqm), ['loannex'], 'C2 …and so is a sighting on one');
   eq(sightings.read('nonsense').problems.length, 1, 'C3 a register that is not an object is reported, never guessed at');
   eq(sightings.read(null).investors, {}, 'C4 nothing stored reads as nothing known');
   ok(sightings.validate([1, 2]).ok === false, 'C5 the settings door refuses an array');
@@ -875,7 +894,7 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
   /* Nothing about the ordinary path moved: a fully-shaped register is still taken as read
      rather than re-read, and a blank one still answers rather than throwing. */
   const full = sightings.read(LEGACY);
-  ok(sightings.availabilityFor('nqm', full).lenderprice.state === 'seen',
+  ok(stateOf(availOf('nqm', full), 'lenderprice') === 'seen',
     'M4 CONTROL: an already-read register is unaffected');
   ok(!tot(() => sightings.availabilityFor('nqm', null)).threw
     && !tot(() => sightings.availabilityFor('nqm', 'nonsense')).threw

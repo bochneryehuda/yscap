@@ -28,12 +28,20 @@
  * — which is correct, and the suite will print the new ones.
  *
  * ── WHAT IS ACTUALLY LOAD-BEARING ──────────────────────────────────────────
- * Not the totals. Every one of the three reconstructions above agrees exactly on
- * the four SAFETY properties, and those are what the suite asserts hard:
+ * Not the totals. Every attempt above agrees exactly on the THREE measured safety
+ * properties, and those are what the suite asserts hard:
  *   · not one ratio a rate achieves moves UP,
  *   · not one band moves to a BETTER one,
- *   · not one band stops being priceable,
- *   · every searched ratio lands inside the band it was asked for.
+ *   · not one band is lost, and none is newly reached.
+ *
+ * ⛔ `outside` IS NOT ONE OF THEM AND IS NOT EVIDENCE. `sendRatioFor` returns null
+ * unless the rounded ratio is already in the band it was asked for, and `measure`
+ * skips the nulls — so that count is zero by construction, whatever the rounding
+ * does. It is returned as a CONTRACT tripwire for the day that return line changes,
+ * never as a measurement. Two drafts of the board's header counted it as a fourth
+ * safety property; the audit of 2026-09-04 pushed every searched ratio a whole band
+ * out of place and it still read 0.
+ *
  * The totals are reported so a reader gets the measured fact; the properties are
  * what the change rests on.
  *

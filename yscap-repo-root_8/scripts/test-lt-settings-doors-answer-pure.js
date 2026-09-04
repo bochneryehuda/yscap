@@ -329,12 +329,35 @@ async function main() {
         ['holdbackBody', ['GET /margin-holdback', 'PUT /margin-holdback', 'PUT /margin-holdback (clear)']],
       ]) {
         const wasAsync = name !== 'holdbackBody';
-        bodies[name] = wasAsync ? (async () => ({ [MARK]: name })) : (() => ({ [MARK]: name }));
+        /* ⛔ THE MARKER STANDS IN FOR THE BUILDER'S OWN KEYS, NOT BESIDE THEM. A stub
+           returning only `{[MARK]: name}` proves the builder was CALLED and nothing more:
+           a door that spreads the builder AND THEN overrides every key with a
+           byte-identical inline copy still carries the marker, and the audit of
+           2026-09-04 proved that shape green. So the stub answers the REAL key set with
+           a sentinel value, and every one of those keys is checked in the response. A
+           key the door overrode holds the real value instead of the sentinel and fails.
+
+           The real keys are read from the real builder rather than typed out, so a key
+           added to a payload is covered without anybody remembering. Keys the DOOR adds
+           on its own — a write reporting `saved`/`removed` — are legitimately its own
+           and are deliberately not policed here. */
+        const realKeys = await (async () => {
+          try { const v = await keep[name](undefined); return Object.keys(v || {}); }
+          catch (_) { return []; }
+        })();
+        const SENTINEL = `${MARK}:${name}`;
+        const stubBody = { [MARK]: name };
+        for (const k of realKeys) stubBody[k] = SENTINEL;
+        bodies[name] = wasAsync ? (async () => ({ ...stubBody })) : (() => ({ ...stubBody }));
+        ok(realKeys.length > 0,
+          `H1 CONTROL: \`${name}\` really produces a payload to stand in for (${realKeys.length} keys: ${realKeys.join(', ') || 'none'})`);
         for (const d of doors) {
           const body = d.startsWith('PUT') ? VALID_WRITE[d] : undefined;
           const r = await call(routeOf(d), body);
-          ok(r.body && r.body[MARK] === name,
-            `⛔ H1 \`${d}\` answers through \`${name}\` — a door with its own inline copy could not carry the marker (status ${r.status})`);
+          const answered = (r && r.body) || {};
+          const overridden = realKeys.filter((k) => answered[k] !== SENTINEL);
+          ok(answered[MARK] === name && overridden.length === 0,
+            `⛔ H1 \`${d}\` answers WITH \`${name}\`'s own payload — a door with an inline copy could not carry the marker, and one that overrode the builder would answer these from its own copy: ${overridden.join(', ') || 'none'} (status ${r.status})`);
         }
         bodies[name] = keep[name];
       }

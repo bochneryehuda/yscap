@@ -1042,7 +1042,7 @@ async function main() {
        the pinned totals caught it. An assertion whose message claims more than its
        condition is worse than no assertion, because it is read as cover. */
     ok(M.lost === 0 && M.gained === 0 && M.outside === 0 && M.nullsBefore === 0 && M.nullsAfter === 0,
-      `⛔ N17b …and nothing became unpriceable: ${M.lost} bands lost, ${M.gained} newly reachable, ${M.outside} searched ratios outside their own band${M.firstOutside ? ` — ${JSON.stringify(M.firstOutside)}` : ''}, nulls ${M.nullsBefore} → ${M.nullsAfter}`);
+      `⛔ N17b …and NOTHING IS UNPRICEABLE ON EITHER SIDE — absolutes, not a delta (the previous wording said "nothing BECAME unpriceable" while testing only that the two counts matched): ${M.lost} bands lost, ${M.gained} newly reachable, ${M.outside} searched ratios outside their own band${M.firstOutside ? ` — ${JSON.stringify(M.firstOutside)}` : ''}, nulls ${M.nullsBefore} before and ${M.nullsAfter} after`);
     ok(M.moved === 161448 && M.bandWorse === 9033,
       `N17c THE MEASURED TOTALS — the ratio moves a cent in ${M.moved} of ${M.combos} (${(M.moved / M.combos * 100).toFixed(3)}%) and the BAND moves in ${M.bandWorse} (${(M.bandWorse / M.combos * 100).toFixed(3)}%); if that changed on purpose, put these numbers in bracket-board.js's header`);
     ok(M.searchedMoved === 5308 && M.searchedDown === 3942 && M.searchedUp === 1366,
