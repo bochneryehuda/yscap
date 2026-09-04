@@ -327,6 +327,26 @@ const RULE = (over) => Object.assign({
   ok('E6 …and its reason names the field rather than the loan',
     /gone_field/.test(String((brokenAndUnasked || {}).headline || '')), (brokenAndUnasked || {}).headline);
 
+  /* ⛔ THE BOUNDARY E5 DOES NOT REACH. E5's fixture is `asked(4000, 0)`, so it
+     pins BROKEN ahead of NEVER-FIRED and never touches broken-vs-NOT-ASKED —
+     the audit moved a `seen === 0` branch above the broken branch and the suite
+     stayed at 103 passed. That is the live window between saving a broken rule
+     and the first board priced with it in force: precisely when an officer
+     checks whether the rule they just wrote works, and precisely the licensing
+     block db/697's header names. Reporting "nobody has priced a board it
+     governs yet" about a rule that can never match anything sends them away
+     satisfied. Bounded — once any board is priced a broken rule gets
+     boardsSeen 1 AND unreadable 1 — but the window is the one that matters. */
+  const brokenNeverAsked = audit.standing(
+    RULE({ when: { combinator: 'and', rules: [{ field: 'gone_field', operator: 'eq', value: 1 }] } }),
+    asked(0, 0));
+  eq('E5b a broken rule NOBODY HAS PRICED YET is still reported as broken',
+    (brokenNeverAsked || {}).verdict, 'broken');
+  /* The control that makes E5b a boundary rather than a coincidence: the same
+     ledger row, a rule that is merely unused, must still read as not-asked. */
+  eq('E5c …while a HEALTHY rule nobody has priced is not-yet-asked',
+    (audit.standing(RULE(), asked(0, 0)) || {}).verdict, 'not_asked');
+
   eq('E7 switched off outranks every finding about firing',
     (audit.standing(RULE({ enabled: false }), asked(4000, 0)) || {}).verdict, 'off');
   eq('E8 archived likewise',
@@ -465,13 +485,59 @@ const RULE = (over) => Object.assign({
   const lsrc = stripComments(src('src/longterm/pricing/rules/ledger.js'));
   ok('I1 recording a board is SYNCHRONOUS — an unawaited async recorder is an unhandled rejection on the pricing path',
     /^function record\(/m.test(lsrc) && !/async function record\(/.test(lsrc));
-  ok('I2 …and it swallows its own failures', /catch \(e\) \{[\s\S]{0,400}counters\.failures/.test(lsrc));
+  /* ⛔ THE ONE CONTRACT THIS FILE'S HEADER CALLS ABSOLUTE, AND IT IS RUN, NOT
+     GREPPED. This assertion used to be a regex over the source
+     (`/catch \(e\) \{[\s\S]{0,400}counters\.failures/`) — and the post-merge
+     audit put `throw e;` immediately AFTER `counters.failures += 1`, which the
+     regex still matched, so the suite reported 103 passed with the recorder
+     re-throwing on the live pricing path. `record()` is called synchronously
+     and UNAWAITED from general-board.js and combined-pricer.js, so a throw
+     there costs the board its price — the exact thing the module exists not to
+     do. A regex can see that a catch block mentions the counter; only calling
+     it can see whether anything escapes. */
+  const ledgerMod = require('../src/longterm/pricing/rules/ledger');
+  ledgerMod.reset();
+  const failuresBefore = ledgerMod.stats().failures;
+  let escaped = null;
+  try {
+    /* A result that throws the moment the aggregator reads it — the shape a
+       malformed overlay answer really takes. */
+    ledgerMod.record({ ran: true, get applied() { throw new Error('boom from overlay result'); } },
+      { rules: [RULE()], engine: 'general' });
+  } catch (e) { escaped = e; }
+  ok('I2 a malformed result loses a COUNT, never a board — nothing escapes record()',
+    escaped === null, escaped ? String(escaped.message) : '');
+  ok('I2b …and the failure is COUNTED rather than silently discarded',
+    ledgerMod.stats().failures === failuresBefore + 1,
+    'failures went ' + failuresBefore + ' -> ' + ledgerMod.stats().failures);
+  ledgerMod.reset();
   ok('I3 the flush upsert ADDS rather than replaces — two processes flush the same day',
     /lt_pricing_rule_firing\.boards_seen\s*\+\s*EXCLUDED\.boards_seen/.test(lsrc));
   ok('I4 …and never overwrites a day\'s total with one window\'s',
     !/boards_seen\s*=\s*EXCLUDED\.boards_seen\b/.test(lsrc));
   ok('I5 the buffer is bounded, so a database outage cannot become an out-of-memory crash',
     /MAX_KEYS/.test(lsrc) && /counters\.dropped/.test(lsrc));
+
+  /* ⛔ THE DENOMINATOR ACCUMULATES WITHIN A FLUSH WINDOW, AND THAT IS RUN TOO.
+     `boardsSeen` is what makes "matched 0" mean "the rule is wrong" rather than
+     "nobody has priced a board it governs" — the distinction this whole feature
+     exists for. `fold` is the THIRD copy of the adds-not-replaces property
+     (`firing.merge` is pinned by D15, the SQL upsert by I3/I4 and by C1/E3 in
+     the database suite) and it was the only unpinned one: the audit changed
+     `cur.boardsSeen +=` to `=` and both suites stayed green while three boards
+     priced inside one 15-second window recorded 1 instead of 3. Under-counting
+     the denominator pushes rules toward "not asked" and AWAY from "never fired"
+     — it hides exactly the rules the engine was built to surface. */
+  ledgerMod.reset();
+  const oneBoard = () => ledgerMod.record(
+    { ran: true, applied: [], ineligible: [], blocked: [], unreadable: [] },
+    { rules: [RULE()], engine: 'general' });
+  oneBoard(); oneBoard(); oneBoard();
+  const held = [...ledgerMod._internals.buffer.values()];
+  ok('I5b three boards in one flush window are three boards, not one',
+    held.length === 1 && held[0].boardsSeen === 3,
+    held.length + ' key(s), boardsSeen=' + (held[0] && held[0].boardsSeen));
+  ledgerMod.reset();
   ok('I6 the drain timer is unref\'d, so it never holds a script or a test runner open',
     /unref\(\)/.test(lsrc));
 
