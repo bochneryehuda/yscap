@@ -192,6 +192,11 @@ export function overridesFromSnapshot(snap, mode) {
       // The manual construction feasibility fee (owner-directed 2026-08-21) — blank means "use the
       // deal's own fee"; a typed amount (0 included, which waives it) is a per-file override.
       feasibilityFee: f.tsFeasFee,
+      /* The per-file MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695) — blank means
+         "use the company minimum" (and CLEARS any stale sticky, which is what makes a re-registered
+         file follow today's rules); a typed amount is an approved exception and a typed 0 waives
+         the minimum outright. */
+      minOrigFee: f.tsMinOrigFee,
       titleFee: f.tsFeeTitle,
       /* THE GOVERNMENT CHARGES — the county, the contract's transfer-tax split, and
          a per-charge manual amount (owner-directed 2026-08-23). The keys are the
@@ -536,7 +541,20 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
               appraisal sits BELOW it because it is paid outside closing, and folding
               it in would overstate what the borrower brings to the table. */}
           <Sec title="Closing costs" note="Everything charged at the closing table, then the appraisal, which is paid separately.">
-            <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money2(q.origination)} />
+            {/* THE PROGRAM MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695). When the
+                floor bound, the percentage shown is the EFFECTIVE one and the row says why —
+                printing the stated rate beside the minimum dollars makes the row contradict itself
+                ("Origination (1.25%)" next to $2,500.00 on a $60,000 loan). Read from the quote's
+                own explain block, never decided again here; a quote the floor never reached carries
+                none, so this row is byte-identical on every loan above the crossover. */}
+            <Row
+              k={(() => {
+                const m = q.closingCosts && q.closingCosts.originationMinimum;
+                const frac = m && m.effectivePct != null ? m.effectivePct : q.origPct;
+                const pct = frac != null ? (frac * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—';
+                return `Origination (${pct})${m ? ' — minimum applied' : ''}`;
+              })()}
+              v={money2(q.origination)} />
             {/* TPO broker origination fee (owner-directed 2026-08-06) — only present on
                 a broker-registered file where a broker fee is set; retail registrations
                 never carry it, so this row never renders on them. */}

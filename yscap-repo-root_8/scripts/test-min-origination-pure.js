@@ -123,10 +123,12 @@ t('B5 the effective percentage is what the tape and the derivation both read, an
 });
 
 t('B6 the loan amount is CARRIED, not re-derived — a 0% deal still states it', () => {
+  /* The derivation page shows "1.25% of $100,000.00 = …", and recovering that loan as
+     `pctAmount / pct` is a division by zero at 0% and floating-point fragile everywhere else — a
+     page that misstates the number it is deriving FROM is worse than none. */
   const o = R({ totalLoan: 100000, origPct: 0, minFee: 2500 });
   assert.strictEqual(o.totalLoan, 100000);
-  assert.ok(M.derivationLine(o).includes('$100,000.00'),
-    'the derivation must name the real loan amount, never pctAmount/pct');
+  assert.strictEqual(o.pctAmount, 0, 'and 0% of a real loan is a real $0, not a missing value');
 });
 
 /* ── C. THE RESOLUTION CHAIN ─────────────────────────────────────────────────────────────────── */
@@ -156,8 +158,7 @@ t('D1 nothing prints when the minimum did not bind', () => {
   const o = R({ totalLoan: 400000, origPct: 0.0125, minFee: 2500 });
   assert.strictEqual(o.label, null);
   assert.strictEqual(o.note, null);
-  assert.strictEqual(M.derivationLine(o), null);
-  assert.strictEqual(M.emailLine(o), 'Origination fee — $5,000.00');
+
 });
 
 t('D2 the qualifier is a QUALIFIER on the existing row, never a second fee', () => {
@@ -175,18 +176,22 @@ t('D3 the sub-line states both figures a reader needs to reconcile', () => {
 
 t('D4 no borrower-facing wording calls it a penalty, or names a percentage twice', () => {
   const o = R({ totalLoan: 100000, origPct: 0.0125, minFee: 2500 });
-  for (const text of [o.label, o.note, M.emailLine(o)]) {
+  for (const text of [o.label, o.note]) {
     assert.ok(!/penalt/i.test(text), `"penalty" wording in: ${text}`);
     assert.ok(!/2\.5%/.test(text),
       `the EFFECTIVE percentage must not appear on a borrower row — two rates on one line: ${text}`);
   }
 });
 
-t('D5 the derivation page DOES show the effective percentage — it exists to be reconciled', () => {
-  const line = M.derivationLine(R({ totalLoan: 100000, origPct: 0.0125, minFee: 2500 }));
-  assert.ok(line.includes('1.25%') && line.includes('$1,250.00'), 'the arithmetic');
-  assert.ok(line.includes('$2,500.00'), 'the minimum and the charge');
-  assert.ok(line.includes('2.5%'), 'the effective percentage');
+t('D5 the EFFECTIVE percentage is published, because two readers genuinely need it', () => {
+  /* The Inputs & Loan Derivation page (which prints it as its own sub-row — J and the render proof
+     cover the drawing) and Blue Lake's data tape, which sends origination as a percentage and must
+     send the REAL one when the floor bound (owner-directed 2026-09-04). It is never on a borrower's
+     fee ROW, though — two competing rates on one line is D4. */
+  const o = R({ totalLoan: 100000, origPct: 0.0125, minFee: 2500 });
+  assert.strictEqual(o.effectivePct, 0.025);
+  assert.strictEqual(o.pctAmount, 1250, 'and the arithmetic behind it is on the result, not re-derived');
+  assert.strictEqual(o.totalLoan, 100000, 'including the loan it was taken from');
 });
 
 t('D6 a percentage reads as a person writes it', () => {
@@ -474,6 +479,147 @@ if (!pricing.enginesReady || !pricing.enginesReady()) {
     assert.strictEqual(locked.minOrigFee, 2500, 'and a real exception on the file IS carried');
     const waived = pricing.buildInputs({ ...app, file_min_orig_fee: 0 }, exp, {});
     assert.strictEqual(waived.minOrigFee, 0, 'and a stored 0 survives — dropping it would un-waive an approved waiver');
+  });
+}
+
+/* ── I. THE STUDIO'S BROWSER MIRROR ─────────────────────────────────────────────────────────────
+   The Term Sheet Studio cannot require server code, so `web/v2/tools/termsheet.js` carries its own
+   copy of this rule — the `lib/payoff.js` arrangement. A studio that PRINTS one fee while the
+   register BOOKS another is exactly the drift the one-definition rule exists to stop, so the two
+   are run over the SAME battery here and any disagreement fails the build.
+
+   AND THE MIRROR CHECK ALSO ASSERTS THE RULE (J below), because two copies of one mistake read as
+   a pass — that is precisely how the bridge/feasibility defect survived two years of a green
+   agreement test (2026-08-26). */
+{
+  const TS = read('web/v2/tools/termsheet.js');
+  const grab = (name) => {
+    const m = new RegExp(`  function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n  \\}`).exec(TS);
+    return m ? m[0] : null;
+  };
+  const resolveSrc = grab('resolvedMinOrigFee');
+  const feeSrc = grab('originationFee');
+  const noteSrc = grab('origMinNote');
+  t('I1 the studio\'s own copy of the rule was found', () => {
+    assert.ok(resolveSrc && feeSrc && noteSrc, 'the mirror is missing from termsheet.js');
+  });
+
+  if (resolveSrc && feeSrc && noteSrc) {
+    /* Rebuilt with the studio's DOM/format dependencies stubbed, so what is compared is the RULE
+       and not the browser around it. The two number formatters are the studio's real ones. */
+    // eslint-disable-next-line no-new-func
+    const mirror = new Function('loan', 'pct', 'typed', 'CO', `
+      var MIN_ORIG_FEE = 2500, MAX_MIN_ORIG_FEE = 25000;
+      function round2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
+      function origPctStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + "%"; }
+      var YS = { fmtUSD2: function (n) { return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); } };
+      function adminNumRaw() { return typed; }
+      ${resolveSrc}
+      ${noteSrc}
+      ${feeSrc}
+      return originationFee(loan, pct);`);
+
+    const CASES = [];
+    for (const loan of [0, 1, 40000, 72000, 100000, 199999, 200000, 200001, 480000, 2500000]) {
+      for (const pct of [0, 0.0075, 0.0125, 0.02, 0.025]) {
+        for (const typed of [null, 0, 1000, 2500, 5000, 25000, 30000, -5, NaN]) {
+          for (const co of [2500, 3000, null]) CASES.push({ loan, pct, typed, co });
+        }
+      }
+    }
+    let disagree = 0;
+    for (const c of CASES) {
+      const b = mirror(c.loan, c.pct, c.typed, { minOrigFee: c.co });
+      const sv = M.originationFor({ loan: 0, totalLoan: c.loan, origPct: c.pct, minFee: M.resolveMinFee(c.typed, c.co) });
+      const keys = ['amount', 'pctAmount', 'minimum', 'applied', 'shortfall', 'effectivePct'];
+      for (const k of keys) {
+        if (JSON.stringify(b[k]) !== JSON.stringify(sv[k])) {
+          disagree++;
+          if (disagree < 4) console.log(`   …disagree on ${k} for ${JSON.stringify(c)}: browser=${b[k]} server=${sv[k]}`);
+          break;
+        }
+      }
+      if (Boolean(b.note) !== Boolean(sv.note) || (b.note && b.note !== sv.note)) {
+        disagree++;
+        if (disagree < 4) console.log(`   …the WORDING disagrees for ${JSON.stringify(c)}:\n      browser=${b.note}\n      server =${sv.note}`);
+      }
+    }
+    t('I2 the studio and the server charge the SAME fee, and say the same words, on every case', () => {
+      assert.strictEqual(disagree, 0);
+    });
+    t('I3 …over a battery big enough to mean something', () => assert.ok(CASES.length >= 500, CASES.length));
+
+    /* I4-I6: THE RULE ITSELF, asserted on the BROWSER copy — so a mutation applied to BOTH copies
+       (which the agreement check above would wave through) still fails. */
+    t('I4 the studio charges the owner\'s own example correctly', () => {
+      const b = mirror(100000, 0.0125, null, { minOrigFee: 2500 });
+      assert.strictEqual(b.amount, 2500);
+      assert.strictEqual(b.applied, true);
+    });
+    t('I5 the studio never floors an unsized deal', () => {
+      assert.strictEqual(mirror(0, 0.0125, null, { minOrigFee: 2500 }).amount, 0);
+    });
+    t('I6 a typed 0 waives it in the studio too, and junk in the box falls through to the company number', () => {
+      assert.strictEqual(mirror(100000, 0.0125, 0, { minOrigFee: 2500 }).amount, 1250, 'the waiver');
+      assert.strictEqual(mirror(100000, 0.0125, 30000, { minOrigFee: 2500 }).amount, 2500, 'a decimal slip is refused');
+    });
+  }
+}
+
+/* ── J. THE SURFACES ────────────────────────────────────────────────────────────────────────────
+   Folding an amount into a total is HALF a fee (the standing rule). The floor is folded into
+   `origFee`, so every surface that PRINTS the origination row has to say when the stated rate is
+   not the rate charged — otherwise the row contradicts itself ("Origination (1.25%)" beside
+   $2,500.00 on a $60,000 loan).
+
+   EACH SPREADSHEET TOKEN IS KEYED ON THAT COLUMN'S OWN DATA VARIABLE (`d`/`gd`/`sd`/`pd`), which is
+   the fee-roster's own rule: the four columns are near-identical text told apart only by that
+   variable, and a search for the words finds the Standard column and stops. */
+{
+  const TS = read('web/v2/tools/termsheet.js');
+  const region = (from, to, what) => {
+    const i = TS.search(from); assert.ok(i > -1, `region start not found: ${what}`);
+    const j = TS.slice(i).search(to); assert.ok(j > -1, `region end not found: ${what}`);
+    return TS.slice(i, i + j);
+  };
+  const SURFACES = [
+    ['the studio structure screen', () => region(/\n  function recompute\(\) \{/, /\n  function validateAssign\(/, 'panel'), /origRowLabel\(d\)/],
+    ['the spreadsheet — Standard column', () => region(/\n    var std = \[/, /\n    var gold;/, 'std'), /origRowLabel\(d\)/],
+    ['the spreadsheet — Gold column', () => region(/\n    var gold;/, /\n    var silver;/, 'gold'), /origRowLabel\(gd\)/],
+    ['the spreadsheet — Silver column', () => region(/\n    var silver;/, /\n    var speed;/, 'silver'), /origRowLabel\(sd\)/],
+    ['the spreadsheet — Speed column', () => region(/\n    var speed;/, /\n  function /, 'speed'), /origRowLabel\(pd\)/],
+    ['the term sheet PDF', () => region(/async function exportPdf\(/, /\n  function pctp\(/, 'pdf'), /origRowLabel\(d, "Origination fee"\)/],
+    ['the Inputs & Loan Derivation page', () => region(/\n  function drawDerivationPage\(/, /\n  \/\* ===================== wiring/, 'deriv'), /d\.origMin/],
+  ];
+  for (const [what, src, token] of SURFACES) {
+    t(`J: ${what} names the minimum when it binds`, () => {
+      assert.ok(token.test(src()), `${what} must carry ${token}`);
+    });
+  }
+  t('J8 no spreadsheet column can be satisfied by a neighbour\'s source', () => {
+    const gold = region(/\n    var gold;/, /\n    var silver;/, 'gold');
+    assert.ok(!/origRowLabel\(d\)/.test(gold), 'the Gold column must key on gd, never d');
+  });
+  t('J9 the staff Products & Pricing panel and the borrower\'s terms email name it too', () => {
+    const panel = stripComments(read('app-v2/src/components/ProductStudioPanel.jsx'));
+    assert.ok(/originationMinimum/.test(panel) && /minimum applied/.test(panel),
+      'the staff panel must read the quote\'s explain block and say so');
+    const email = stripComments(read('src/lib/product-registration.js'));
+    assert.ok(/originationMinimum/.test(email) && /LABEL_MINIMUM/.test(email),
+      'the borrower email must use the ONE label rather than restating the wording');
+  });
+  t('J10 the per-file box exists, is PRE-FILLED not pre-set, and rides the whole chain', () => {
+    const html = read('web/v2/tools/term-sheet.html');
+    assert.ok(/id="tsMinOrigFee"/.test(html), 'the admin-zone box must exist');
+    const seed = stripComments(TS);
+    assert.ok(/s\("tsMinOrigFee", String\(CO\.minOrigFee\)\)/.test(seed),
+      'seeded as a PLACEHOLDER through s(), never written into e.value — the 2026-08-20 rule');
+    assert.ok(/setVal\("tsMinOrigFee", ""\)/.test(seed), 'and cleared when the admin zone re-locks');
+    const studio = stripComments(read('app-v2/src/components/TermSheetStudio.jsx'));
+    assert.ok(/tsMinOrigFee: moneyVal\('tsMinOrigFee'\)/.test(studio), 'harvested into the snapshot');
+    assert.ok(/put\('tsMinOrigFee', inp\.minOrigFee\)/.test(studio), 'and restored when a file is reopened');
+    const bridge = stripComments(read('app-v2/src/components/ProductStudioPanel.jsx'));
+    assert.ok(/minOrigFee: f\.tsMinOrigFee/.test(bridge), 'and sent to the server as minOrigFee');
   });
 }
 

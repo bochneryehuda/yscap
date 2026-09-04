@@ -123,7 +123,7 @@ function originationFor(input) {
   const amount = applied ? round2(minimum) : pctAmount;
 
   return Object.freeze({
-    /* CARRIED, never re-derived. `derivationLine` needs the loan amount to show the arithmetic, and
+    /* CARRIED, never re-derived. the derivation page shows the arithmetic ("1.25% of $100,000.00 = …") and
        recovering it as `pctAmount / pct` is wrong at pct 0 and floating-point fragile everywhere
        else — a derivation page that misstates the number it is deriving FROM is worse than none. */
     totalLoan,
@@ -175,24 +175,6 @@ function minimumNote({ minimum, pct, pctAmount }) {
        + `${pctStr(pct)} of the loan amount (${money(pctAmount)}).`;
 }
 
-/** The Inputs & Loan Derivation page records HOW a number was reached, so it shows the arithmetic
- *  rather than the sentence — and it is the one borrower-visible surface that names the effective
- *  percentage, because that page exists to be reconciled against. */
-function derivationLine(o) {
-  if (!o || !o.applied) return null;
-  return `${pctStr(o.pct)} of ${money(o.totalLoan)} = ${money(o.pctAmount)}`
-       + ` · program minimum ${money(o.minimum)}`
-       + ` · charged ${money(o.amount)} (${pctStr(o.effectivePct)} effective)`;
-}
-
-/** The borrower's "your terms are ready" email — plain, and never two competing percentages. */
-function emailLine(o) {
-  if (!o) return null;
-  if (!o.applied) return `Origination fee — ${money(o.amount)}`;
-  return `Origination fee — ${money(o.amount)} (our minimum origination fee; on this loan amount it `
-       + `is more than the ${pctStr(o.pct)} rate)`;
-}
-
 module.exports = {
   MIN_ORIGINATION_FEE,
   MAX_MIN_ORIGINATION_FEE,
@@ -201,7 +183,5 @@ module.exports = {
   resolveMinFee,
   originationFor,
   minimumNote,
-  derivationLine,
-  emailLine,
   _internals: { round2, pctStr, money },
 };

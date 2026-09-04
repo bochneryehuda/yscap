@@ -45,6 +45,9 @@
   // and its cash-to-close / liquidity contribution are INERT and every retail
   // number is byte-identical.
   var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, markupSpeed: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, origSpeed: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [], markupTiers: null, brokerFeePct: 0, feasibilityFees: { groundUp: 1250, heavyRehab: 750 },
+    // The company-wide MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695) — the floor
+    // under our own origination on every program. Overlaid from /api/pricing-defaults below.
+    minOrigFee: 2500,
     // Our own fee's two parts, the New York legal ladder and the optional New York settlement
     // agent fee (owner-directed 2026-08-26). `lender` above stays the TOTAL and is derived
     // from these — 1,200 + 995 = 2,195, the number it always held.
@@ -715,7 +718,12 @@
     var initialAdvance = _sl.initialAdvance;
     var financedIRr = _sl.financedIR;
     var origPct = liveOrigPct();                          // manual basis on => the Manual knob (see liveOrigPct)
-    var origFee = (totalLoan) * origPct;                  // origination % (admin-overridable; default 1%)
+    /* THE PROGRAM MINIMUM ORIGINATION FEE (db/695) floors this — see originationFee(). `origFee`
+       keeps its exact meaning (the dollars charged), so `closing` below, cash to close and the
+       liquidity to show inherit the floor by arithmetic and every reader of `d.origFee` is
+       unchanged. Above the crossover the floor cannot bind and the sheet is byte-identical. */
+    var origInfo = originationFee(totalLoan, origPct);
+    var origFee = origInfo.amount;                        // origination % (admin-overridable), floored at the program minimum
     // interest-only payment logic (industry standard): during construction the borrower pays
     // interest only on funds DRAWN — starts on the initial advance, grows to the full loan.
     var rFrac = (R.noteRate || 0) / 12;
@@ -766,7 +774,7 @@
       initialPayment: initialPayment, fullPayment: fullPayment, monthlyInterest: monthlyInterest,
       totalCost: displayCost, downPayment: _sl.downPayment, excessOOP: excessOOP,
       oopRehab: _sl.oopRehab, maxOopRehab: _sl.maxOopRehab, initialCut: _sl.initialCut, maxInitial: _sl.maxInitial,
-      origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
+      origFee: origFee, origPct: origPct, origMin: origInfo.applied ? origInfo : null, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       /* THE TWO PARTS, NAMED — folding an amount into a total is HALF a fee. `lenderFee` stays
          the total every existing line reads; these are what let a surface ITEMISE it. */
       uwFee: feeParts.underwriting, legalFee: feeParts.legal, feeSplit: feeParts.split, legalBasis: feeParts.basis,
@@ -815,7 +823,8 @@
     var initialAdvance = _g.initialAdvance;
     var financedIRr = _g.financedIR;
     var origPct = adminOrigPct("gold");
-    var origFee = totalLoan * origPct;                    // origination % (admin-overridable; default 1%)
+    var origInfo = originationFee(totalLoan, origPct);    // the program minimum floors it (db/695)
+    var origFee = origInfo.amount;
     var rFrac = (R.noteRate || 0) / 12;
     var title = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(inp.state, totalLoan, inp.loanType) : { total: 0 };
     var titleOvr = adminTitle();
@@ -848,7 +857,7 @@
       totalCost: costAcq + num("construction") + financedIRr,
       downPayment: _g.downPayment, excessOOP: excessOOP,
       oopRehab: _g.oopRehab, maxOopRehab: _g.maxOopRehab, initialCut: _g.initialCut, maxInitial: _g.maxInitial,
-      origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
+      origFee: origFee, origPct: origPct, origMin: origInfo.applied ? origInfo : null, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       /* THE TWO PARTS, NAMED — folding an amount into a total is HALF a fee. `lenderFee` stays
          the total every existing line reads; these are what let a surface ITEMISE it. */
       uwFee: feeParts.underwriting, legalFee: feeParts.legal, feeSplit: feeParts.split, legalBasis: feeParts.basis,
@@ -904,7 +913,8 @@
     var initialAdvance = _sv.initialAdvance;
     var financedIRr = _sv.financedIR;
     var origPct = adminOrigPct("silver");
-    var origFee = totalLoan * origPct;
+    var origInfo = originationFee(totalLoan, origPct);    // the program minimum floors it (db/695)
+    var origFee = origInfo.amount;
     var rFrac = (R.noteRate || 0) / 12;
     var title = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(inp.state, totalLoan, inp.loanType) : { total: 0 };
     var titleOvr = adminTitle();
@@ -936,7 +946,7 @@
       totalCost: costAcq + num("construction") + financedIRr,
       downPayment: _sv.downPayment, excessOOP: excessOOP,
       oopRehab: _sv.oopRehab, maxOopRehab: _sv.maxOopRehab, initialCut: _sv.initialCut, maxInitial: _sv.maxInitial,
-      origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
+      origFee: origFee, origPct: origPct, origMin: origInfo.applied ? origInfo : null, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       /* THE TWO PARTS, NAMED — folding an amount into a total is HALF a fee. `lenderFee` stays
          the total every existing line reads; these are what let a surface ITEMISE it. */
       uwFee: feeParts.underwriting, legalFee: feeParts.legal, feeSplit: feeParts.split, legalBasis: feeParts.basis,
@@ -1004,7 +1014,8 @@
     var initialAdvance = _sp.initialAdvance;
     var financedIRr = _sp.financedIR;
     var origPct = adminOrigPct("speed");
-    var origFee = totalLoan * origPct;
+    var origInfo = originationFee(totalLoan, origPct);    // the program minimum floors it (db/695)
+    var origFee = origInfo.amount;
     var rFrac = (R.noteRate || 0) / 12;
     var title = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(inp.state, totalLoan, inp.loanType) : { total: 0 };
     var titleOvr = adminTitle();
@@ -1034,7 +1045,7 @@
       totalCost: costAcq + num("construction") + financedIRr,
       downPayment: _sp.downPayment, excessOOP: excessOOP,
       oopRehab: _sp.oopRehab, maxOopRehab: _sp.maxOopRehab, initialCut: _sp.initialCut, maxInitial: _sp.maxInitial,
-      origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
+      origFee: origFee, origPct: origPct, origMin: origInfo.applied ? origInfo : null, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       uwFee: feeParts.underwriting, legalFee: feeParts.legal, feeSplit: feeParts.split, legalBasis: feeParts.basis,
       settleFee: settleFee, settleLabel: SETTLEMENT_LABEL,
       cemaFee: cemaAmt, cemaLabel: CEMA_LABEL,
@@ -1649,6 +1660,74 @@
   }
   function feasFeeAmount() { return Number(feasFee().amount) || 0; }
   /* ─────────────────────────────────────────────────────────────────────────────────────────
+     THE MINIMUM ORIGINATION FEE (owner-directed 2026-09-04, db/695) — the floor under our own
+     origination on every program: *"a minimum origination fee of 2,500 dollars … if the loan
+     amount is 100,000 it's going to be more than the origination set by percentage because no
+     matter the percentage it's not going to get to 2500 and 2500 is the minimum."*
+
+     THIS IS A BROWSER MIRROR of `src/lib/min-origination.js`, and it exists for the reason every
+     mirror in this tool exists: the studio cannot require server code. The two are held together
+     by `scripts/test-min-origination-pure.js`, which runs BOTH over the same battery and fails the
+     moment they disagree — because a studio that PRINTS one fee while the register BOOKS another
+     is exactly the drift the one-definition rule exists to stop.
+
+     THE ROUNDING ORDER IS THE SERVER'S, deliberately. The percentage figure is rounded to the cent
+     FIRST and the comparison happens against that rounded number, because the rounded number is
+     the one that gets printed. That also makes this tool agree with `pricing.js` to the cent on
+     the origination line, where before it carried the unrounded product (a difference `money2`
+     hid, and one the register would have resolved the other way).
+     ───────────────────────────────────────────────────────────────────────────────────────── */
+  var MIN_ORIG_FEE = 2500;        // the owner's number — the bottom of the chain, never a hard wire
+  var MAX_MIN_ORIG_FEE = 25000;   // a decimal-slip guard; above this the candidate is refused
+  function round2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
+  /* WHICH minimum governs: the per-file box → the company number → the owner's $2,500. A blank,
+     unreadable, negative or implausibly large candidate falls through; an explicit 0 is honoured,
+     because it is a real decision (an approved exception waiving the minimum outright) and a
+     `||` chain would silently un-waive it. */
+  function resolvedMinOrigFee() {
+    var cands = [adminNumRaw("tsMinOrigFee"), CO.minOrigFee];
+    for (var i = 0; i < cands.length; i++) {
+      var n = Number(cands[i]);
+      if (cands[i] == null || cands[i] === "" || !isFinite(n)) continue;
+      if (n < 0 || n > MAX_MIN_ORIG_FEE) continue;
+      return round2(n);
+    }
+    return MIN_ORIG_FEE;
+  }
+  /* The origination fee actually charged, plus everything a surface needs to explain it. `amount`
+     keeps the exact meaning `origFee` already had — the DOLLARS CHARGED — so every reader of
+     `d.origFee` is unchanged and the floor cascades into `closing`, cash to close and the
+     liquidity to show with nothing else wired. */
+  function originationFee(totalLoan, origPct) {
+    var loan = Math.max(0, Number(totalLoan) || 0);
+    var pct = Math.max(0, Number(origPct) || 0);
+    var minimum = resolvedMinOrigFee();
+    // No loan, no fee — a minimum on a loan that does not exist would put $2,500 of cash to close
+    // on a blank pricing screen.
+    if (loan <= 0) return { amount: 0, pctAmount: 0, pct: pct, minimum: minimum, applied: false, shortfall: 0, effectivePct: 0, note: null };
+    var pctAmount = round2(loan * pct);
+    var applied = minimum > pctAmount;
+    var amount = applied ? round2(minimum) : pctAmount;
+    return {
+      totalLoan: loan, amount: amount, pctAmount: pctAmount, pct: pct, minimum: minimum, applied: applied,
+      shortfall: applied ? round2(amount - pctAmount) : 0,
+      /* EXACTLY `pct` when the floor did not bind. Dividing the ROUNDED dollars by the loan does
+         not give the stated rate back (1.25% of $200,001 rounds to $2,500.01, and that over
+         $200,001 is 0.0124999875), so a surface reading this would print 1.2499987% on every loan
+         the minimum never touches. */
+      effectivePct: applied ? amount / loan : pct,
+      note: applied ? origMinNote(minimum, pct, pctAmount) : null
+    };
+  }
+  /* The sub-line under the origination row. NEVER a "penalty" — it is a minimum on a fee, exactly
+     as the 3-month minimum earned interest is never a prepayment penalty — and never a note buyer's
+     name. Nothing prints at all when the floor does not bind, so a sheet at or above the crossover
+     is byte-identical to what it always was. */
+  function origMinNote(minimum, pct, pctAmount) {
+    return "This loan's origination fee is our " + YS.fmtUSD2(minimum) + " program minimum, which is more than "
+      + origPctStr(pct) + " of the loan amount (" + YS.fmtUSD2(pctAmount) + ").";
+  }
+  /* ─────────────────────────────────────────────────────────────────────────────────────────
      OUR OWN FEE, IN ITS TWO REAL PARTS, AND THE NEW YORK LEGAL LADDER (owner-directed
      2026-08-26) — $1,200 underwriting & processing plus a legal fee that is $995 in general,
      $2,000 on a ground-up, $2,000 in New York and $2,500 in New York City / on a $100,000+
@@ -1785,6 +1864,24 @@
   function adminFeeAppr() { return adminNum("tsFeeAppr", CO.appraisal); }
   function adminTitle() { var e = el("tsFeeTitle"); var v = e ? parseFloat(String(e.value).replace(/,/g, "")) : NaN; if (isFinite(v) && v >= 0) return v; return CO.title != null ? CO.title : null; }  // per-file field, else company flat, else estimate
   function origPctStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + "%"; }
+  /* THE ORIGINATION ROW'S LABEL, ON EVERY SURFACE THAT PRINTS ONE (db/695). When the program
+     minimum bound, the percentage shown is the EFFECTIVE one and the label says why — printing the
+     STATED rate beside the minimum dollars makes the row contradict itself ("Origination (1.25%)"
+     next to $2,500.00 on a $60,000 loan, where 1.25% is $750). One definition, so the panel, the
+     four spreadsheet columns, the PDF and the derivation page can never describe one fee two ways;
+     a sheet the floor never reaches is byte-identical, because `origMin` is null there.
+
+     The owner asked for a QUALIFIER, not a new line: *"needs to be a new line of the term sheet
+     like not a new line but wording next to the origination fee that's because of the minimum."* */
+  function origRowPct(dd) {
+    var d = dd || {};
+    if (d.origMin && d.origMin.effectivePct != null) return d.origMin.effectivePct;
+    return (d.origPct != null ? d.origPct : 0.0125);
+  }
+  function origRowLabel(dd, base) {
+    var d = dd || {};
+    return (base || "Origination") + " (" + origPctStr(origRowPct(d)) + ")" + (d.origMin ? " — minimum applied" : "");
+  }
   function origPtStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + (p === 1 ? " pt" : " pts"); }
   function adminNumRaw(id) { var e = el(id); if (!e) return null; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v >= 0) ? v : null; }  // null = blank/unset
   /* SHOW the company defaults in the admin fee/markup inputs — as PLACEHOLDERS,
@@ -1853,6 +1950,11 @@
     s("tsFeeUwPart", String(coLenderFees().underwriting));
     syncFeeHints();
     if (CO.title != null) s("tsFeeTitle", String(CO.title));
+    /* THE MINIMUM ORIGINATION FEE — a PLACEHOLDER, never a value. Same rule as every box in this
+       zone since 2026-08-20: painting the company number in as `value` would make it an explicit
+       per-file override, freeze it onto the file at register, and route every later registration
+       to an admin as a "discount" the day the company number moves. */
+    s("tsMinOrigFee", String(CO.minOrigFee));
     syncManualOrigHint();
   }
   // Show the staffer WHICH number a blank Manual field will actually use — it
@@ -1908,6 +2010,10 @@
     // PRESERVE-IF-ABSENT, like programAvailability below: a payload that does not carry the key
     // must never silently drop the fee to nothing.
     if (d.feasibilityFees && typeof d.feasibilityFees === "object") CO.feasibilityFees = d.feasibilityFees;
+    /* The company-wide minimum origination fee (db/695). PRESERVE-IF-ABSENT for the same reason
+       as the two above: a payload that does not carry the key must never silently drop the floor
+       to nothing and start quoting small loans without it. */
+    if (d.minOrigFee != null && isFinite(Number(d.minOrigFee))) CO.minOrigFee = Number(d.minOrigFee);
     CO.markupTiers = (d.markupTiers && typeof d.markupTiers === "object") ? d.markupTiers : null;
     // Program ON/OFF switches (owner-directed 2026-08-18) — the COMPANY map
     // ({ gold:{active:false, note} }); a host-pushed per-file map (tsProgAvail)
@@ -2251,6 +2357,7 @@
       setVal("tsYspGoldT1", "");   // blank = Gold top tier keeps its normal (0 / company-default) markup
       setVal("tsFeeUW", ""); setVal("tsFeeCredit", ""); setVal("tsFeeAppr", ""); setVal("tsFeeTitle", "");
       setVal("tsFeasFee", "");   // blank = the deal's own construction feasibility fee governs
+      setVal("tsMinOrigFee", "");   // blank = the company minimum origination fee governs (db/695)
       // blank = the government charges calculate themselves from the state, county,
       // units and loan. Clearing the zone must clear these too, or a "cleared" file
       // silently keeps a typed tax nobody can see any more.
@@ -2462,7 +2569,7 @@
     YS.put("rArv", (sized && d.arvPct) ? pcFull(d.arvPct) : EM);
     YS.put("rLtv", (sized && d.ltvPct) ? pcFull(d.ltvPct) : EM);
     YS.put("rDown", sized ? YS.fmtUSD(d.downPayment) : EM);
-    YS.put("rOrigLbl", "Origination (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")");
+    YS.put("rOrigLbl", origRowLabel(d));
     YS.put("rOrig", sized ? YS.fmtUSD2(d.origFee) : EM);
     // TPO broker origination fee — its own line, shown only when set (a TPO file).
     // Hidden with brokerFee 0, so a retail sheet never carries it.
@@ -2976,7 +3083,7 @@
       isRefi() ? null : ["Down payment (equity)", stdOk ? money(d.downPayment) : EM],
       ["Leverage \u2014 LTC / as-is / ARV", stdOk ? (pct(d.ltcPct) + " / " + pct(d.ltvPct) + " / " + pct(d.arvPct)) : EM],
       xlsxTierMaxRow(d, pct), xlsxPricedRow(d, pct),
-      ["Origination (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", (stdOk && d.totalLoan) ? money2(d.origFee) : EM],
+      [origRowLabel(d), (stdOk && d.totalLoan) ? money2(d.origFee) : EM],
       /* OUR FEE'S TWO PARTS, EACH NAMED — keyed on THIS column's own data variable, so one
          column can never cover for another (the lesson of the feasibility fee, which was
          named in the Standard column only and silently absent from Gold and Silver). A file
@@ -3021,7 +3128,7 @@
         isRefi() ? null : ["Down payment (equity)", gOk ? money(gd.downPayment) : EM],
         ["Leverage \u2014 LTC / as-is / ARV", gOk ? (pct(gd.ltcPct) + " / " + pct(gd.ltvPct) + " / " + pct(gd.arvPct)) : EM],
         xlsxTierMaxRow(gd, pct), xlsxPricedRow(gd, pct),
-        ["Origination (" + origPctStr((gd.origPct != null ? gd.origPct : 0.0125)) + ")", (gOk && gd.totalLoan) ? money2(gd.origFee) : EM],
+        [origRowLabel(gd), (gOk && gd.totalLoan) ? money2(gd.origFee) : EM],
         /* OUR FEE'S TWO PARTS, EACH NAMED — keyed on THIS column's own data variable, so one
            column can never cover for another (the lesson of the feasibility fee, which was
            named in the Standard column only and silently absent from Gold and Silver). A file
@@ -3078,7 +3185,7 @@
         isRefi() ? null : ["Down payment (equity)", sOk ? money(sd.downPayment) : EM],
         ["Leverage — LTC / as-is / ARV", sOk ? (pct(sd.ltcPct) + " / " + pct(sd.ltvPct) + " / " + pct(sd.arvPct)) : EM],
         xlsxTierMaxRow(sd, pct), xlsxPricedRow(sd, pct),
-        ["Origination (" + origPctStr((sd.origPct != null ? sd.origPct : 0.0125)) + ")", (sOk && sd.totalLoan) ? money2(sd.origFee) : EM],
+        [origRowLabel(sd), (sOk && sd.totalLoan) ? money2(sd.origFee) : EM],
         /* OUR FEE'S TWO PARTS, EACH NAMED — keyed on THIS column's own data variable, so one
            column can never cover for another (the lesson of the feasibility fee, which was
            named in the Standard column only and silently absent from Gold and Silver). A file
@@ -3131,7 +3238,7 @@
         isRefi() ? null : ["Down payment (equity)", pOk ? money(pd.downPayment) : EM],
         ["Leverage \u2014 LTC / as-is / ARV", pOk ? (pct(pd.ltcPct) + " / " + pct(pd.ltvPct) + " / " + pct(pd.arvPct)) : EM],
         xlsxTierMaxRow(pd, pct), xlsxPricedRow(pd, pct),
-        ["Origination (" + origPctStr((pd.origPct != null ? pd.origPct : 0.0125)) + ")", (pOk && pd.totalLoan) ? money2(pd.origFee) : EM],
+        [origRowLabel(pd), (pOk && pd.totalLoan) ? money2(pd.origFee) : EM],
         (pOk && pd.feeSplit) ? ["Underwriting & processing", money2(pd.uwFee)] : null,
         (pOk && pd.feeSplit) ? ["Legal fee", money2(pd.legalFee)] : null,
         (pOk && !pd.feeSplit) ? ["UW / processing / legal", money2(pd.lenderFee)] : null,
@@ -3666,7 +3773,7 @@
       var rx = W - M - 16;
       doc.setFont("helvetica", "normal"); doc.setFontSize(7.2); doc.setTextColor(176, 184, 186); doc.text("NOTE RATE (INTEREST-ONLY)", rx, y + 17, { align: "right", charSpace: 0.5 });
       doc.setFont("times", "bold"); doc.setFontSize(17); doc.setTextColor(244, 240, 231); doc.text((d.pricingReady && d.rate > 0) ? fmtRate3(d.rate) + "%" : "\u2014", rx, y + 40, { align: "right" });
-      doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(176, 184, 186); doc.text(d.term + "-month term \u00b7 " + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + " origination", rx, y + 55, { align: "right" });
+      doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(176, 184, 186); doc.text(d.term + "-month term \u00b7 " + origPctStr(origRowPct(d)) + " origination" + (d.origMin ? " (minimum)" : ""), rx, y + 55, { align: "right" });
       y += heroH + 16;
 
       // TWO COLUMNS
@@ -3736,7 +3843,7 @@
       yR = rowIn(xR, colW, isBridge ? "As-is value" : "As-is / ARV value", isBridge ? money(d.asIs) : (money(d.asIs) + " / " + money(d.arv)), yR);
       yR += 9;
       yR = cardHead(xR, colW, "Estimated cash to close", yR);
-      yR = rowIn(xR, colW, "Origination fee (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", sized ? money2(d.origFee) : "\u2014", yR);
+      yR = rowIn(xR, colW, origRowLabel(d, "Origination fee"), sized ? money2(d.origFee) : "\u2014", yR);
       // TPO broker origination fee (owner-directed 2026-08-06) \u2014 only on a TPO file
       // where a broker fee is set; brokerFee is 0 on every other sheet, so this row
       // never prints on a retail term sheet.
@@ -4041,7 +4148,7 @@
           ry += rowH;
         });
         y = ry + 10;
-        para("Rates shown are the borrower note rate, interest-only, before third-party closing costs. Origination is " + origPctStr(d.origPct != null ? d.origPct : 0.0125) + " of the loan at every level. Final pricing, leverage and proceeds are confirmed at closing and may differ.", 7.5);
+        para("Rates shown are the borrower note rate, interest-only, before third-party closing costs. Origination is " + origPctStr(d.origPct != null ? d.origPct : 0.0125) + " of the loan at every level" + (d.origMin ? ", subject to our " + YS.fmtUSD2(d.origMin.minimum) + " program minimum" : "") + ". Final pricing, leverage and proceeds are confirmed at closing and may differ.", 7.5);
         footer();
       }
 
@@ -4734,7 +4841,20 @@
       ["Interest accrual", accrualLabel()],
       minInterestOn(_dpProg) ? ["Minimum interest", MIN_INTEREST_ROW] : null,
       deferredOrigPct() > 0 ? ["Deferred origination fee (paid at payoff)", pcFull(deferredOrigPct() / 100) + " of loan"] : null,
+      /* THE DERIVATION PAGE RECORDS HOW A NUMBER WAS REACHED, so when the program minimum bound it
+         shows the ARITHMETIC — and it is the one borrower-visible surface that names the effective
+         percentage, because this page exists to be reconciled against.
+
+         THREE SHORT SUB-ROWS, NOT ONE LONG VALUE, and that is a rendering fact rather than a
+         preference: this page's value column is 56% of the text width and `fitSlotLines` gives it
+         two lines before it shrinks to 7.5pt and then CLIPS with an ellipsis. The single-string
+         version was measured on a real export and came out truncated mid-word — "…charged
+         $2,500.00 (3.472% eff…" — so the reader lost the very figure the row exists to state.
+         The `sub` row kind is what the government-charges block already uses for exactly this. */
       ["Origination", origPctStr(d.origPct != null ? d.origPct : 0.0125) + " of loan"],
+      d.origMin ? [origPctStr(d.origMin.pct) + " of " + money2(d.origMin.totalLoan), money2(d.origMin.pctAmount), "sub"] : null,
+      d.origMin ? ["Program minimum", money2(d.origMin.minimum), "sub"] : null,
+      d.origMin ? ["Charged (" + origPctStr(d.origMin.effectivePct) + " effective)", money2(d.origMin.amount), "sub"] : null,
       (d.brokerFee > 0) ? ["Broker origination fee", origPctStr(d.brokerFeePct / 100) + " of loan"] : null,
       isBridge ? null : ["Construction draw fee", drawFeeLines(_dpProg).join("; ")]
     ]);
@@ -4782,7 +4902,7 @@
   // entered), so digit-grouping is all that's needed. Count/percent/FICO/term
   // inputs are deliberately excluded — they aren't dollar amounts.
   var MONEY_IDS = ["price", "origPrice", "assignFee", "construction", "asIs", "arv",
-    "payoff", "irAmount", "tsFeeUW", "tsFeeCredit", "tsFeeTitle", "tsFeeAppr", "tsEffPrice", "tsFeasFee",
+    "payoff", "irAmount", "tsFeeUW", "tsFeeCredit", "tsFeeTitle", "tsFeeAppr", "tsEffPrice", "tsFeasFee", "tsMinOrigFee",
     // A typed loan amount is the largest number anyone enters in the admin zone, so
     // it groups like every other money box — 1,207,500 rather than 1207500, which is
     // genuinely hard to read at a glance and easy to mistype by a factor of ten.
