@@ -383,4 +383,19 @@ for (const [name, over] of scenarios) {
   ok(!/[^A-Za-z0-9._-]/.test(f), 'and carries no character a filesystem would refuse');
 }
 
+// ===========================================================================
+// 8. THE SPEED PROGRAM (2026-09-03) — sold to Fidelis OR EMCAP, so EMCAP's sheet is offered
+// ===========================================================================
+{
+  const bySpeed = loanFixture();
+  bySpeed.noteBuyerRaw = null; bySpeed.registration = { program: 'speed', quote: {} };
+  ok(PT.emcapAvailability(bySpeed).available, 'a Speed-registered file is offered EMCAP\'s sheet before a provider is set');
+
+  const other = loanFixture();
+  other.noteBuyerRaw = 'Fidelis Investors LLC'; other.registration = { program: 'standard', quote: {} };
+  const why = PT.emcapAvailability(other).why;
+  ok(/registered on the Silver or Speed program/.test(why), 'the refusal names EVERY program EMCAP buys (derived, not a hand-kept pair)');
+  ok(/register the file as Silver or Speed\./.test(why), '…and says which to register');
+}
+
 console.log(`\nOK — ${pass} checks passed.`);

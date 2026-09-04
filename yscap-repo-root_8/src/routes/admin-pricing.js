@@ -103,8 +103,12 @@ router.put('/', async (req, res) => {
   // contract as extraFees/markupTiers: a caller that does NOT send
   // programAvailability keeps the current switches (the legacy V1 pricing screen
   // never sends it); an explicit value replaces them. Cleaning lives in the ONE
-  // rule module (src/lib/program-availability.js): only the three real programs,
-  // only explicit OFF rows, note capped — so junk can never switch a program off.
+  // rule module (src/lib/program-availability.js): only the marketed programs
+  // (its PROGRAM_KEYS — Standard / Gold / Silver / Speed; never Manual), only
+  // explicit OFF rows, note capped — so junk can never switch a program off.
+  // The Speed Program has NO markup / origination knob of its own (owner decision
+  // 2026-09-03: it prices on its two parents' settings) — availability is the
+  // only Speed setting this endpoint carries, and it arrives through that list.
   let programAvailability;
   if (b.programAvailability !== undefined) {
     programAvailability = require('../lib/program-availability').cleanProgramAvailability(b.programAvailability);

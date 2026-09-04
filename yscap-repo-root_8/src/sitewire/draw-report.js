@@ -685,7 +685,7 @@ async function loadReportMeta(appId, { sitewireDrawId = null, mode = 'staff' } =
     address: a.address_one || '',
     csz: csz.trim(),
     borrowerName: require('../lib/person-name').displayName(a),
-    program: /gold/i.test(String(a.program || '')) ? 'Gold Standard program' : /silver/i.test(String(a.program || '')) ? 'Silver Program' : (a.program ? 'Standard Program' : ''),
+    program: /gold/i.test(String(a.program || '')) ? 'Gold Standard program' : /silver/i.test(String(a.program || '')) ? 'Silver Program' : /speed/i.test(String(a.program || '')) ? 'Speed Program' : (a.program ? 'Standard Program' : ''),
   };
 
   // SOW labels for the rollup (never required)

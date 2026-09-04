@@ -487,20 +487,25 @@ router.get('/tapes/:tapeKey/loans', async (req, res) => {
     let scopeSql = '';
     if (!seesAll(req)) { params.push(req.actor.id); scopeSql = ' AND ' + VISIBLE_OFFICERS_SQL('a', '$' + params.length); }
     // Non-admins only see loans they could actually export: the loan must be
-    // REGISTERED with the correct program for this provider (manual is excluded —
-    // it's admin-only). Admins see every provider-matched loan.
+    // REGISTERED with a correct program for this provider (manual is excluded —
+    // it's admin-only). Admins see every provider-matched loan. Since the Speed
+    // Program (2026-09-03) that is a LIST — Fidelis ships Standard and Speed, EMCAP
+    // ships Silver and Speed — read from buyer-rule's derived `programsForProvider`
+    // (the same reverse of programMatchesBuyer the export gate enforces), so this
+    // picker can never show a loan the gate would then refuse, or hide one it allows.
     let gateSql = '';
     if (!tapeAdmin(req)) {
-      const wantProg = tapes.programProvider.programForProvider(tape.buyerKey);
-      // No live program is paired to this provider, OR the paired program is PARKED
-      // (an incubating program name, not yet registerable) → no loan is
+      const wantProgs = tapes.programsForProvider(tape.buyerKey)
+        .filter((p) => !tapes.programProvider.PARKED_PROGRAMS.has(p));
+      // No live program is paired to this provider (every paired program is PARKED —
+      // an incubating program name, not yet registerable — or none is) → no loan is
       // non-admin-exportable; return an empty picker flagged admin-only.
-      if (!wantProg || tapes.programProvider.PARKED_PROGRAMS.has(wantProg)) {
+      if (!wantProgs.length) {
         return res.json({ tape: tapes.registry.publicTape(tape), count: 0, loans: [], adminOnly: true });
       }
-      params.push(wantProg);
+      params.push(wantProgs);
       gateSql = ` AND EXISTS (SELECT 1 FROM product_registrations pr
-                    WHERE pr.application_id = a.id AND pr.is_current AND pr.program = $${params.length})`;
+                    WHERE pr.application_id = a.id AND pr.is_current AND pr.program = ANY($${params.length}::text[]))`;
     }
     const sql = `
       SELECT a.id, a.ys_loan_number, a.investor_loan_number, a.lender, a.status,
@@ -3240,7 +3245,7 @@ router.post('/applications/:id/program-exception', requireRole('super_admin'), a
     const b = req.body || {};
     const program = progAvail.PROGRAM_KEYS.includes(String(b.program || '').toLowerCase())
       ? String(b.program).toLowerCase() : null;
-    if (!program) return res.status(400).json({ error: 'Pick a real program (standard, gold or silver).' });
+    if (!program) return res.status(400).json({ error: `Pick a real program (${progAvail.PROGRAM_KEYS.join(', ')}).` });
     const enabled = b.enabled === true || b.enabled === 'true';
     const reason = String(b.reason == null ? '' : b.reason).trim().slice(0, 500);
     if (enabled && reason.length < 5) {
@@ -3336,7 +3341,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const statusFreeze = lockRow ? fileLock._internals.statusFreezeReason(lockRow, { actor: req.actor }) : null;
     if (statusFreeze) return refuse(409, { error: statusFreeze }, 'structural_lock');
     const b = req.body || {};
-    const requestedProgram = b.program === 'gold' ? 'gold' : b.program === 'silver' ? 'silver' : 'standard';
+    // ONE normalizer for every door (manual-program.requestedProgramKey: programKey +
+    // PROGRAM_KEYS) — standard / gold / silver / speed; anything else is Standard.
+    const requestedProgram = manualProgram.requestedProgramKey(b.program);
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
 
@@ -4611,7 +4618,7 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
         field: 'asIsValue' });
     }
     inputs.forcePrice = true;
-    const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : (esc.summary && esc.summary.program) === 'silver' ? 'silver' : 'standard';
+    const requestedProgram = manualProgram.requestedProgramKey(esc.summary && esc.summary.program);
     const program = manualProgram.resolveProgram(requestedProgram, overrides);
     /* A DISCONTINUED PROGRAM DOES NOT REGISTER HERE EITHER (owner-directed
        2026-08-18). A counter authored before the program was switched off must

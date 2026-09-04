@@ -89,22 +89,28 @@
     ]
   },
   "web/v2/tools/silver-program.js": {
-    "sha": "3c41b644d4cac594",
+    "sha": "61d7a033d0906678",
     "v": [
-      "silver9-bandeps-tiermk1-tsprog1-oopauto1"
+      "silver9-bandeps-tiermk1-tsprog1-oopauto1-speedlev1"
+    ]
+  },
+  "web/v2/tools/speed-program.js": {
+    "sha": "497fddcbc7e7146f",
+    "v": [
+      "speed3"
     ]
   },
   "web/v2/tools/standard-program.js": {
-    "sha": "44481a45d0f83fc6",
+    "sha": "8df87b2edf0ad896",
     "v": [
-      "asgseller18-asgelig-tiermk1-tsprog1-oopauto1-judsmall1",
-      "tsprog1-oopauto1-judsmall1"
+      "asgseller18-asgelig-tiermk1-tsprog1-oopauto1-judsmall1-speedlev1",
+      "tsprog1-oopauto1-judsmall1-speedlev1"
     ]
   },
   "web/v2/tools/termsheet.js": {
-    "sha": "641e7adbdea9f525",
+    "sha": "17e28dfcfcf54ddc",
     "v": [
-      "feerows1-heavyrehab1-cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1-derivpage1-bizpurpose1"
+      "feerows1-heavyrehab1-cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1-derivpage1-bizpurpose1-speed1"
     ]
   },
   "web/v2/tools/title-cost.js": {

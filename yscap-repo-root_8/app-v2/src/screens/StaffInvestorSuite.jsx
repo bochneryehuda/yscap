@@ -31,7 +31,7 @@ const GROUPS = [
     title: 'Structure & apply',
     sub: 'Build the deal — a term sheet, the scope of work, the track record, or the application.',
     tools: [
-      { slug: 'term-sheet', name: 'Term Sheet Studio', desc: 'Price a loan and generate a full term sheet — Standard, Gold, Silver or a manual product.', icon: '📄' },
+      { slug: 'term-sheet', name: 'Term Sheet Studio', desc: 'Price a loan and generate a full term sheet — Standard, Gold, Silver, Speed or a manual product.', icon: '📄' },
       { slug: 'rehab-budget', name: 'Rehab Budget', desc: 'Build the Scope of Work line by line, with the contingency baked in.', icon: '🔨' },
       { slug: 'track-record', name: 'Track Record', desc: "Capture the borrower's completed projects and experience.", icon: '🏘️' },
       { slug: 'loan-application', name: 'Loan Application', desc: 'The full RTL loan application form.', icon: '📝' },

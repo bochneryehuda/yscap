@@ -33,7 +33,7 @@ const crypto = require('crypto');
 
 const REPO = path.join(__dirname, '..');
 const ROOTS = ['web/v2/tools', 'web/tools'];
-const ENGINES = ['standard-program.js', 'gold-standard.js', 'silver-program.js', 'title-cost.js'];
+const ENGINES = ['standard-program.js', 'gold-standard.js', 'silver-program.js', 'speed-program.js', 'title-cost.js'];
 
 // Paths that must NOT carry an engine any more. A rebuild that resurrects one
 // would quietly re-open both the drift risk and the pre-login download.
