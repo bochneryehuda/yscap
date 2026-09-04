@@ -223,6 +223,23 @@ router.use('/dscr/combined', require('./routes/combined-pricer').makeRouter());
 // Super-admin only, answering 404, exactly as the combined copy always has.
 //   /api/lt/dscr/investor-sources/{investors,investor-links,custom-investors,margin-holdback}
 router.use('/dscr/investor-sources', require('./routes/pricer-sources').makeRouter());
+
+// THE PRICING RULE CENTER (owner-directed 2026-09-04) — our own overlay on top of
+// every engine: where a person writes down the rules the rate sheets do not know
+// (which states we are licensed in, which programs we refuse, which prepayment
+// penalties no investor of ours allows) and has every board obey them.
+//
+// ⛔ A SEPARATE SECTION, NOT PART OF THE SETTINGS — *"Separate section, not part
+// of the general settings, a separate center for pricing engine rules."* So it is
+// its own mount and its own screen rather than another tab on the settings page.
+//
+// ⛔ ITS OWN MOUNT FOR THE SAME REASON THE SOURCES ABOVE HAVE ONE: the rules
+// govern BOTH engines, so hanging them off the combined router would let the
+// `LT_COMBINED_PRICING` kill switch take the general engine's rules down with it.
+// Registered BEFORE the /dscr mount so it wins the match. Super-admin only,
+// answering 404.
+//   /api/lt/dscr/pricing-rules/{catalog,events,test,:id}
+router.use('/dscr/pricing-rules', require('./routes/pricing-rules').makeRouter());
 // The Pricing Engine's SAVED SCENARIOS (owner-directed 2026-08-31) — a person's
 // own saved sets of pricing INPUTS, re-runnable any time. Registered BEFORE the
 // /dscr mount for the same reason the investor groups are, and deliberately NOT

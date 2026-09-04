@@ -8,7 +8,7 @@
 // The one rule: a path here always starts `/api/lt/`. Anything else belongs to the
 // other product.
 
-import { ltGet, ltPost, ltPut, ltPatch, ltDel, ltDownload, ltBlobUrl, ltUpload, ltBlob } from './http.js';
+import { ltGet, ltPost, ltPut, ltPatch, ltDel, ltDownload, ltBlobUrl, ltUpload, ltBlob, ltStreamNdjson } from './http.js';
 
 const lt = (p) => `/api/lt${p}`;
 
@@ -176,10 +176,48 @@ export const ltApi = {
      ladder is the one the term sheet refuses on and a browser copy of it would
      drift from the refusal. */
   dscrPriceBrackets: (scenario, opts) => ltPost(lt('/dscr/price-brackets'), { scenario, ...(opts || {}) }),
+  /**
+   * THE SAME BOARD, REPORTING EACH BAND AS IT LANDS (owner-directed 2026-09-04:
+   * *"on top there should be a progress bar somewhere, nicely designed … You
+   * shouldn't feel like the system forgot about you"*).
+   *
+   * ⛔ IT IS THE SAME WORK AND THE SAME ANSWER — the server runs one function behind
+   * both doors — so the ONLY thing this buys is that the screen hears about band 3 of
+   * 11 while bands 4 and 5 are still out. Callers may ignore `onProgress` entirely.
+   *
+   * ⛔ AND IT FALLS BACK TO THE PLAIN DOOR ON A 404, which is the deploy window and
+   * nothing else: a browser holding this bundle against a server that has not got the
+   * streaming route yet would otherwise lose its band board altogether — a progress bar
+   * costing the thing it was decorating. Any OTHER failure is a real failure of the
+   * search and is thrown, because retrying a vendor call that refused would spend a
+   * second set of searches to be told the same thing.
+   */
+  dscrPriceBracketsStream: async (scenario, opts, onProgress) => {
+    const body = { scenario, ...(opts || {}) };
+    try {
+      return await ltStreamNdjson(lt('/dscr/price-brackets/stream'), body, onProgress);
+    } catch (e) {
+      if (e && e.status === 404) return ltPost(lt('/dscr/price-brackets'), body);
+      throw e;
+    }
+  },
   // The ONE door here that costs NOTHING. A ZIP resolves its state, county and county FIPS out of a
   // committed Census table on our own server — no vendor call, no session, no billing — which is
   // why this one MAY be fired as somebody types, unlike the two above.
   dscrZip: (zip) => ltGet(lt(`/dscr/zip/${encodeURIComponent(String(zip || '').trim())}`)),
+  /* THE PRICING RULE CENTER (owner-directed 2026-09-04) — our own overlay on top
+     of every engine. Super-admin only: every one of these answers 404 to anybody
+     else, which is what lets the screen render nothing rather than an error. */
+  pricingRules: (archived) => ltGet(lt(`/dscr/pricing-rules${archived ? '?archived=1' : ''}`)),
+  pricingRuleCatalog: () => ltGet(lt('/dscr/pricing-rules/catalog')),
+  pricingRule: (id) => ltGet(lt(`/dscr/pricing-rules/${encodeURIComponent(id)}`)),
+  pricingRuleCreate: (body) => ltPost(lt('/dscr/pricing-rules'), body),
+  pricingRuleSave: (id, body) => ltPut(lt(`/dscr/pricing-rules/${encodeURIComponent(id)}`), body),
+  pricingRuleArchive: (id) => ltDel(lt(`/dscr/pricing-rules/${encodeURIComponent(id)}`)),
+  pricingRuleRestore: (id) => ltPost(lt(`/dscr/pricing-rules/${encodeURIComponent(id)}/restore`), {}),
+  pricingRuleTest: (body) => ltPost(lt('/dscr/pricing-rules/test'), body),
+  pricingRuleEvents: (ruleId) => ltGet(lt(`/dscr/pricing-rules/events${ruleId ? `?ruleId=${encodeURIComponent(ruleId)}` : ''}`)),
+
   // The signed-in person's COMPENSATION PLAN — what the pricing engine's three-way switch
   // (borrower-paid / raw / lender-paid) overlays on the displayed numbers. Display only:
   // the Lender Price search itself never changes (owner-directed 2026-08-23).

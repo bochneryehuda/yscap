@@ -368,14 +368,16 @@ console.log('Two programs, one loan — parity');
     ],
     unmapped: [],
   });
-  /* ⛔ VISIO CARRIES A CLIENT-SAFE NAME IN THESE SETTINGS ON PURPOSE, and it is not a
-     loosening. Since the owner's 2026-09-04 rule — an investor with no white label is OFF
-     until somebody names it and turns it on — an UNNAMED key is hidden before routing is
-     ever consulted, so a fixture that left it unnamed failed ROUTE-3 for a reason that has
-     nothing to do with routing. Naming it isolates the rule this block is about; the naming
-     rule has its own guard in SET-6. The name is deliberately not one the owner's own sheet
-     uses, or the settings door correctly refuses it as another investor's. */
-  const named = { visio: { whiteLabel: 'Vermilion' } };
+  /* ⛔ VISIO IS NAMED **AND SWITCHED ON** IN THESE SETTINGS ON PURPOSE, and neither half is
+     a loosening. Since the owner's 2026-09-04 rule — an investor with no white label is OFF
+     until somebody names it, and naming it is not switching it on (the 2026-09-04 correction)
+     — an unnamed OR un-switched key is hidden before routing is ever consulted, so a fixture
+     missing either failed ROUTE-3 for a reason that has nothing to do with routing. Both
+     halves isolate the rule this block is about; the naming rule has its own guard in SET-6
+     and the switch has N6a in test-lt-investor-sources-pure. The name is deliberately not one
+     the owner's own sheet uses, or the settings door correctly refuses it as another
+     investor's. */
+  const named = { visio: { whiteLabel: 'Vermilion', enabled: true } };
   // ONE INVESTOR, ONE SOURCE. The pre-fill is Lender Price — that is where the
   // system fetches everything today, and the owner's own framing is "not touch
   // our own pricing engine that we currently have".
@@ -643,7 +645,10 @@ console.log('Two programs, one loan — parity');
      them. Plus the standing rule is held to its own terms: a row off for being UNNAMED must
      genuinely carry no client-safe name, or "unnamed" becomes a blanket excuse for a silent drop. */
   const offRows = d.investors.filter((r) => !r.enabled);
-  const OFF_REASONS = ['setting', 'owner_directed', 'unnamed'];
+  /* `awaiting_switch` is the fourth explicit instruction and not a silent drop: the
+     investor has a name somebody typed and is waiting for the switch nobody has
+     pressed (owner-directed 2026-09-04 — naming one must not switch it on). */
+  const OFF_REASONS = ['setting', 'owner_directed', 'unnamed', 'awaiting_switch'];
   ok(d.summary.off === offRows.length && offRows.every((r) => OFF_REASONS.includes(r.enabledOrigin)),
     `SET-6 nobody is switched off except by an explicit instruction (${d.summary.off} off: ${[...new Set(offRows.map((r) => r.enabledOrigin))].join(', ') || 'none'})`);
   ok(!d.investors.some((r) => !r.enabled && r.enabledOrigin === 'default'),

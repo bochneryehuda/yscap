@@ -374,7 +374,7 @@ const stack = buildRateStack(capture.programs);
   ok(buttons >= lenders && buttons > 0,
     `R23b ⛔ every quote line carries "Add to comparison" without any workflow chosen (${buttons} on ${lenders} lender lines)`);
   ok(!/type="checkbox"/.test(r.html || ''), 'R23c …and it is a button, not a tick-box');
-  ok(/aria-pressed="false"/.test(r.html || '') && /Add this programme to the comparison/.test(r.html || ''),
+  ok(/aria-pressed="false"/.test(r.html || '') && /Add this program to the comparison/.test(r.html || ''),
     'R23d …that says what the next press does');
   ok(!/>ADD</.test(r.html || '') && !/>IN</.test(r.html || ''), 'R23e …and the two-letter labels are gone');
 
@@ -398,9 +398,9 @@ const stack = buildRateStack(capture.programs);
     openLenders: new Set(), onToggleLender: () => {}, loanAmount: 375000, comp, ts: inCart,
   })));
   ok(r2.err === null && twoLenders && twoLenders.quotes.length === 2, `R23f a two-lender row renders${r2.err ? ` — ${r2.err.message}` : ''}`);
-  ok(((r2.html || '').match(/In comparison/g) || []).length === 1 && /aria-pressed="true"/.test(r2.html || '')
-    && /press to take it out/.test(r2.html || ''),
-    'R23f1 ⛔ the lender already collected reads "In comparison" and offers the way out');
+  ok(((r2.html || '').match(/Remove from comparison/g) || []).length === 1 && /aria-pressed="true"/.test(r2.html || '')
+    && /Remove this program from the comparison/.test(r2.html || ''),
+    'R23f1 ⛔ the lender already collected reads "Remove from comparison" and offers the way out');
   ok(((r2.html || '').match(/Add to comparison/g) || []).length === 1 && /aria-pressed="false"/.test(r2.html || ''),
     'R23f2 …while the other lender on the same rate still offers "Add to comparison"');
   // The match is on what the offer IS, not on price: the cart holds 99.5 and the row prints
@@ -413,8 +413,8 @@ const stack = buildRateStack(capture.programs);
     row: repriced, open: true, onToggle: () => {}, openQuote: null, onOpenQuote: () => {},
     openLenders: new Set(), onToggleLender: () => {}, loanAmount: 375000, comp, ts: inCart,
   })));
-  ok(r2b.err === null && /In comparison/.test(r2b.html || ''),
-    'R23f3 …and a collected offer stays "In comparison" after its price moves');
+  ok(r2b.err === null && /Remove from comparison/.test(r2b.html || ''),
+    'R23f3 …and a collected offer stays collected after its price moves');
 
   // A board with NO cart keeps its narrow cell and no button — the ineligible board's own shape.
   const r3 = attempt(() => render(React.createElement(RateRow, {
@@ -962,7 +962,7 @@ for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/LtScen
     groups, onApplyGroup: () => {}, hidden: 3,
   })));
   ok(!strip.err, `R88 the strip switcher renders (${strip.err ? strip.err.message : 'ok'})`);
-  ok(/Showing 2 investors — display only/.test(strip.html) && /3 programmes hidden/.test(strip.html)
+  ok(/Showing 2 investors — display only/.test(strip.html) && /3 programs hidden/.test(strip.html)
     && /Lender Price was asked for everything/.test(strip.html),
   'R89 …stating the overlay and the un-narrowed search');
   ok(/Nothing populated on this scenario for Prime \(CorrFirst\)/.test(strip.html),

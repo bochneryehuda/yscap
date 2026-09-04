@@ -3178,3 +3178,131 @@ model LtPricingSourceMiss {
   @@index([lastSeenAt(sort: Desc)], map: "lt_pricing_source_misses_recent_idx")
   @@map("lt_pricing_source_misses")
 }
+
+/// db/695 — THE PRICING RULE CENTER: one rule, as a person wrote it.
+///
+/// Owner-directed 2026-09-04: *"a rule center connected to the general pricing
+/// engine. Separate section, not part of the general settings … it should
+/// actually be wired in so it should not populate and it should add holdbacks …
+/// This should be the superpower. This should overwrite anything."*
+///
+/// The rate sheets do not know our business — LoanNEX will quote a prepayment
+/// penalty in New Jersey that no investor of ours allows, and no sheet knows
+/// which states we are licensed to lend in. This is the table that lets a person
+/// write those rules down once and have every board obey them.
+///
+/// SHIPS EMPTY, and that is what makes it safe to deploy before anybody has
+/// written one: *"I don't want you to pre-fill the rule — I want to put in the
+/// rules myself and test that it actually works."* With no rows the overlay is a
+/// no-op and every board is byte-for-byte what it is today.
+model LtPricingRule {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// WHAT THE PERSON CALLED IT — *"we can name every rule with a name."* Required
+  /// (1..160 chars, CHECK-enforced), and it is what every audit line, every board
+  /// explanation and every ineligible reason is attributed to: a rule nobody can
+  /// name is a rule nobody can find when a board looks wrong.
+  name String
+
+  /// Free text the author leaves for the next reader. Never shown to a client.
+  note String?
+
+  /// all | general | combined — which engine obeys this rule. A column rather
+  /// than an assumption, so a rule written for one board is not silently applied
+  /// to the other. CHECK-enforced: a typo ('genral') would produce a rule that is
+  /// on, valid, listed, and silently governs nothing.
+  engine String @default("all")
+
+  /// A rule can be taken OUT OF FORCE without being deleted and losing its
+  /// history. On by default: a person writing a rule in this centre is writing it
+  /// to be used.
+  enabled Boolean @default(true)
+
+  /// THE ORDER RULES RUN IN, lower first. It matters because the actions are not
+  /// commutative — an ineligibility ends the row, and a holdback added before a
+  /// floor is a different number from one added after — so the order is a
+  /// decision somebody made rather than whatever the database returned. Ties
+  /// break on createdAt, then id, so two rules at one priority still run in a
+  /// fixed, reproducible order.
+  priority Int @default(100)
+
+  /// THE CONDITION TREE and THE ACTIONS. Both jsonb because both are open-ended
+  /// by design (*"unlimited conditions for the rules"*), and both validated by
+  /// `pricing/rules/logic.js` + `pricing/rules/actions.js` BEFORE anything is
+  /// written — the column is deliberately NOT the validator, because a CHECK over
+  /// a rule tree would be a second copy of the grammar, in SQL, unable to explain
+  /// itself to the person who typed it.
+  whenTree    Json @default("{}") @map("when") @db.JsonB
+  thenActions Json @default("[]") @map("then") @db.JsonB
+
+  /// WHY A ROW IT BLOCKS IS BLOCKED, in the words a person reads on the board:
+  /// *"anytime we select that to come up ineligible the message should give why
+  /// it's ineligible."* The reason lives on the ACTION — that is what lets one
+  /// rule refuse for two different reasons — and this is the rule's own fallback
+  /// for an action carrying none.
+  reason String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String?  @map("created_by") @db.Uuid
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy String?  @map("updated_by") @db.Uuid
+
+  /// A DELETED RULE IS KEPT. A rule that priced a loan last week is the
+  /// explanation for that loan's price; deleting the row deletes the explanation.
+  /// The screen's delete sets this, the reader skips it, and the audit still
+  /// points at something.
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(6)
+  archivedBy String?   @map("archived_by") @db.Uuid
+
+  /// The board read is "the rules in force, in order"; the centre itself lists
+  /// everything with archived rules last. The live index is PARTIAL in db/695
+  /// (`WHERE archived_at IS NULL AND enabled`) — Prisma cannot express that, so
+  /// the migration is the authority on its predicate.
+  @@index([priority, createdAt, id], map: "lt_pricing_rule_live_idx")
+  @@index([archivedAt, priority, createdAt], map: "lt_pricing_rule_listing_idx")
+  @@map("lt_pricing_rule")
+}
+
+/// db/695 — WHAT HAPPENED TO A RULE, AND WHO DID IT.
+///
+/// Owner-directed: *"do research for audit logs."* Every create, edit, enable,
+/// disable, re-order and archive lands here with the rule's WHOLE state before
+/// and after, so "why did this loan price that way in March" is answerable from
+/// the row rather than from somebody's memory.
+///
+/// A DOCUMENT AND ITS LOG ARE TWO TABLES: a log that lives in a jsonb array on
+/// the row it describes is a log rewritten by the very save it is meant to
+/// witness.
+model LtPricingRuleEvent {
+  id BigInt @id @default(autoincrement())
+
+  /// ⛔ NO FOREIGN KEY, and that is not an oversight. The audit OUTLIVES the rule:
+  /// if a rule is ever hard-deleted (a mistake, a cleanup, a restore), the
+  /// history of what it did must not be deleted with it. The id and the name at
+  /// the time are both stored, so a line reads with no rule to join to.
+  ruleId String? @map("rule_id") @db.Uuid
+
+  /// The rule's name AS IT WAS. Renaming a rule must not rewrite its history.
+  ruleName String? @map("rule_name")
+
+  /// created | updated | enabled | disabled | reordered | archived | restored —
+  /// a closed list (CHECK), because an unrecognised action is a line nobody can
+  /// filter for.
+  action String
+
+  at      DateTime @default(now()) @db.Timestamptz(6)
+  byStaff String?  @map("by_staff") @db.Uuid
+
+  /// The whole rule, before and after. `before` is null on a create and `after`
+  /// is null on nothing — an archive still has an after — so the pair reads as a
+  /// diff without the reader reconstructing one.
+  before Json? @db.JsonB
+  after  Json? @db.JsonB
+
+  /// What the person said they were doing, where the screen asks.
+  note String?
+
+  @@index([ruleId, at(sort: Desc)], map: "lt_pricing_rule_event_rule_idx")
+  @@index([at(sort: Desc)], map: "lt_pricing_rule_event_recent_idx")
+  @@map("lt_pricing_rule_event")
+}

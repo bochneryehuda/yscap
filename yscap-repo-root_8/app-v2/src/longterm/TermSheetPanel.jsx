@@ -861,7 +861,7 @@ export function RatioCheck({ check, onReprice, busy }) {
 export function CompareButton({ quote, comp, members, busy, onAdd, onRemove }) {
   const mine = memberForQuote(members, quote, comp);
   const on = !!mine;
-  const next = on ? 'In the comparison — press to take it out' : 'Add this programme to the comparison';
+  const next = on ? 'Remove this program from the comparison' : 'Add this program to the comparison';
   /* ⛔ THE PRESS SAYS WHAT IT DID, ON THE ROW (owner-reported 2026-09-04: *"when you
      click Add to Comparison, it just gives a blink and maybe adds it, but this gives
      a blink and nothing happens. It doesn't sound like it works."*).
@@ -872,21 +872,52 @@ export function CompareButton({ quote, comp, members, busy, onAdd, onRemove }) {
      caused it. It is a WITNESS to what this button just did, never a second opinion
      about what is in the comparison: the label above still answers that from the
      cart alone (`memberForQuote`), so this can never claim a state the server does
-     not hold. It clears itself, and a new press replaces it. */
+     not hold. It clears itself, and a new press replaces it.
+
+     ⛔ AND THE WITNESS REMEMBERS WHICH WAY IT WENT, WHICH IS THE WHOLE OF THE FIX
+     (owner-reported 2026-09-04: *"when you click Add to Comparison, right now it pops
+     up something like 'Taken out of the comparison'. Really, it should pop up 'Added
+     to comparison'."*).
+
+     It used to read `on` at the moment `busy` fell back to false — that is, it asked
+     "is this row in the comparison NOW?" and used the answer to describe a press that
+     had already happened. Those are two different questions, and they disagree for
+     exactly as long as it takes the reloaded cart to arrive: on the tick `busy` clears,
+     `members` is still the list from BEFORE the add, so `on` is false and an add
+     announced itself as a removal. Every single Add said "Taken out of the comparison".
+
+     So the direction is captured AT THE CLICK, from the state the click acted on, and
+     the effect only decides WHEN to say it. A press cannot be misdescribed by a list
+     that has not caught up, because the list is no longer consulted. `sending` doubles
+     as the in-flight verb, so "Adding…"/"Removing…" cannot disagree with the sentence
+     that follows it either — which is the same bug one tick earlier. */
   const [said, setSaid] = React.useState(null);
+  const sending = React.useRef(null);   // 'add' | 'remove' — what the press in flight is doing
   const wasBusy = React.useRef(false);
+  const [verb, setVerb] = React.useState(null);
   React.useEffect(() => {
     // The press is FINISHED when busy falls back to false, which is the only moment
-    // the cart has actually answered — saying it on the click would announce an
+    // the server has actually answered — saying it on the click would announce an
     // outcome the server has not agreed to yet.
-    if (wasBusy.current && !busy) setSaid(on ? 'Added to the comparison' : 'Taken out of the comparison');
+    if (wasBusy.current && !busy) {
+      setSaid(sending.current === 'remove' ? 'Removed from comparison'
+        : (sending.current === 'add' ? 'Added to comparison' : null));
+      sending.current = null;
+      setVerb(null);
+    }
     wasBusy.current = !!busy;
-  }, [busy, on]);
+  }, [busy]);
   React.useEffect(() => {
     if (!said) return undefined;
     const t = setTimeout(() => setSaid(null), 4000);
     return () => clearTimeout(t);
   }, [said]);
+  const press = () => {
+    // Recorded BEFORE the handler runs, off the state the press is acting on.
+    sending.current = on ? 'remove' : 'add';
+    setVerb(sending.current);
+    if (on) onRemove(mine); else onAdd();
+  };
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
     <button
@@ -895,7 +926,7 @@ export function CompareButton({ quote, comp, members, busy, onAdd, onRemove }) {
       aria-label={next}
       title={busy ? 'One moment…' : next}
       disabled={!!busy}
-      onClick={(e) => keepPlaceOnClick(e, () => (on ? onRemove(mine) : onAdd()))}
+      onClick={(e) => keepPlaceOnClick(e, press)}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap',
         font: 'inherit', fontSize: 12, fontWeight: 700, letterSpacing: '.01em', lineHeight: 1,
@@ -910,7 +941,16 @@ export function CompareButton({ quote, comp, members, busy, onAdd, onRemove }) {
     >
       {/* The glyph is decoration for a sighted reader; the words carry the meaning. */}
       <span aria-hidden="true" style={{ fontSize: 14, lineHeight: 1 }}>{on ? '\u2713' : '+'}</span>
-      {busy ? (on ? 'Removing\u2026' : 'Adding\u2026') : (on ? 'In comparison' : 'Add to comparison')}
+      {/* ⛔ TWO FACES, AND THE SECOND ONE NAMES THE NEXT PRESS — owner-directed 2026-09-04:
+          *"you should have a button. The button should toggle between 'Add' and 'Remove' so
+          you can play around with adding and removing."* The face it used to show when a row
+          was in was "In comparison", which states the STATE and leaves the reader to guess
+          that pressing it again takes the row back out. `aria-pressed` and the gold fill
+          still carry the state; the words now carry the ACTION, which is what a person
+          playing two programs off against each other is reaching for. */}
+      {busy
+        ? ((verb === 'remove' || (verb == null && on)) ? 'Removing\u2026' : 'Adding\u2026')
+        : (on ? 'Remove from comparison' : 'Add to comparison')}
     </button>
     {said && !busy && (
       /* Live, so a reader who never looks at the button hears the outcome too. */
@@ -954,7 +994,7 @@ export const COMPARISON_WORKFLOWS = [
     // The owner's "present a price in comparison … you can only do one scenario, so select a few
     // of that scenario". Named for what the reader gets, not for what the officer does.
     title: 'Compare prices on one deal',
-    blurb: 'One scenario, several programmes side by side. Price the deal, then collect the options '
+    blurb: 'One scenario, several programs side by side. Price the deal, then collect the options '
       + 'worth showing.',
     docKind: 'comparison',
   },
@@ -1120,8 +1160,8 @@ export function ComparisonWorkflowPanel({
         fontSize: 12.5, lineHeight: 1.5, color: chosen ? INK : MUTED,
       }}>
         {chosen
-          ? 'Now tick the programmes below to put them in. Untick one to take it out.'
-          : 'Pick one of the two above, then tick the programmes you want on the board below.'}
+          ? 'Now tick the programs below to put them in. Untick one to take it out.'
+          : 'Pick one of the two above, then tick the programs you want on the board below.'}
       </div>
       {/* WHAT THE LAST TICK DID — the owner's *"what you selected and what you
           removed"*. A tick that changes nothing visible leaves somebody
