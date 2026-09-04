@@ -45,6 +45,11 @@ export function authVariantFlags(variant) {
 
 /** Is this where the visitor was heading a Pilot Engine screen? */
 export function isEngineDest(dest) {
-  const p = String(dest == null ? '' : dest);
+  /* THE PATH ONLY. `StaffPrivate` builds `from` as `pathname + search`, so a
+     bookmark like `#/engine?tab=2` arrives with its query attached — and the
+     bare comparison then read it as NOT the engine, branding that sign-in
+     "Internal console". Case-insensitive for the same reason the route guard is:
+     React Router serves `/Engine` from `/engine`. */
+  const p = String(dest == null ? '' : dest).split(/[?#]/)[0].toLowerCase();
   return p === '/engine' || p.startsWith('/engine/');
 }

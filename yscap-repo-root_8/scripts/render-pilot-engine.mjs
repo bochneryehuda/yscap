@@ -175,6 +175,86 @@ const visit = async (page, hash) => {
 }
 
 // ---------------------------------------------------------------------------
+// A2. THE BANNERS MUST NOT BURY THE ENGINE'S NAVIGATION.
+//     This is here because a source check could not see it and a re-audit
+//     MEASURED it: both banners were `position: fixed` at the same top, so they
+//     sat on top of each other AND over the sticky header — 52 of its 58 pixels
+//     behind a z-1001 bar, taking the lockup, the whole tab row and the "Full
+//     system" way out with them. The console survives that because it has a
+//     sidebar; the engine's header IS its navigation.
+//
+//     Driven with a staff-view session STUBBED so the banner actually renders —
+//     otherwise this checks the easy case and proves nothing.
+// ---------------------------------------------------------------------------
+{
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  /* A STAFF SESSION, because the shell only renders behind the door — an
+     unauthenticated visitor bounces to the sign-in and this section would
+     measure an empty page and pass for the wrong reason. The client reads its
+     actor straight out of the token's payload (`actorFromToken`), so a token
+     with the right shape is enough here; nothing server-side is exercised by
+     this section, which is the point — it is about geometry. */
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const FAKE_STAFF = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({
+    sub: '00000000-0000-4000-8000-000000000001', kind: 'staff', role: 'super_admin',
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  })}.rendercheck`;
+  await ctx.addInitScript(([key, tok]) => {
+    try { localStorage.setItem(key, tok); } catch { /* private mode */ }
+  }, ['ys_portal_token', FAKE_STAFF]);
+
+  /* The staff-view session is stubbed so the banner ACTUALLY RENDERS — without
+     it this measures the easy case and proves nothing. Everything else the shell
+     calls is answered emptily so a pending request cannot hold the paint. */
+  await ctx.route('**/api/staff-view/session', (route) => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ active: true, viewing: { name: 'Dana Reed' } }),
+  }));
+  await ctx.route('**/api/**', (route) => (route.request().url().includes('/staff-view/session')
+    ? route.fallback()
+    : route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })));
+
+  const page = await ctx.newPage();
+  await visit(page, '/engine');
+  await page.waitForTimeout(900);
+
+  const geo = await page.evaluate(() => {
+    const bars = [...document.querySelectorAll('[data-top-banner]')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom, h: r.height, text: (el.textContent || '').slice(0, 40) };
+    });
+    const header = document.querySelector('header');
+    const hr = header ? header.getBoundingClientRect() : null;
+    // What is actually painted at the middle of the header?
+    const hit = hr ? document.elementFromPoint(Math.round(hr.left + hr.width / 2), Math.round(hr.top + hr.height / 2)) : null;
+    return {
+      bars,
+      header: hr ? { top: hr.top, bottom: hr.bottom, h: hr.height } : null,
+      hitInsideHeader: !!(hit && header && header.contains(hit)),
+    };
+  });
+
+  info(`A2a banners: ${geo.bars.map((b) => `${Math.round(b.h)}px@${Math.round(b.top)}`).join(', ') || 'none'}; header at ${geo.header ? Math.round(geo.header.top) : '?'}`);
+  ok(geo.bars.length >= 1, 'A2b the staff-view banner really renders in this shell for an impersonated session');
+
+  /* THE BANNERS DO NOT OVERLAP EACH OTHER. Two fixed bars pinned to one top hide
+     one another entirely — measured, the stale-build notice was invisible. */
+  const overlapping = geo.bars.some((a, i) => geo.bars.some((b, j) => j > i && a.top < b.bottom && b.top < a.bottom));
+  ok(!overlapping, 'A2c …and the banners stack rather than covering each other');
+
+  /* AND THEY DO NOT COVER THE HEADER. Both halves: the geometry, and what the
+     browser says is actually painted there. */
+  const lowestBar = geo.bars.reduce((m, b) => Math.max(m, b.bottom), 0);
+  ok(!geo.header || geo.header.top >= lowestBar - 1,
+    `A2d …and the header starts below them (header top ${geo.header ? Math.round(geo.header.top) : '?'}, banners end ${Math.round(lowestBar)})`);
+  ok(geo.hitInsideHeader,
+    'A2e …so the tab row and the "Full system" way out are actually clickable, not painted over');
+
+  await ctx.close();
+}
+
+// ---------------------------------------------------------------------------
 // B. THE CONSOLE'S OWN DOOR IS UNCHANGED — one page, two names, no bleed.
 // ---------------------------------------------------------------------------
 {

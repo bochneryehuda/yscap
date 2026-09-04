@@ -33,7 +33,7 @@ const SAFE_SEGMENT = /[^A-Za-z0-9_-]/g;
  *                   path, always naming an `/engine` route.
  */
 /** A portal path we are willing to emit: one leading slash, then path characters. */
-const SAFE_BASE = /^\/[A-Za-z0-9_\-/]*$/;
+const SAFE_BASE = /^\/(?!.*\.\.)[A-Za-z0-9_.\-/]*$/;
 
 function engineRedirectTarget(portalPath, sub) {
   /* ⛔ THE PORTAL PATH IS SANITISED HERE TOO, not only the tail. It comes from
@@ -46,7 +46,15 @@ function engineRedirectTarget(portalPath, sub) {
      off this origin. Refused now, with the real portal path as the fallback. */
   const raw = String(portalPath == null ? '' : portalPath).replace(/\/+$/, '');
   const withSlash = raw && !raw.startsWith('/') ? `/${raw}` : raw;
-  const base = SAFE_BASE.test(withSlash) && !withSlash.startsWith('//') ? withSlash : '/portal';
+  const safe = SAFE_BASE.test(withSlash) && !withSlash.startsWith('//');
+  /* A DOT IS ALLOWED (`/portal.v2` is a legal PORTAL_PATH and config permits
+     one), `..` never is. And a refusal SAYS SO: falling back silently would
+     send every engine bookmark to a path that does not exist on a deployment
+     whose portal path this rejects, with nothing anywhere explaining why. */
+  if (!safe && withSlash) {
+    try { console.warn('[engine-redirect] refusing portal path %j — using /portal', portalPath); } catch { /* never throw for a log */ }
+  }
+  const base = safe ? withSlash : '/portal';
 
   /* Split on the separator and rebuild segment by segment, so a segment can
      never carry a separator of its own back into the result.

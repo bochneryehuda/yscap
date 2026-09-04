@@ -104,13 +104,21 @@ for (const tag of routeTags(APP_CODE)) {
   });
 }
 
-const isEnginePath = (p) => p === '/engine' || p.startsWith('/engine/');
+/* ⛔ CASE-INSENSITIVE, BECAUSE REACT ROUTER IS. `caseSensitive` defaults to
+   false, so `<Route path="/Engine/x">` serves `/engine/x` — and a re-audit
+   proved an UNGUARDED route at that path passed the whole suite green. Same
+   failure class as the first cut: a door the guard cannot see. */
+const isEnginePath = (p) => {
+  const q = String(p || '').toLowerCase();
+  return q === '/engine' || q.startsWith('/engine/');
+};
 const engineRoutes = routes.filter((r) => isEnginePath(r.path));
 const consoleLt = routes.filter((r) => r.path.startsWith('/internal/lt/'));
 
 /* THE SHAPE-INDEPENDENT COUNT. Nothing about it depends on how the element is
    written, so it is the thing the parse is held to. */
-const enginePathMentions = [...APP_CODE.matchAll(/path="(\/engine(?:\/[^"]*)?)"/g)].length;
+const enginePathMentions = routeTags(APP_CODE)
+  .filter((t) => { const m = t.match(/path="([^"]*)"/); return m && isEnginePath(m[1]); }).length;
 ok(enginePathMentions === engineRoutes.length,
   `A0 every /engine route in App.jsx was actually READ (${engineRoutes.length} parsed of ${enginePathMentions} present)`
   + ' — an unparsed route would be checked by nothing');
@@ -210,7 +218,13 @@ const shinglesOf = (src) => {
   return out;
 };
 
-const SKIP_DIR = /(^|\/)(node_modules|dist|coverage)(\/|$)|(^|\/)portal(\/|$)/;
+/* ⛔ THE BUILT-OUTPUT SKIPS ARE ANCHORED. They were `(^|/)(dist|portal)(/|$)`,
+   which matches ANY segment at ANY depth — so a fork parked in
+   `app-v2/src/portal/` or `app-v2/src/dist/`, both of which Vite bundles and
+   ships, was never opened. A re-audit demonstrated a routed, byte-identical
+   copy of the pricer living there and passing green. Only the real build
+   outputs are skipped now. */
+const SKIP_DIR = /(^|\/)(node_modules|coverage)(\/|$)|^(web\/portal|web\/v2\/portal|app-v2\/dist|app\/dist)(\/|$)/;
 const allFront = [];
 for (const root of ['app-v2', 'app', 'web']) {
   if (!existsSync(join(ROOT, root))) continue;
@@ -281,13 +295,23 @@ ok(existsSync(join(ROOT, 'app-v2/src/components/EngineLayout.jsx'))
      banner they had no notice and no way back — this shell's only other exits
      are "Full system" and "Sign out", and signing out of somebody else's session
      is the wrong action entirely. */
-for (const [needle, what] of [
-  ['useStaleBuild', 'the stale-build watchdog (CLAUDE.md requires it of every shell)'],
-  ['StaleBuildBanner', 'the stale-build banner itself'],
-  ['StaffViewBanner', 'the staff-view banner, so an impersonated session says so and can get out'],
+/* ⛔ THE RENDERED FORM, NOT THE NAME. A substring check is satisfied by the
+   IMPORT line, so a re-audit deleted `<StaleBuildBanner …/>` from the shell —
+   the whole point of the blocker this fixed — and every suite stayed green. */
+for (const [re, what] of [
+  [/=\s*useStaleBuild\(\)/, 'the stale-build watchdog (CLAUDE.md requires it of every shell)'],
+  [/<StaleBuildBanner\s+stale=\{/, 'the stale-build banner itself, rendered'],
+  [/<StaffViewBanner\s+inFlow\s*\/>|<StaffViewBanner\s*\/>/, 'the staff-view banner, rendered, so an impersonated session says so and can get out'],
 ]) {
-  ok(LAYOUT_CODE.includes(needle), `C7 the engine shell mounts ${what}`);
+  ok(re.test(LAYOUT_CODE), `C7 the engine shell mounts ${what}`);
 }
+/* …and the banners cannot bury the only navigation this shell has. */
+ok(/bannersRef/.test(LAYOUT_CODE) && /getBoundingClientRect\(\)\.height/.test(LAYOUT_CODE),
+  'C7b the shell MEASURES its banner stack rather than assuming a height');
+ok(/MutationObserver/.test(LAYOUT_CODE),
+  'C7c …and re-measures when a banner arrives late (the staff-view bar appears only after the server answers)');
+ok(/paddingTop: bannerH/.test(LAYOUT_CODE),
+  'C7d …and pushes its own content below them');
 /* And the banners are FIXED at the top, so a sticky header must start below
    them or it covers the only way out of a staff view. */
 ok(/top:\s*'var\(--cobrowse-bar/.test(LAYOUT_CODE),
@@ -297,8 +321,14 @@ ok(/top:\s*'var\(--cobrowse-bar/.test(LAYOUT_CODE),
    banners drift, and the one that drifts is the one that stops saying whose
    screen this is. */
 const STAFFLAYOUT = stripComments(read('app-v2/src/components/StaffLayout.jsx'));
-ok(/StaffViewBanner/.test(STAFFLAYOUT) && !/You are seeing/.test(STAFFLAYOUT),
-  'C9 the console shell uses that same shared banner rather than its own copy');
+ok(/StaffViewBanner/.test(STAFFLAYOUT) && !/You are seeing/.test(STAFFLAYOUT) && !/You are seeing/.test(LAYOUT_CODE),
+  'C9 NEITHER shell keeps its own copy of the bar — the label said "neither" while checking only one');
+/* The console's own sentence was lost in the extraction and is passed back as a
+   prop; the engine deliberately does not pass it (it has no product switch). */
+ok(/hint="Switch Long-term \/ Short-term above/.test(STAFFLAYOUT),
+  'C9b …and the console still tells a viewer how to see everything they see');
+ok(!/hint=/.test(LAYOUT_CODE),
+  'C9c …which the engine does NOT claim, because it has no such switch');
 
 // ---------------------------------------------------------------------------
 // D. THERE IS ONE DOOR, AND THE ENGINE RESTATES NONE OF IT.
@@ -346,12 +376,28 @@ ok(!!engineDecl, 'D2 the engine mounts through a delegate rather than a second d
 const CHECKS = ['isAuthed', 'isStaff', 'isTpo', '/internal/login', '/dashboard', '/tpo'];
 for (const c of CHECKS) {
   ok(!!staffBody && staffBody.includes(c), `D3 the door still asks about ${c}`);
-  ok(!!engineDecl && !engineDecl.includes(c), `D4 the engine delegate restates nothing about ${c}`);
+}
+/* ⛔ THE DELEGATE'S SHAPE IS PINNED, NOT ITS VOCABULARY. Forbidding six names
+   is a blacklist, and a re-audit walked straight past it: adding
+   `new URLSearchParams(window.location.search).get('preview') ? <EngineLayout>…`
+   let anyone open the pricing engine with `?preview=1`, no login and no staff
+   check, with every gate green. "Restates nothing" has to mean exactly one
+   expression, so that is what is asserted. */
+const DELEGATE = /^const EnginePrivate = \(\{ children \}\) => <StaffPrivate Shell=\{EngineLayout\}>\{children\}<\/StaffPrivate>;$/m;
+ok(!!engineDecl && DELEGATE.test(engineDecl.trim()),
+  `D4 the engine delegate is exactly a delegate — no branch, no condition, no second path (${engineDecl ? engineDecl.trim().slice(0, 90) : 'MISSING'})`);
+for (const c of CHECKS) {
+  ok(!!engineDecl && !engineDecl.includes(c), `D4b …and restates nothing about ${c}`);
 }
 ok(!!engineDecl && /StaffPrivate/.test(engineDecl),
   'D5 …it delegates to that same door, so the two can never disagree about who may come in');
 ok(!!engineDecl && /Shell=\{EngineLayout\}/.test(engineDecl),
   'D6 …and differs only by the shell it asks for');
+{
+  const shells = [...APP_CODE.matchAll(/Shell=\{(\w+)\}/g)].map((m) => m[1]);
+  ok(shells.length > 0 && shells.every((x) => x === 'EngineLayout'),
+    `D8 the shell parameter is only ever the engine's (${[...new Set(shells)].join(', ') || 'none'}) — a console route must not quietly swap its own`);
+}
 ok(!!staffBody && /Shell/.test(staffBody),
   'D7 the door takes the shell as a parameter, which is what makes the copy impossible');
 
@@ -408,6 +454,12 @@ for (const b of HOSTILE_BASE) {
     baseClean = false; info(`   portalPath ${JSON.stringify(b)} -> ${JSON.stringify(out)}`);
   }
 }
+/* A DOT IS LEGAL in a portal path and config permits one — refusing it would
+   send every engine bookmark to a path that does not exist. `..` never is. */
+ok(engineRedirectTarget('/portal.v2', '/scenarios') === '/portal.v2/#/engine/scenarios',
+  'E5c a legitimate dotted portal path is kept, not silently replaced');
+ok(!engineRedirectTarget('/portal/../admin', '/x').includes('..'),
+  'E5d …while a traversal in the portal path is still refused');
 ok(baseClean, `E5b all ${HOSTILE_BASE.length} hostile PORTAL PATHS fall back to a safe path on this origin`);
 
 /* And the server must actually USE it — a perfect rule nothing calls is not a
@@ -459,6 +511,11 @@ ok(AV.isEngineDest('/engine-room') === false, 'F9 …nor is /engine-room');
 ok(AV.isEngineDest('') === false && AV.isEngineDest(null) === false && AV.isEngineDest(undefined) === false,
   'F10 landing on the sign-in directly reads as the console, which is what it is');
 ok(AV.isEngineDest('/internal/lt/pricer') === false, 'F11 the console pricer is the console');
+/* A BOOKMARK CARRIES A QUERY STRING, and `from` is `pathname + search`. */
+ok(AV.isEngineDest('/engine?tab=2') === true, 'F11b a bookmarked engine address with a query is still the engine');
+ok(AV.isEngineDest('/engine/scenarios?id=5') === true, 'F11c …at any depth');
+ok(AV.isEngineDest('/Engine') === true, 'F11d …and in any case, because React Router serves it');
+ok(AV.isEngineDest('/engineering?x=1') === false, 'F11e …while /engineering is still not the engine');
 
 /* The screens must DELEGATE, or the proof above is about a module nothing uses. */
 const SHELL = stripComments(read('app-v2/src/components/AuthShell.jsx'));

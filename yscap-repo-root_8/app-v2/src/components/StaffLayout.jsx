@@ -456,7 +456,7 @@ export default function StaffLayout({ children }) {
      self-fetches, so a shell mounts it and holds no state of its own. */
   return (
     <div className="app">
-      <StaffViewBanner />
+      <StaffViewBanner hint="Switch Long-term / Short-term above to see everything they see." />
       {staleBuild && (
         <div role="alert" style={{ position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1000,
           background: '#AE8746', color: '#fff', padding: '8px 14px', display: 'flex',

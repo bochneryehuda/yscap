@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { useStaleBuild, StaleBuildBanner } from '../lib/useStaleBuild.jsx';
@@ -85,17 +85,60 @@ export default function EngineLayout({ children }) {
      exact incident the watchdog was built after. */
   const staleBuild = useStaleBuild();
 
+  /* HOW TALL IS THE BANNER STACK RIGHT NOW. A MutationObserver as well as a
+     ResizeObserver, because the staff-view bar arrives LATE — it appears only
+     after `/api/staff-view/session` answers, so a height taken at mount would be
+     zero and the header would be buried the moment it lands. */
+  const bannersRef = useRef(null);
+  const [bannerH, setBannerH] = useState(0);
+  useEffect(() => {
+    const el = bannersRef.current;
+    if (!el) return undefined;
+    const apply = () => setBannerH(Math.round(el.getBoundingClientRect().height));
+    apply();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(apply) : null;
+    if (ro) ro.observe(el);
+    const mo = typeof MutationObserver !== 'undefined' ? new MutationObserver(apply) : null;
+    if (mo) mo.observe(el, { childList: true, subtree: true });
+    window.addEventListener('resize', apply);
+    window.addEventListener('load', apply);
+    return () => {
+      if (ro) ro.disconnect();
+      if (mo) mo.disconnect();
+      window.removeEventListener('resize', apply);
+      window.removeEventListener('load', apply);
+    };
+  }, []);
+
   return (
-    <div style={{ minHeight: '100vh', background: '#F6F3EC' }}>
-      {/* A staff-view token IS a staff token, so a super admin standing inside a
-          teammate's console is admitted here. Without this they would have had no
-          banner and no way back — the shell's only other exits are "Full system"
-          and "Sign out", and signing out of somebody else's session is the wrong
-          action. Shared component, never a second copy of the bar. */}
-      <StaffViewBanner />
-      <StaleBuildBanner stale={staleBuild} />
+    <div style={{ minHeight: '100vh', background: '#F6F3EC', paddingTop: bannerH }}>
+      {/* ── THE BANNER STACK, AND WHY IT IS MEASURED ────────────────────────
+          A staff-view token IS a staff token, so a super admin standing inside a
+          teammate's console is admitted here; without a banner they had no notice
+          and no way back, since this shell's only other exits are "Full system"
+          and "Sign out" and signing out of somebody else's session is wrong.
+
+          ⛔ BUT ADDING THEM COVERED THE ENGINE'S ONLY NAVIGATION. Both banners
+          are `position: fixed` at the same top, so a re-audit MEASURED them
+          sitting on top of each other AND over the sticky header: 52 of its 58
+          pixels hidden behind a z-1001 bar, taking the lockup, the whole tab row
+          and the "Full system" way out with them — and on a phone the first tab
+          row too. The console survives that because it has a sidebar; the
+          engine's header IS its navigation, so here it is a dead end.
+
+          So the two are stacked IN FLOW inside one fixed container and the
+          container is MEASURED: the shell pads by its height and the sticky
+          header starts below it. Measured rather than a constant because the
+          bars wrap to two and three lines on a phone and grow again when the web
+          fonts land — the same reason CobrowseHost measures its own. */}
+      <div ref={bannersRef} style={{
+        position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1001,
+      }}>
+        <StaffViewBanner inFlow />
+        <StaleBuildBanner stale={staleBuild} inFlow />
+      </div>
       <header style={{
-        position: 'sticky', top: 'var(--cobrowse-bar, 0px)', zIndex: 30, background: '#FFFFFF',
+        position: 'sticky', top: `calc(var(--cobrowse-bar, 0px) + ${bannerH}px)`, zIndex: 30, background: '#FFFFFF',
         borderBottom: `1px solid ${LINE}`, padding: '10px 18px',
         display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
       }}>

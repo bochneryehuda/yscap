@@ -30,7 +30,7 @@ import { api } from '../lib/api.js';
  * session drop the token and make them sign in rather than leave them sitting
  * inside somebody else's console. Never a fourth hand-rolled copy of that dance.
  */
-export default function StaffViewBanner() {
+export default function StaffViewBanner({ inFlow = false, hint = '' }) {
   const { exitStaffView } = useAuth();
   const [viewing, setViewing] = useState(null);
 
@@ -57,12 +57,23 @@ export default function StaffViewBanner() {
   };
 
   return (
-    <div role="alert" style={{
-      position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1001,
+    <div role="alert" data-top-banner="1" style={{
+      /* IN FLOW when a shell stacks its own banners (see EngineLayout): two
+         `position: fixed` bars both pinned to the same top COVER EACH OTHER —
+         measured, the stale-build notice was entirely hidden behind this one —
+         and together they covered the engine's only navigation. Default is
+         unchanged, so the console renders exactly as before. */
+      ...(inFlow ? { position: 'static' } : { position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1001 }),
       background: '#1F3864', color: '#fff', padding: '8px 14px', display: 'flex',
       alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14, flexWrap: 'wrap',
     }}>
-      <span>You are seeing <strong>{viewing.name || 'a team member'}</strong>’s screen — read-only.</span>
+      {/* THE HINT IS THE CALLER'S, because it is only true where the caller is.
+          The console's version said "Switch Long-term / Short-term above to see
+          everything they see", and extracting this component silently dropped
+          it — a re-audit caught that. It is right for the console (the product
+          switch is in its sidebar) and would be a lie in the engine, which has
+          no such switch. So the console passes it and the engine does not. */}
+      <span>You are seeing <strong>{viewing.name || 'a team member'}</strong>’s screen — read-only.{hint ? ` ${hint}` : ''}</span>
       <button className="btn small" style={{ background: '#fff', color: '#141B22', border: 'none' }}
         onClick={leave}>Back to my own screen</button>
     </div>
